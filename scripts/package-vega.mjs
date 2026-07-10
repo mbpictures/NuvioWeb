@@ -39,16 +39,20 @@ function hasVegaCli() {
   return result.status === 0;
 }
 
-function runVegaCli(args) {
+// `vega build` is the native/C++ path and produces a .vpkg with no JS bundle, which
+// the device rejects as invalid. React Native apps must go through build-vega, which
+// runs Metro and Hermes first, then delegates to the native build.
+function runReactNativeBuild(args) {
+  const command = `npx react-native ${args.join(" ")}`;
   return new Promise((resolve, reject) => {
-    const child = spawn(`vega ${args.join(" ")}`, { cwd: vegaDir, stdio: "inherit", shell: true });
+    const child = spawn(command, { cwd: vegaDir, stdio: "inherit", shell: true });
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) {
         resolve();
         return;
       }
-      reject(new Error(`vega ${args.join(" ")} exited with code ${code}`));
+      reject(new Error(`${command} exited with code ${code}`));
     });
   });
 }
@@ -88,7 +92,7 @@ function assertBuildableWorkingTree() {
   }
   throw new Error(
     [
-      `Refusing to run "vega build" from ${vegaDir}.`,
+      `Refusing to build from ${vegaDir}.`,
       "Windows drive mounts corrupt the .vpkg archive. Copy the vega/ directory to a",
       "WSL-native path (for example ~/nuvio-vega), run npm install there, and build from it.",
       "Re-run with --stage-only to stage the web bundle without building."
@@ -110,20 +114,29 @@ async function packageVega() {
     return;
   }
 
-  const buildArgs = ["build", "-b", buildMode, "-v", version, "-n", buildNumber];
+  const buildArgs = [
+    "build-vega",
+    "--build-type",
+    buildMode,
+    "--build-version",
+    version,
+    "--build-number",
+    buildNumber
+  ];
   if (buildTarget) {
-    buildArgs.push("-t", buildTarget);
+    buildArgs.push("--target", buildTarget);
   }
 
   if (!hasVegaCli()) {
+    const arch = buildTarget || "x86_64";
     console.log(
       [
         "",
         "vega CLI not found on PATH; skipping the .vpkg build.",
         "Finish the packaging manually:",
         "  cd vega && npm install",
-        `  vega ${buildArgs.join(" ")}`,
-        `  vega run-app build/${(buildTarget || "x86_64").toLowerCase()}-${buildMode.toLowerCase()}/nuvio-vega_${buildTarget || "x86_64"}.vpkg space.nuvio.vega.main -d VirtualDevice`
+        `  npx react-native ${buildArgs.join(" ")}`,
+        `  vega run-app build/${arch}-${buildMode.toLowerCase()}/nuvio-vega_${arch}.vpkg space.nuvio.vega.main -d VirtualDevice`
       ].join("\n")
     );
     return;
@@ -131,7 +144,7 @@ async function packageVega() {
 
   assertBuildableWorkingTree();
   console.log(`building Vega ${buildMode} package (version ${version}, build ${buildNumber})...`);
-  await runVegaCli(buildArgs);
+  await runReactNativeBuild(buildArgs);
 }
 
 packageVega().catch((error) => {
