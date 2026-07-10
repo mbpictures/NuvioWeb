@@ -34,11 +34,17 @@ npm run package:vega            # Debug: stage + build
 npm run package:vega:release    # Release
 ```
 
-Optional: `--target=x86_64` to build one arch (default builds `kepler.targets`, i.e. armv7 and
-x86_64). Build number defaults to `1`; override with `NUVIO_VEGA_BUILD_NUMBER`.
+Optional: `--target=aarch64` to build one arch (default builds `kepler.targets`). Use `aarch64` for
+an Apple Silicon VVD, `x86_64` for an x86 VVD, `armv7` for a Fire TV Stick. Build number defaults
+to `1`; override with `NUVIO_VEGA_BUILD_NUMBER`.
 
-Version and build number are **not** manifest fields — they are passed as `vega build
---build-version/--build-number`, and the script wires them from the root `package.json` version.
+The build runs **`react-native build-vega`**, not `vega build`. `vega build` is the native/C++
+path: it emits a `.vpkg` that passes `vpt validate` but contains no `bundle/index.bundle`, and the
+device rejects it at install with `error (Package is invalid)`. `build-vega` runs Metro, compiles
+the Hermes bundle, then delegates to the same native build.
+
+Version and build number are **not** manifest fields — they are passed as
+`--build-version/--build-number`, and the script wires them from the root `package.json` version.
 
 Install and launch:
 
@@ -59,7 +65,7 @@ The Vega SDK is officially macOS/Ubuntu only, but it runs in WSL2 with three fix
    `.../vmtools/agent/emulator-check accel`.
 2. **Install `libpulse0`** — the bundled QEMU binary is dynamically linked against
    `libpulse.so.0`, which a bare Ubuntu WSL rootfs lacks. It exits 127 before running.
-3. **Build from a WSL-native path, not `/mnt/...`** — `vega build` on a Windows drive mount
+3. **Build from a WSL-native path, not `/mnt/...`** — building on a Windows drive mount
    produces a `.vpkg` whose zstd archive is corrupt (`vpt` then fails with ``failed to parse
    `build-info.json` ``). `scripts/package-vega.mjs` refuses to build from `/mnt` for this reason.
 
@@ -121,8 +127,9 @@ The app has never been installed on real hardware, so these remain open:
 - **Codecs / DRM** — HEVC Main10 and VP9 Profile2 are documented as supported, Widevine and
   PlayReady likewise, but nothing has been exercised.
 
-`manifest.toml` is no longer a guess — `vega build` validates it and reports
-`manifest.toml is valid, 0 errors`.
+`manifest.toml` is no longer a guess — `vpt validate` reports `manifest.toml is valid, 0 errors`,
+and the packaged `.vpkg` carries `assets/images/icon.png`, so the `@image/icon.png` resource path
+resolves correctly.
 
 ## Host bridge
 

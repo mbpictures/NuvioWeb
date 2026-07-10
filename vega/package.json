@@ -13,8 +13,8 @@
   },
   "scripts": {
     "start": "react-native start",
-    "build:debug": "vega build -b Debug",
-    "build:release": "vega build -b Release"
+    "build:debug": "react-native build-vega --build-type Debug",
+    "build:release": "react-native build-vega --build-type Release"
   },
   "dependencies": {
     "@amazon-devices/keplerscript-turbomodule-api": "^1.0.0",
