@@ -14,6 +14,8 @@
     "lint:home:incremental": "eslint \"js/ui/screens/home/**/*.js\" \"eslint.config.mjs\"",
     "package:tizen": "npm run build && node ./scripts/package-tizen.mjs",
     "package:webos": "npm run build && node ./scripts/package-webos.mjs",
+    "package:vega": "npm run build && node ./scripts/package-vega.mjs",
+    "package:vega:release": "npm run build && node ./scripts/package-vega.mjs --release",
     "format": "npm run format:incremental",
     "format:incremental": "prettier --write \"js/ui/screens/home/**/*.js\" \"eslint.config.mjs\" \"package.json\" \".prettierrc.json\"",
     "format:check": "npm run format:check:incremental",
