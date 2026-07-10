@@ -7,7 +7,10 @@ local.example.properties
 node_modules/
 *.ipk
 *.wgt
+*.vpkg
 dist/
+vega/assets/
+vega/build/
 .cache/
 .pm2/
 logs/
