@@ -1,11 +1,13 @@
 import { browserAdapter } from "./adapters/browserAdapter.js";
 import { webosAdapter } from "./adapters/webosAdapter.js";
 import { tizenAdapter } from "./adapters/tizenAdapter.js";
+import { vegaAdapter } from "./adapters/vegaAdapter.js";
 
 const ADAPTERS = {
   browser: browserAdapter,
   webos: webosAdapter,
-  tizen: tizenAdapter
+  tizen: tizenAdapter,
+  vega: vegaAdapter
 };
 
 function parseWebOsMajorVersion() {
@@ -62,6 +64,9 @@ function detectPlatformName() {
     return "tizen";
   }
   const userAgent = String(globalThis.navigator?.userAgent || "").toLowerCase();
+  if (userAgent.includes("vega") || userAgent.includes("kepler")) {
+    return "vega";
+  }
   if (globalThis.webOS || globalThis.PalmSystem || globalThis.webOSSystem) {
     return "webos";
   }
@@ -115,6 +120,10 @@ export const Platform = {
 
   isTizen() {
     return this.getName() === "tizen";
+  },
+
+  isVega() {
+    return this.getName() === "vega";
   },
 
   isBrowser() {

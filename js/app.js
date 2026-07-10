@@ -144,7 +144,8 @@ function supportsBackdropFilter() {
 }
 
 function applyPerformanceMode() {
-  const constrained = Platform.isWebOS() || Platform.isTizen() || isLowEndDevice();
+  const constrained =
+    Platform.isWebOS() || Platform.isTizen() || Platform.isVega() || isLowEndDevice();
   const webOsMajorVersion = Platform.isWebOS() ? Number(Platform.getWebOsMajorVersion() || 0) : 0;
   const legacyWebOs = Platform.isWebOS() && (webOsMajorVersion === 0 || webOsMajorVersion <= 6);
   const legacyWebOs38 = Platform.isWebOS() && webOsMajorVersion > 0 && webOsMajorVersion <= 3;
