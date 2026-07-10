@@ -1,4 +1,5 @@
 {
-  "name": "NuvioVega",
+  "//": "name must equal the interactive component id in manifest.toml, or the launcher starts the app and no root component is found",
+  "name": "space.nuvio.vega.main",
   "displayName": "Nuvio TV"
 }

@@ -5,7 +5,7 @@
   "main": "index.js",
   "kepler": {
     "projectType": "application",
-    "appName": "NuvioVega",
+    "appName": "nuvio-vega",
     "targets": [
       "tv"
     ]
