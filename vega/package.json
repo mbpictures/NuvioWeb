@@ -5,10 +5,9 @@
   "main": "index.js",
   "kepler": {
     "projectType": "application",
+    "appName": "NuvioVega",
     "targets": [
-      "armv7",
-      "x86_64",
-      "aarch64"
+      "tv"
     ]
   },
   "scripts": {

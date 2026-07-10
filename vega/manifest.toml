@@ -1,11 +1,12 @@
 schema-version = 1
 
-# Version and build number are not manifest fields; they come from
-# `vega build --build-version/--build-number`.
+# No `icon` key: an `@image/...` reference needs a registered resource, and without
+# one the device rejects the package at install with `error (Package is invalid)`.
+# `version` here is a placeholder; the packaged value comes from --build-version.
 [package]
 id = "space.nuvio.vega"
 title = "Nuvio TV"
-icon = "@image/icon.png"
+version = "0.3.8"
 
 [components]
 [[components.interactive]]

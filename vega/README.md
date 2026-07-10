@@ -127,9 +127,21 @@ The app has never been installed on real hardware, so these remain open:
 - **Codecs / DRM** — HEVC Main10 and VP9 Profile2 are documented as supported, Widevine and
   PlayReady likewise, but nothing has been exercised.
 
-`manifest.toml` is no longer a guess — `vpt validate` reports `manifest.toml is valid, 0 errors`,
-and the packaged `.vpkg` carries `assets/images/icon.png`, so the `@image/icon.png` resource path
-resolves correctly.
+## manifest.toml gotchas
+
+Both of these produce `error (Package is invalid)` at install time, with no further detail —
+`vpt validate` passes, `vpt info` prints correct metadata, and `vpm monitor-installer` only says
+`INSTALL_FAILED_INVALID_PACKAGE`. Each was found by bisecting against the `helloWorld` template
+(`vega project generate --template helloWorld`), which installs cleanly:
+
+- **No `icon` key.** `icon = "@image/icon.png"` needs a registered resource; without one the device
+  rejects the package. The template declares no icon at all. `scripts/package-vega.mjs` still
+  stages `assets/images/icon.png` for whenever the resource system is figured out.
+- **`kepler.targets` is a device profile, not an architecture.** It must be `["tv"]`. Architectures
+  (`armv7` / `aarch64` / `x86_64`) are chosen with the `--target` build flag. Omitting `targets`
+  entirely crashes the CLI with `Cannot read properties of undefined (reading 'filter')`.
+
+Verified harmless: `[processes]`, `[wants.service]`, and `[wants.privilege]` all install fine.
 
 ## Host bridge
 
