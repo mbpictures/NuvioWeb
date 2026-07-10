@@ -1,0 +1,30 @@
+{
+  "name": "nuvio-vega",
+  "private": true,
+  "version": "0.3.8",
+  "main": "index.js",
+  "kepler": {
+    "projectType": "application",
+    "targets": [
+      "armv7",
+      "x86_64"
+    ]
+  },
+  "scripts": {
+    "start": "react-native start",
+    "build:debug": "vega build -b Debug",
+    "build:release": "vega build -b Release"
+  },
+  "dependencies": {
+    "@amazon-devices/keplerscript-turbomodule-api": "^1.0.0",
+    "@amazon-devices/react-native-kepler": "^2.0.0",
+    "@amazon-devices/webview": "^3.5.7",
+    "react": "18.2.0",
+    "react-native": "0.72.0"
+  },
+  "devDependencies": {
+    "@amazon-devices/kepler-cli-platform": "^0",
+    "@babel/core": "^7.20.0",
+    "metro-react-native-babel-preset": "^0.76.0"
+  }
+}
