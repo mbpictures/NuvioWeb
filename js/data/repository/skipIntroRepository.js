@@ -1,5 +1,6 @@
 import { INTRODB_API_URL } from "../../config.js";
 import { Platform } from "../../platform/index.js";
+import { fetchViaVegaHost } from "../../platform/vega/vegaHostFetch.js";
 
 const CACHE = new Map();
 
@@ -44,6 +45,13 @@ function toSkipInterval(segment, type) {
 }
 
 async function fetchJson(url, timeoutMs = Platform.isTizen() || Platform.isWebOS() ? 8000 : 3500) {
+  // introdb pins Access-Control-Allow-Origin to its own site, so the Vega
+  // WebView's null origin can never read it directly.
+  const proxied = await fetchViaVegaHost(url, { timeoutMs });
+  if (proxied) {
+    return proxied.ok ? proxied.json().catch(() => null) : null;
+  }
+
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {

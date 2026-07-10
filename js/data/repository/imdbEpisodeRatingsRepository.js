@@ -1,4 +1,5 @@
 import { IMDB_RATINGS_API_BASE_URL } from "../../config.js";
+import { fetchViaVegaHost } from "../../platform/vega/vegaHostFetch.js";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const CACHE = new Map();
@@ -12,6 +13,13 @@ function normalizeBaseUrl(value = "") {
 }
 
 async function fetchJson(url, timeoutMs = 4500) {
+  // This API sends no Access-Control-* headers at all, so the Vega WebView's
+  // null origin cannot read it directly.
+  const proxied = await fetchViaVegaHost(url, { timeoutMs });
+  if (proxied) {
+    return proxied.ok ? proxied.json().catch(() => null) : null;
+  }
+
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
