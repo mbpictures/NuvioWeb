@@ -57,6 +57,74 @@ function runReactNativeBuild(args) {
   });
 }
 
+// The Vega WebView (Chromium-based) blocks XHR from file:// pages to other
+// file:// resources, even same-origin ones. The web app fetches res/values/strings.xml
+// via XHR at startup and throws a fatal error if all paths fail. We intercept that
+// specific XHR by replacing XMLHttpRequest with a thin wrapper that serves the file
+// content inline for the known paths, and forwards all other requests to the real XHR.
+async function buildXhrShim() {
+  const stringsXmlPath = path.join(vegaWebDir, "res", "values", "strings.xml");
+  let stringsXml;
+  try {
+    stringsXml = await readFile(stringsXmlPath, "utf8");
+  } catch {
+    console.warn("vega: res/values/strings.xml not found — skipping XHR shim");
+    return null;
+  }
+
+  const encoded = JSON.stringify(stringsXml);
+
+  // Logs appear in `vega device start-log-stream` under the app process (chromium console).
+  return `(function(){` +
+    // --- strings.xml XHR shim ---
+    `var C=${encoded};` +
+    `var O=window.XMLHttpRequest;` +
+    `function V(){this._n=null;this._i=false;this.status=0;this.responseText="";this.onload=null;this.onerror=null;}` +
+    `V.prototype.open=function(m,u,a){` +
+      `if(u==="res/values/strings.xml"||u==="dist/res/values/strings.xml"||(u&&u.endsWith("/res/values/strings.xml"))){` +
+        `this._i=true;` +
+      `}else{` +
+        `this._n=new O();` +
+        `this._n.open(m,u,a===undefined?true:a);` +
+        `this._u=u;` +
+      `}` +
+    `};` +
+    `V.prototype.send=function(d){` +
+      `var s=this;` +
+      `if(s._i){s.status=0;s.responseText=C;setTimeout(function(){if(s.onload)s.onload.call(s);},0);}` +
+      `else if(s._n){` +
+        `var u=s._u||"?";` +
+        `s._n.onload=function(){` +
+          `s.status=s._n.status;s.responseText=s._n.responseText;` +
+          `console.log("[vega-net] xhr "+s._n.status+" "+u);` +
+          `if(s.onload)s.onload.call(s);` +
+        `};` +
+        `s._n.onerror=function(){` +
+          `console.error("[vega-net] xhr-err "+u);` +
+          `if(s.onerror)s.onerror.call(s);` +
+        `};` +
+        `s._n.send(d);` +
+      `}` +
+    `};` +
+    `V.prototype.setRequestHeader=function(k,v){if(this._n)this._n.setRequestHeader(k,v);};` +
+    `V.prototype.abort=function(){if(this._n)this._n.abort();};` +
+    `V.UNSENT=0;V.OPENED=1;V.HEADERS_RECEIVED=2;V.LOADING=3;V.DONE=4;` +
+    `window.XMLHttpRequest=V;` +
+    // --- fetch() logging ---
+    `var F=window.fetch;` +
+    `window.fetch=function(r,o){` +
+      `var u=typeof r==="string"?r:(r&&r.url)||String(r);` +
+      `return F.apply(this,arguments).then(function(res){` +
+        `console.log("[vega-net] fetch "+res.status+" "+u);` +
+        `return res;` +
+      `},function(e){` +
+        `console.error("[vega-net] fetch-err "+u+" "+e);` +
+        `throw e;` +
+      `});` +
+    `};` +
+  `})();`;
+}
+
 async function stageWebBundle() {
   await rm(vegaWebDir, { recursive: true, force: true });
   await mkdir(vegaWebDir, { recursive: true });
@@ -64,16 +132,25 @@ async function stageWebBundle() {
 
   await rm(path.join(vegaWebDir, "appinfo.json"), { force: true });
 
+  const xhrShim = await buildXhrShim();
+
   const indexPath = path.join(vegaWebDir, "index.html");
-  const sourceIndex = await readFile(indexPath, "utf8");
+  let sourceIndex = await readFile(indexPath, "utf8");
   if (!sourceIndex.includes("<body>")) {
     throw new Error("dist/index.html has no <body> tag to anchor the Vega platform bootstrap.");
   }
-  await writeFile(
-    indexPath,
-    sourceIndex.replace("<body>", `<body>\n${platformBootstrapScript}`),
-    "utf8"
-  );
+
+  let patchedIndex = sourceIndex.replace("<body>", `<body>\n${platformBootstrapScript}`);
+
+  if (xhrShim) {
+    await writeFile(path.join(vegaWebDir, "vega-xhr-shim.js"), xhrShim, "utf8");
+    patchedIndex = patchedIndex.replace(
+      /<script src="app\.bundle\.js/,
+      `<script src="vega-xhr-shim.js"></script>\n    <script src="app.bundle.js`
+    );
+  }
+
+  await writeFile(indexPath, patchedIndex, "utf8");
 }
 
 async function stageIcon() {
