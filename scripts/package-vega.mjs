@@ -110,17 +110,46 @@ async function buildXhrShim() {
     `V.prototype.abort=function(){if(this._n)this._n.abort();};` +
     `V.UNSENT=0;V.OPENED=1;V.HEADERS_RECEIVED=2;V.LOADING=3;V.DONE=4;` +
     `window.XMLHttpRequest=V;` +
-    // --- fetch() logging ---
-    `var F=window.fetch;` +
+    // --- fetch() proxy through React Native bridge ---
+    // The WebView's file:// origin blocks direct fetch() to https:// (Chromium cross-origin
+    // restriction). We route all HTTP(S) fetch calls through the RN bridge instead, which
+    // runs on the native JS thread and has no such restriction.
+    `var _pfq={};var _pid=0;` +
+    `window.__VEGA_FETCH_RECV__=function(msg){` +
+      `var p=_pfq[msg.id];if(!p)return;delete _pfq[msg.id];` +
+      `if(msg.ok){` +
+        `var h={get:function(k){return(msg.headers||{})[k.toLowerCase()]||null;},` +
+               `forEach:function(cb){var hd=msg.headers||{};Object.keys(hd).forEach(function(k){cb(hd[k],k);});}};` +
+        `var body=msg.body||"";` +
+        `p.res({ok:msg.status>=200&&msg.status<300,status:msg.status,statusText:"",headers:h,` +
+              `text:function(){return Promise.resolve(body);},` +
+              `json:function(){try{return Promise.resolve(JSON.parse(body));}catch(e){return Promise.reject(e);}},` +
+              `clone:function(){return this;}});` +
+      `}else{p.rej(new TypeError("Network request failed: "+(msg.error||"error")));}` +
+    `};` +
+    `function _hdrs(h){` +
+      `if(!h)return{};` +
+      `if(typeof h.forEach==="function"&&typeof h.get==="function"){` +
+        `var o={};h.forEach(function(v,k){o[k]=v;});return o;` +
+      `}` +
+      `return h;` +
+    `}` +
     `window.fetch=function(r,o){` +
       `var u=typeof r==="string"?r:(r&&r.url)||String(r);` +
-      `return F.apply(this,arguments).then(function(res){` +
-        `console.log("[vega-net] fetch "+res.status+" "+u);` +
-        `return res;` +
-      `},function(e){` +
-        `console.error("[vega-net] fetch-err "+u+" "+e);` +
-        `throw e;` +
-      `});` +
+      `if(u.indexOf("http://")===0||u.indexOf("https://")===0){` +
+        `var id="vf"+(++_pid);` +
+        `var m=(o&&o.method)||(r&&typeof r==="object"&&r.method)||"GET";` +
+        `var hd=_hdrs((o&&o.headers)||(r&&typeof r==="object"&&r.headers)||{});` +
+        `var bd=(o&&o.body)||(r&&typeof r==="object"&&r.body)||null;` +
+        `return new Promise(function(res,rej){` +
+          `_pfq[id]={res:res,rej:rej};` +
+          `if(!window.ReactNativeWebView){rej(new TypeError("RN bridge unavailable"));return;}` +
+          `window.ReactNativeWebView.postMessage(JSON.stringify({` +
+            `source:"nuvio",type:"vegafetch",payload:{id:id,url:u,method:m,headers:hd,body:bd}` +
+          `}));` +
+        `});` +
+      `}` +
+      `return Promise.reject(new TypeError("fetch: unsupported URL scheme: "+u));` +
     `};` +
   `})();`;
 }

@@ -13,11 +13,24 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const PLATFORM_BOOTSTRAP = 'window.__NUVIO_PLATFORM__ = "vega"; true;';
 
 // U+2028/U+2029 are literal line terminators in JS source but legal inside a
-// JSON string, so they must be escaped before the reply is injected as code.
+// JSON string, so they must be escaped before the value is injected as code.
+// split/join avoids embedding the literal chars in a regex pattern (which Babel rejects).
+const LS = " ";
+const PS = " ";
+function escapeLineTerminators(str) {
+  return str.split(LS).join("\\u2028").split(PS).join("\\u2029");
+}
+
+// Produces a quoted JS string literal from any value (for bridge messages that
+// expect a JSON string argument, like __NUVIO_VEGA_BRIDGE__.receive).
 function toInjectableString(value) {
-  return JSON.stringify(value)
-    .replace(/\u2028/g, "\\u2028")
-    .replace(/\u2029/g, "\\u2029");
+  return escapeLineTerminators(JSON.stringify(JSON.stringify(value)));
+}
+
+// Produces a JS object/array/primitive literal from any value (for callbacks
+// that expect a plain object, like __VEGA_FETCH_RECV__).
+function toInjectableObject(value) {
+  return escapeLineTerminators(JSON.stringify(value));
 }
 
 function isProxyableUrl(value) {
@@ -29,7 +42,7 @@ function isProxyableUrl(value) {
 }
 
 async function performProxiedFetch(payload) {
-  const { id, url, method = "GET", headers = {} } = payload || {};
+  const { id, url, method = "GET", headers = {}, body: requestBody = null } = payload || {};
 
   if (!isProxyableUrl(url)) {
     return { id, ok: false, error: "blocked" };
@@ -39,7 +52,12 @@ async function performProxiedFetch(payload) {
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
-    const response = await fetch(url, { method, headers, signal: controller.signal });
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: requestBody || undefined,
+      signal: controller.signal
+    });
     const body = await response.text();
     if (body.length > MAX_RESPONSE_BYTES) {
       return { id, ok: false, error: "too-large" };
@@ -62,7 +80,7 @@ export default function App() {
   const webViewRef = useRef(null);
 
   const replyToWeb = useCallback((message) => {
-    const payload = toInjectableString(JSON.stringify(message));
+    const payload = toInjectableString(message);
     webViewRef.current?.injectJavaScript(
       `window.__NUVIO_VEGA_BRIDGE__ && window.__NUVIO_VEGA_BRIDGE__.receive(${payload}); true;`
     );
@@ -94,6 +112,17 @@ export default function App() {
 
       if (message.type === "fetch") {
         performProxiedFetch(message.payload).then(replyToWeb);
+      }
+
+      if (message.type === "vegafetch") {
+        performProxiedFetch(message.payload).then((result) => {
+          // toInjectableObject produces a JS object literal (single encode),
+          // not a quoted string, so __VEGA_FETCH_RECV__ gets an object, not a string.
+          const json = toInjectableObject(result);
+          webViewRef.current?.injectJavaScript(
+            `window.__VEGA_FETCH_RECV__ && window.__VEGA_FETCH_RECV__(${json}); true;`
+          );
+        });
       }
     },
     [replyToWeb]
