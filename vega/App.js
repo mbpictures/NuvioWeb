@@ -116,6 +116,7 @@ export default function App() {
         hasTVPreferredFocus
         javaScriptEnabled
         domStorageEnabled
+        allowFileAccess
         allowSystemKeyEvents
         allowsDefaultMediaControl
         thirdPartyCookiesEnabled
