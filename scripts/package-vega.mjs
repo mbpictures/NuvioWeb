@@ -1,4 +1,4 @@
-import { access, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
@@ -62,6 +62,12 @@ function runReactNativeBuild(args) {
 // via XHR at startup and throws a fatal error if all paths fail. We intercept that
 // specific XHR by replacing XMLHttpRequest with a thin wrapper that serves the file
 // content inline for the known paths, and forwards all other requests to the real XHR.
+//
+// Locale strings are too large to embed inline (~4.8 MB total). Instead they are
+// written to a separate vega-locales.js file loaded with `defer` so it never blocks
+// rendering. The shim checks window.__VEGA_LOCALES__ at XHR call-time; by then the
+// deferred script has always already executed (locale XHRs happen asynchronously,
+// at least two event-loop turns after the initial script execution).
 async function buildXhrShim() {
   const stringsXmlPath = path.join(vegaWebDir, "res", "values", "strings.xml");
   let stringsXml;
@@ -74,114 +80,80 @@ async function buildXhrShim() {
 
   const encoded = JSON.stringify(stringsXml);
 
-  // Embed all locale strings.xml files so the XHR shim can serve them inline.
-  // The Vega WebView loads pages from file:// which Chromium treats as null-origin,
-  // so the real XHR can't load other file:// resources cross-origin.
-  const localeMap = {};
-  const resDirPath = path.join(vegaWebDir, "res");
-  try {
-    const { readdir } = await import("node:fs/promises");
-    const entries = await readdir(resDirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !entry.name.startsWith("values-")) continue;
-      const locale = entry.name.slice("values-".length);
-      const xmlPath = path.join(resDirPath, entry.name, "strings.xml");
-      try {
-        localeMap[locale] = await readFile(xmlPath, "utf8");
-      } catch {
-        // no strings.xml for this locale dir
-      }
-    }
-  } catch {
-    // res/ directory not readable — locale switching won't work
-  }
-  const localeMapEncoded = JSON.stringify(localeMap);
-
-  return `(function(){` +
-    // --- strings.xml XHR shim ---
-    // C = base English strings.xml content (served for res/values/strings.xml)
-    // L = locale map keyed by locale code (served for res/values-{locale}/strings.xml)
+  return (
+    `(function(){` +
     `var C=${encoded};` +
-    `var L=${localeMapEncoded};` +
     `var O=window.XMLHttpRequest;` +
-    `function V(){this._n=null;this._i=null;this.status=0;this.responseText="";this.onload=null;this.onerror=null;}` +
+    // _i: inline content (base English)
+    // _lc: pending locale code (deferred data not yet available)
+    // _n: native XHR (for all other URLs)
+    `function V(){this._n=null;this._i=null;this._lc=null;this.status=0;this.responseText="";this.onload=null;this.onerror=null;}` +
     `V.prototype.open=function(m,u,a){` +
-      `var ic=null;` +
-      `if(u==="res/values/strings.xml"||u==="dist/res/values/strings.xml"||(u&&u.endsWith("/res/values/strings.xml"))){` +
-        `ic=C;` +
-      `}else if(typeof u==="string"){` +
-        `var lm=(new RegExp("values-([^/]+)/strings\\.xml$")).exec(u);` +
-        `if(lm&&L&&L[lm[1]])ic=L[lm[1]];` +
-      `}` +
-      `if(ic!==null){this._i=ic;}else{` +
-        `this._n=new O();` +
-        `this._n.open(m,u,a===undefined?true:a);` +
-        `this._u=u;` +
-      `}` +
+    `if(u==="res/values/strings.xml"||u==="dist/res/values/strings.xml"||(u&&u.endsWith("/res/values/strings.xml"))){` +
+    `this._i=C;` +
+    `}else if(typeof u==="string"){` +
+    `var lm=(/[/]values-([^/]+)[/]strings[.]xml$/).exec(u);` +
+    `if(lm){this._lc=lm[1];}` +
+    `else{this._n=new O();this._n.open(m,u,a===undefined?true:a);this._u=u;}` +
+    `}else{this._n=new O();this._n.open(m,u,a===undefined?true:a);this._u=u;}` +
     `};` +
     `V.prototype.send=function(d){` +
-      `var s=this;` +
-      `if(s._i!==null){s.status=0;s.responseText=s._i;setTimeout(function(){if(s.onload)s.onload.call(s);},0);}` +
-      `else if(s._n){` +
-        `var u=s._u||"?";` +
-        `s._n.onload=function(){` +
-          `s.status=s._n.status;s.responseText=s._n.responseText;` +
-          `console.log("[vega-net] xhr "+s._n.status+" "+u);` +
-          `if(s.onload)s.onload.call(s);` +
-        `};` +
-        `s._n.onerror=function(){` +
-          `console.error("[vega-net] xhr-err "+u);` +
-          `if(s.onerror)s.onerror.call(s);` +
-        `};` +
-        `s._n.send(d);` +
-      `}` +
+    `var s=this;` +
+    `if(s._i!==null){` +
+    `s.status=0;s.responseText=s._i;` +
+    `setTimeout(function(){if(s.onload)s.onload.call(s);},0);` +
+    `}else if(s._lc!==null){` +
+    // Poll for the deferred vega-locales.js to finish. It sets window.__VEGA_LOCALES__
+    // as a {locale: "xml string"} map. Checks every 50ms, gives up after 5s (100 tries)
+    // and resolves with empty string so i18n falls back to base English.
+    `var lc=s._lc,n=0;` +
+    `(function poll(){` +
+    `var L=window.__VEGA_LOCALES__;` +
+    `if(L!==undefined){s.status=0;s.responseText=L[lc]||"";if(s.onload)s.onload.call(s);}` +
+    `else if(n++<100){setTimeout(poll,50);}` +
+    `else{s.status=0;s.responseText="";if(s.onload)s.onload.call(s);}` +
+    `})();` +
+    `}else if(s._n){` +
+    `var u=s._u||"?";` +
+    `s._n.onload=function(){s.status=s._n.status;s.responseText=s._n.responseText;if(s.onload)s.onload.call(s);};` +
+    `s._n.onerror=function(){if(s.onerror)s.onerror.call(s);};` +
+    `s._n.send(d);` +
+    `}` +
     `};` +
     `V.prototype.setRequestHeader=function(k,v){if(this._n)this._n.setRequestHeader(k,v);};` +
     `V.prototype.abort=function(){if(this._n)this._n.abort();};` +
     `V.UNSENT=0;V.OPENED=1;V.HEADERS_RECEIVED=2;V.LOADING=3;V.DONE=4;` +
     `window.XMLHttpRequest=V;` +
-    // --- fetch() proxy through React Native bridge ---
-    // The WebView's file:// origin blocks direct fetch() to https:// (Chromium cross-origin
-    // restriction). We route all HTTP(S) fetch calls through the RN bridge instead, which
-    // runs on the native JS thread and has no such restriction.
-    `var _pfq={};var _pid=0;` +
-    `window.__VEGA_FETCH_RECV__=function(msg){` +
-      `var p=_pfq[msg.id];if(!p)return;delete _pfq[msg.id];` +
-      `if(msg.ok){` +
-        `var h={get:function(k){return(msg.headers||{})[k.toLowerCase()]||null;},` +
-               `forEach:function(cb){var hd=msg.headers||{};Object.keys(hd).forEach(function(k){cb(hd[k],k);});}};` +
-        `var body=msg.body||"";` +
-        `p.res({ok:msg.status>=200&&msg.status<300,status:msg.status,statusText:"",headers:h,` +
-              `text:function(){return Promise.resolve(body);},` +
-              `json:function(){try{return Promise.resolve(JSON.parse(body));}catch(e){return Promise.reject(e);}},` +
-              `clone:function(){return this;}});` +
-      `}else{p.rej(new TypeError("Network request failed: "+(msg.error||"error")));}` +
-    `};` +
-    `function _hdrs(h){` +
-      `if(!h)return{};` +
-      `if(typeof h.forEach==="function"&&typeof h.get==="function"){` +
-        `var o={};h.forEach(function(v,k){o[k]=v;});return o;` +
-      `}` +
-      `return h;` +
-    `}` +
-    `window.fetch=function(r,o){` +
-      `var u=typeof r==="string"?r:(r&&r.url)||String(r);` +
-      `if(u.indexOf("http://")===0||u.indexOf("https://")===0){` +
-        `var id="vf"+(++_pid);` +
-        `var m=(o&&o.method)||(r&&typeof r==="object"&&r.method)||"GET";` +
-        `var hd=_hdrs((o&&o.headers)||(r&&typeof r==="object"&&r.headers)||{});` +
-        `var bd=(o&&o.body)||(r&&typeof r==="object"&&r.body)||null;` +
-        `return new Promise(function(res,rej){` +
-          `_pfq[id]={res:res,rej:rej};` +
-          `if(!window.ReactNativeWebView){rej(new TypeError("RN bridge unavailable"));return;}` +
-          `window.ReactNativeWebView.postMessage(JSON.stringify({` +
-            `source:"nuvio",type:"vegafetch",payload:{id:id,url:u,method:m,headers:hd,body:bd}` +
-          `}));` +
-        `});` +
-      `}` +
-      `return Promise.reject(new TypeError("fetch: unsupported URL scheme: "+u));` +
-    `};` +
-  `})();`;
+    `})();`
+  );
+}
+
+// Builds the deferred locale script: window.__VEGA_LOCALES__ = { locale: "raw xml", ... }
+// Loaded with `defer` so it never blocks the initial render.
+async function buildLocalesScript() {
+  const resDirPath = path.join(vegaWebDir, "res");
+  const localeMap = {};
+  try {
+    const entries = await readdir(resDirPath, { withFileTypes: true });
+    await Promise.all(
+      entries
+        .filter((e) => e.isDirectory() && e.name.startsWith("values-"))
+        .map(async (e) => {
+          const locale = e.name.slice("values-".length);
+          try {
+            localeMap[locale] = await readFile(
+              path.join(resDirPath, e.name, "strings.xml"),
+              "utf8"
+            );
+          } catch {
+            // no strings.xml for this locale
+          }
+        })
+    );
+  } catch {
+    // res/ not readable
+  }
+  return `window.__VEGA_LOCALES__=${JSON.stringify(localeMap)};`;
 }
 
 async function stageWebBundle() {
@@ -191,7 +163,7 @@ async function stageWebBundle() {
 
   await rm(path.join(vegaWebDir, "appinfo.json"), { force: true });
 
-  const xhrShim = await buildXhrShim();
+  const [xhrShim, localesScript] = await Promise.all([buildXhrShim(), buildLocalesScript()]);
 
   const indexPath = path.join(vegaWebDir, "index.html");
   let sourceIndex = await readFile(indexPath, "utf8");
@@ -203,10 +175,25 @@ async function stageWebBundle() {
 
   if (xhrShim) {
     await writeFile(path.join(vegaWebDir, "vega-xhr-shim.js"), xhrShim, "utf8");
+    // Inject the shim before all other scripts so XHR is patched from the very start.
     patchedIndex = patchedIndex.replace(
-      /<script src="app\.bundle\.js/,
-      `<script src="vega-xhr-shim.js"></script>\n    <script src="app.bundle.js`
+      /(<script\b[\s\S]*?src="app\.bundle\.js)/,
+      `<script src="vega-xhr-shim.js"></script>\n    $1`
     );
+  }
+
+  // Inject locale data as a deferred (non-blocking) script just before app.bundle.js.
+  // The shim polls window.__VEGA_LOCALES__ so it handles the async availability correctly.
+  await writeFile(path.join(vegaWebDir, "vega-locales.js"), localesScript, "utf8");
+  const appBundleIdx = patchedIndex.indexOf('src="app.bundle.js');
+  if (appBundleIdx !== -1) {
+    const scriptTagStart = patchedIndex.lastIndexOf("<script", appBundleIdx);
+    if (scriptTagStart !== -1) {
+      patchedIndex =
+        patchedIndex.slice(0, scriptTagStart) +
+        `<script src="vega-locales.js" defer></script>\n    ` +
+        patchedIndex.slice(scriptTagStart);
+    }
   }
 
   await writeFile(indexPath, patchedIndex, "utf8");
