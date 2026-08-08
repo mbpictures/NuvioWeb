@@ -74,16 +74,46 @@ async function buildXhrShim() {
 
   const encoded = JSON.stringify(stringsXml);
 
-  // Logs appear in `vega device start-log-stream` under the app process (chromium console).
+  // Embed all locale strings.xml files so the XHR shim can serve them inline.
+  // The Vega WebView loads pages from file:// which Chromium treats as null-origin,
+  // so the real XHR can't load other file:// resources cross-origin.
+  const localeMap = {};
+  const resDirPath = path.join(vegaWebDir, "res");
+  try {
+    const { readdir } = await import("node:fs/promises");
+    const entries = await readdir(resDirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith("values-")) continue;
+      const locale = entry.name.slice("values-".length);
+      const xmlPath = path.join(resDirPath, entry.name, "strings.xml");
+      try {
+        localeMap[locale] = await readFile(xmlPath, "utf8");
+      } catch {
+        // no strings.xml for this locale dir
+      }
+    }
+  } catch {
+    // res/ directory not readable — locale switching won't work
+  }
+  const localeMapEncoded = JSON.stringify(localeMap);
+
   return `(function(){` +
     // --- strings.xml XHR shim ---
+    // C = base English strings.xml content (served for res/values/strings.xml)
+    // L = locale map keyed by locale code (served for res/values-{locale}/strings.xml)
     `var C=${encoded};` +
+    `var L=${localeMapEncoded};` +
     `var O=window.XMLHttpRequest;` +
-    `function V(){this._n=null;this._i=false;this.status=0;this.responseText="";this.onload=null;this.onerror=null;}` +
+    `function V(){this._n=null;this._i=null;this.status=0;this.responseText="";this.onload=null;this.onerror=null;}` +
     `V.prototype.open=function(m,u,a){` +
+      `var ic=null;` +
       `if(u==="res/values/strings.xml"||u==="dist/res/values/strings.xml"||(u&&u.endsWith("/res/values/strings.xml"))){` +
-        `this._i=true;` +
-      `}else{` +
+        `ic=C;` +
+      `}else if(typeof u==="string"){` +
+        `var lm=(new RegExp("values-([^/]+)/strings\\.xml$")).exec(u);` +
+        `if(lm&&L&&L[lm[1]])ic=L[lm[1]];` +
+      `}` +
+      `if(ic!==null){this._i=ic;}else{` +
         `this._n=new O();` +
         `this._n.open(m,u,a===undefined?true:a);` +
         `this._u=u;` +
@@ -91,7 +121,7 @@ async function buildXhrShim() {
     `};` +
     `V.prototype.send=function(d){` +
       `var s=this;` +
-      `if(s._i){s.status=0;s.responseText=C;setTimeout(function(){if(s.onload)s.onload.call(s);},0);}` +
+      `if(s._i!==null){s.status=0;s.responseText=s._i;setTimeout(function(){if(s.onload)s.onload.call(s);},0);}` +
       `else if(s._n){` +
         `var u=s._u||"?";` +
         `s._n.onload=function(){` +
