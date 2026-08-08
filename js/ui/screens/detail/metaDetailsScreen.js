@@ -1005,7 +1005,7 @@ function shouldUseDirectYoutubeEmbedOnTv() {
 
 function getYoutubeProxyBaseUrl() {
   const configured = String(YOUTUBE_PROXY_URL || "").trim();
-  if (Platform.isWebOS() || Platform.isTizen()) {
+  if (Platform.isWebOS() || Platform.isTizen() || Platform.isVega()) {
     // The local proxy is served from a file:// origin, which YouTube rejects
     // (embed error 153). Prefer a configured https-hosted proxy when available
     // so the embedding origin is valid; otherwise fall back to the local file.
