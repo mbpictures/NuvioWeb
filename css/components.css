@@ -11252,7 +11252,8 @@ html[data-card-depth="true"][data-card-depth-cast="true"] .movie-cast-card,
 html[data-card-depth="true"][data-card-depth-trailers="true"] .detail-trailer-card {
   box-shadow:
     inset 0 2px 0 rgba(255, 255, 255, var(--card-depth-edge, 0.28)),
-    inset 0 var(--card-depth-coverage-size, 12px) 28px rgba(255, 255, 255, var(--card-depth-sheen, 0.1));
+    inset 0 var(--card-depth-coverage-size, 12px) 28px
+      rgba(255, 255, 255, var(--card-depth-sheen, 0.1));
 }
 
 .home-classic-focus-gradient .home-screen-main {
@@ -11915,6 +11916,10 @@ html[data-card-depth="true"][data-card-depth-trailers="true"] .detail-trailer-ca
 
 .player-control-btn.focused .player-control-icon-mask {
   background-color: #000000;
+}
+
+.player-control-btn.is-primary.focused .player-control-icon:not(.player-control-icon-mask) {
+  filter: none;
 }
 
 .player-time-label {
