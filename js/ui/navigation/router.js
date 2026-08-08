@@ -51,8 +51,10 @@ const NON_BACKSTACK_ROUTES = new Set([
 ]);
 const WEBOS_RESUME_ROUTE_KEY = "webos_last_resume_route";
 const WEBOS_RESUME_ROUTE_TTL_MS = 20 * 60 * 1000;
+const TIZEN_ROUTE_RETURN_BACK_GUARD_MS = 700;
 const WEBOS_NON_RESTORABLE_ROUTES = new Set([
   ...NON_BACKSTACK_ROUTES,
+  "debugConsole",
   "player",
   "stream"
 ]);
@@ -62,10 +64,14 @@ export const Router = {
   currentParams: {},
   stack: [],
   historyInitialized: false,
+  webOsHomeBackGuardInitialized: false,
   popstateBound: false,
   suppressPopstateUntil: 0,
   skipConsumeNextPopstate: false,
   ignoreNextPopstate: false,
+  routeReturnBackGuardActive: false,
+  routeReturnBackGuardUntil: 0,
+  routeReturnBackGuardNavigationId: 0,
 
   routes: {
     home: HomeScreen,
@@ -155,18 +161,42 @@ export const Router = {
         }
         return;
       }
+      const state = event?.state || null;
+      if (this.consumeRouteReturnBackGuard()) {
+        // A physical Tizen Back can also move browser history after its key
+        // event has already completed an in-app route return. Keep that late
+        // popstate on the restored screen instead of letting Home consume it
+        // as a second Back and open the sidebar.
+        if (window?.history && typeof window.history.pushState === "function") {
+          window.history.pushState({ route: this.current, params: this.currentParams }, "");
+        }
+        return;
+      }
+      if (Platform.isTizen() && this.current === "home" && state?.route === "home") {
+        // A native history event can arrive after the timed route-return guard
+        // has expired. Home is already restored, so forwarding this redundant
+        // transition would make Home consume it as another Back and open the
+        // sidebar.
+        return;
+      }
       const shouldSkipConsume = Boolean(this.skipConsumeNextPopstate);
       this.skipConsumeNextPopstate = false;
-      const state = event?.state || null;
       const currentScreen = this.getCurrentScreen();
-      const shouldLetPlayerReturnToStream = this.current === "player"
-        && state?.route === "stream"
-        && !currentScreen?.hasBackDismissableOverlay?.();
-      const consumeResult = !shouldSkipConsume && !shouldLetPlayerReturnToStream
-        ? currentScreen?.consumeBackRequest?.()
-        : false;
+      const shouldLetPlayerReturnToStream =
+        this.current === "player" &&
+        state?.route === "stream" &&
+        currentScreen?.shouldReturnToStreamOnBack?.() !== false &&
+        !currentScreen?.hasBackDismissableOverlay?.();
+      const consumeResult =
+        !shouldSkipConsume && !shouldLetPlayerReturnToStream
+          ? currentScreen?.consumeBackRequest?.()
+          : false;
       if (consumeResult) {
-        if (consumeResult !== "history" && window?.history && typeof window.history.pushState === "function") {
+        if (
+          consumeResult !== "history" &&
+          window?.history &&
+          typeof window.history.pushState === "function"
+        ) {
           window.history.pushState({ route: this.current, params: this.currentParams }, "");
         }
         return;
@@ -206,6 +236,40 @@ export const Router = {
 
   ignoreSinglePopstate() {
     this.ignoreNextPopstate = true;
+  },
+
+  beginRouteReturnBackGuard(isBackNavigation = false) {
+    this.routeReturnBackGuardNavigationId += 1;
+    const navigationId = this.routeReturnBackGuardNavigationId;
+    const shouldGuard = Platform.isTizen() && Boolean(isBackNavigation);
+    this.routeReturnBackGuardActive = shouldGuard;
+    this.routeReturnBackGuardUntil = shouldGuard ? Number.POSITIVE_INFINITY : 0;
+    return navigationId;
+  },
+
+  completeRouteReturnBackGuard(navigationId) {
+    if (
+      navigationId !== this.routeReturnBackGuardNavigationId ||
+      !this.routeReturnBackGuardActive
+    ) {
+      return;
+    }
+    this.routeReturnBackGuardUntil = Date.now() + TIZEN_ROUTE_RETURN_BACK_GUARD_MS;
+  },
+
+  consumeRouteReturnBackGuard() {
+    if (
+      !this.routeReturnBackGuardActive ||
+      Date.now() >= Number(this.routeReturnBackGuardUntil || 0)
+    ) {
+      this.routeReturnBackGuardActive = false;
+      this.routeReturnBackGuardUntil = 0;
+      return false;
+    }
+    // Treat this as a short guard window, not a one-shot flag. Samsung can
+    // report one physical Back through more than one key/history event; all
+    // copies that reach the newly restored route must be consumed.
+    return true;
   },
 
   persistWebOsResumeRoute(routeName = this.current, params = this.currentParams) {
@@ -261,12 +325,20 @@ export const Router = {
     const skipStackPush = Boolean(options?.skipStackPush);
     const replaceHistory = Boolean(options?.replaceHistory);
     const targetParams = params || {};
+    const routeReturnBackGuardNavigationId = this.beginRouteReturnBackGuard(
+      options?.isBackNavigation
+    );
 
     const Screen = this.routes[routeName];
 
     if (!Screen) {
       console.error("Route not found:", routeName);
       return;
+    }
+
+    const bootGuard = globalThis.NuvioBootGuard;
+    if (bootGuard && typeof bootGuard.stage === "function") {
+      bootGuard.stage(`Opening ${routeName} screen`);
     }
 
     // Cleanup current
@@ -291,6 +363,7 @@ export const Router = {
     const navigationContext = this.resolveNavigationContext(routeName, this.currentParams, options);
 
     await Screen.mount(this.currentParams, navigationContext);
+    this.completeRouteReturnBackGuard(routeReturnBackGuardNavigationId);
     logRouterPerf("navigate", {
       ms: Number((routerPerfNow() - navigationStart).toFixed(2)),
       route: routeName,
@@ -306,6 +379,10 @@ export const Router = {
       return;
     }
 
+    if (bootGuard && typeof bootGuard.ready === "function") {
+      bootGuard.ready();
+    }
+
     if (window?.history && typeof window.history.pushState === "function") {
       const state = { route: this.current, params: this.currentParams };
       if (!this.historyInitialized) {
@@ -318,15 +395,47 @@ export const Router = {
           window.history.pushState(state, "");
         }
       }
+      // webOS handles the remote Back button through the History API by
+      // default. Keep one Home entry available so overlays can consume Back
+      // before the platform treats it as a request to exit the app.
+      if (
+        Platform.isWebOS() &&
+        (this.current === "home" || this.current === "profileSelection") &&
+        !this.webOsHomeBackGuardInitialized
+      ) {
+        window.history.pushState(state, "");
+        this.webOsHomeBackGuardInitialized = true;
+      }
     }
     this.persistWebOsResumeRoute(this.current, this.currentParams);
   },
 
+  async backFromPendingNavigation() {
+    // The current history entry still represents the caller until mount completes.
+    // Restore that entry in place so a fast Back neither skips it nor records a stale route.
+    const historyState = window?.history?.state || null;
+    const targetRoute = String(historyState?.route || "");
+
+    if (targetRoute && this.routes[targetRoute]) {
+      const previous = this.stack[this.stack.length - 1];
+      const previousRoute = typeof previous === "string" ? previous : previous?.route;
+      if (previousRoute === targetRoute) {
+        this.stack.pop();
+      }
+      await this.navigate(targetRoute, historyState.params || {}, {
+        fromHistory: true,
+        skipStackPush: true,
+        isBackNavigation: true
+      });
+      return;
+    }
+
+    await this.back({ skipConsume: true, skipHistory: true });
+  },
+
   async back(options = {}) {
     const currentScreen = this.getCurrentScreen();
-    const consumeResult = !options?.skipConsume
-      ? currentScreen?.consumeBackRequest?.()
-      : false;
+    const consumeResult = !options?.skipConsume ? currentScreen?.consumeBackRequest?.() : false;
     if (consumeResult) {
       if (consumeResult !== "history") {
         this.suppressNextPopstate();
@@ -339,7 +448,12 @@ export const Router = {
       return;
     }
 
-    if (window?.history && typeof window.history.back === "function" && this.historyInitialized) {
+    if (
+      !options?.skipHistory &&
+      window?.history &&
+      typeof window.history.back === "function" &&
+      this.historyInitialized
+    ) {
       if (options?.skipConsume) {
         this.skipConsumeNextPopstate = true;
       }

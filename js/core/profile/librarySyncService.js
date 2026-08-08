@@ -104,7 +104,8 @@ function extractAddonEntries(rows = []) {
         row?.alias ||
         row?.name ||
         null,
-      name: row?.name || null
+      name: row?.name || null,
+      enabled: row?.enabled !== false
     }))
     .filter((entry) => entry.url);
 }
@@ -123,6 +124,7 @@ function applyPulledAddons(rows = []) {
     }),
     { replace: true }
   );
+  addonRepository.setAddonEnabledStates(entries, { replace: true });
   return urls;
 }
 
@@ -229,6 +231,7 @@ export const LibrarySyncService = {
             p_addons: urls.map((url, index) => ({
               url,
               sort_order: index,
+              enabled: addonRepository.isAddonEnabled(url),
               ...(addonRepository.getAddonDisplayNameOverride(url)
                 ? { name: addonRepository.getAddonDisplayNameOverride(url) }
                 : {})
@@ -255,6 +258,7 @@ export const LibrarySyncService = {
             profile_id: profileId,
             url,
             sort_order: index,
+            enabled: addonRepository.isAddonEnabled(url),
             ...(name ? { name } : {})
           };
         });

@@ -3,6 +3,7 @@ import { savedLibraryRepository } from "../../data/repository/savedLibraryReposi
 import { libraryRepository, LibrarySourceMode } from "../../data/repository/libraryRepository.js";
 import { watchedItemsRepository } from "../../data/repository/watchedItemsRepository.js";
 import { watchProgressRepository } from "../../data/repository/watchProgressRepository.js";
+import { watchedSeriesReconciliationService } from "../../data/repository/watchedSeriesReconciliationService.js";
 import { NuvioDialog } from "./nuvioDialog.js";
 
 function t(key, params = {}, fallback = key) {
@@ -11,7 +12,11 @@ function t(key, params = {}, fallback = key) {
 
 function isSeriesType(type) {
   const normalized = String(type || "").toLowerCase();
-  return normalized === "series" || normalized === "tv";
+  return ["series", "tv", "anime"].includes(normalized);
+}
+
+function isMovieType(type) {
+  return String(type || "").toLowerCase() === "movie";
 }
 
 export function posterItemFromNode(node, fallbackType = "movie") {
@@ -26,7 +31,13 @@ export function posterItemFromNode(node, fallbackType = "movie") {
         node.dataset.itemTitle || node.dataset.title || node.dataset.itemId || "Untitled"
       ).trim() || "Untitled",
     poster: String(node.dataset.posterSrc || node.dataset.poster || "").trim(),
-    background: String(node.dataset.backdropSrc || node.dataset.background || "").trim()
+    background: String(node.dataset.backdropSrc || node.dataset.background || "").trim(),
+    addonBaseUrl: String(node.dataset.addonBaseUrl || "").trim(),
+    addonId: String(node.dataset.addonId || "").trim(),
+    addonName: String(node.dataset.addonName || "").trim(),
+    catalogType: String(
+      node.dataset.catalogType || node.dataset.itemType || fallbackType || "movie"
+    ).trim()
   };
 }
 
@@ -40,7 +51,8 @@ function toLibraryItem(item = {}) {
     description: item.description || "",
     releaseInfo: item.releaseInfo || "",
     imdbRating: item.imdbRating == null ? null : Number(item.imdbRating),
-    genres: Array.isArray(item.genres) ? item.genres : []
+    genres: Array.isArray(item.genres) ? item.genres : [],
+    addonBaseUrl: item.addonBaseUrl || null
   };
 }
 
@@ -87,7 +99,8 @@ export function getPosterOptions(state, options = {}) {
     return [];
   }
   const includeLibrary = options.includeLibrary !== false;
-  const includeWatched = options.includeWatched !== false && !isSeriesType(item.type);
+  const includeWatched =
+    options.includeWatched !== false && (isMovieType(item.type) || isSeriesType(item.type));
   const actions = [{ action: "details", label: t("cw_action_go_to_details", {}, "Go to details") }];
   if (includeLibrary) {
     actions.push({
@@ -95,6 +108,8 @@ export function getPosterOptions(state, options = {}) {
       label:
         state.sourceMode === LibrarySourceMode.TRAKT
           ? t("library_manage_lists", {}, "Manage Lists")
+          : state.sourceMode === LibrarySourceMode.SIMKL
+            ? "Manage Simkl Status"
           : state.isSaved
             ? t("detail.removeFromLibrary", {}, "Remove from Library")
             : t("detail.addToLibrary", {}, "Add to Library")
@@ -111,7 +126,7 @@ export function getPosterOptions(state, options = {}) {
   return actions;
 }
 
-export async function activatePosterOption(state, action, options = {}) {
+export async function activatePosterOption(state, action, _options = {}) {
   const item = state?.item || null;
   if (!item?.id || !action) {
     return { type: "noop" };
@@ -120,7 +135,7 @@ export async function activatePosterOption(state, action, options = {}) {
     return { type: "details", item };
   }
   if (action === "toggleLibrary") {
-    if (state.sourceMode === LibrarySourceMode.TRAKT) {
+    if (state.sourceMode !== LibrarySourceMode.LOCAL) {
       return { type: "listPicker", state: await createPosterListPickerState(state) };
     }
     const isSaved = await savedLibraryRepository.toggle({
@@ -133,6 +148,16 @@ export async function activatePosterOption(state, action, options = {}) {
     return { type: "updated", state: { ...state, isSaved: Boolean(isSaved) } };
   }
   if (action === "toggleWatched") {
+    if (isSeriesType(item.type)) {
+      if (state.isWatched) {
+        await watchedSeriesReconciliationService.unmarkSeriesWatched(item.id);
+      } else {
+        await watchedSeriesReconciliationService.markSeriesWatched(item.id, item.type || "series", {
+          title: item.title || item.name || item.id || "Untitled"
+        });
+      }
+      return { type: "updated", state: { ...state, isWatched: !state.isWatched } };
+    }
     if (state.isWatched) {
       await watchedItemsRepository.unmark(item.id);
       await watchProgressRepository.removeProgress(item.id);
@@ -165,7 +190,7 @@ export async function createPosterListPickerState(state) {
   const tabs = await libraryRepository.getListTabs().catch(() => []);
   const resolvedTabs =
     Array.isArray(tabs) && tabs.length
-      ? tabs
+      ? tabs.filter((tab) => tab.isMembershipDestination !== false)
       : [{ key: "local", title: t("detail.library", {}, "Library"), type: "local" }];
   const libraryItem = toLibraryItem(item);
   const snapshot = await libraryRepository
@@ -173,6 +198,7 @@ export async function createPosterListPickerState(state) {
     .catch(() => ({ listMembership: {} }));
   return {
     item: libraryItem,
+    sourceMode: state.sourceMode,
     tabs: resolvedTabs,
     membership: Object.fromEntries(
       resolvedTabs.map((tab) => [tab.key, Boolean(snapshot?.listMembership?.[tab.key])])
@@ -195,8 +221,12 @@ export function getPosterListPickerOptions(picker) {
       className: "poster-list-picker-list-button"
     })),
     {
-      action: "saveLibraryLists",
-      label: t("action_save", {}, "Save"),
+      action: picker.destructiveRemovalRequired
+        ? "confirmDestructiveSimklRemoval"
+        : "saveLibraryLists",
+      label: picker.destructiveRemovalRequired
+        ? "Remove status and clear Simkl history"
+        : t("action_save", {}, "Save"),
       className: "poster-list-picker-save-button"
     }
   ];
@@ -212,12 +242,16 @@ export class PosterOptionsDialogController {
     this.dialog = null;
   }
 
-  destroy({ restoreFocus = true } = {}) {
+  destroy({ restoreFocus = true, afterExit = null } = {}) {
     const dialog = this.dialog;
     this.dialog = null;
     this.state = null;
     this.listPicker = null;
-    dialog?.destroy?.();
+    if (dialog) {
+      dialog.destroy({ afterExit });
+    } else if (typeof afterExit === "function") {
+      afterExit();
+    }
     if (restoreFocus) this.onDismiss?.();
   }
 
@@ -263,8 +297,10 @@ export class PosterOptionsDialogController {
     const result = await activatePosterOption(this.state, action);
     if (result?.type === "details") {
       const item = result.item;
-      this.destroy({ restoreFocus: false });
-      this.onDetails?.(item);
+      this.destroy({
+        restoreFocus: false,
+        afterExit: () => this.onDetails?.(item)
+      });
       return true;
     }
     if (result?.type === "listPicker") {
@@ -320,23 +356,43 @@ export class PosterOptionsDialogController {
     const normalizedAction = String(action || "");
     if (normalizedAction.startsWith("toggleLibraryList:")) {
       const key = normalizedAction.slice("toggleLibraryList:".length);
-      this.listPicker.membership = {
-        ...(this.listPicker.membership || {}),
-        [key]: !this.listPicker.membership?.[key]
-      };
-      this.dialog?.setButtonSelected?.(normalizedAction, Boolean(this.listPicker.membership[key]));
+      const nextSelected = !this.listPicker.membership?.[key];
+      this.listPicker.membership =
+        this.listPicker.sourceMode === LibrarySourceMode.SIMKL
+          ? Object.fromEntries(
+              this.listPicker.tabs.map((tab) => [tab.key, nextSelected && tab.key === key])
+            )
+          : { ...(this.listPicker.membership || {}), [key]: nextSelected };
+      this.listPicker.destructiveRemovalRequired = false;
+      if (this.listPicker.sourceMode === LibrarySourceMode.SIMKL) {
+        this.mountListPickerDialog();
+      } else {
+        this.dialog?.setButtonSelected?.(
+          normalizedAction,
+          Boolean(this.listPicker.membership[key])
+        );
+      }
       return true;
     }
-    if (normalizedAction === "saveLibraryLists") {
+    if (
+      normalizedAction === "saveLibraryLists" ||
+      normalizedAction === "confirmDestructiveSimklRemoval"
+    ) {
       try {
         await libraryRepository.applyMembershipChanges(this.listPicker.item, {
           desiredMembership: this.listPicker.membership || {}
+        }, {
+          destructiveRemovalConfirmed: normalizedAction === "confirmDestructiveSimklRemoval"
         });
         this.onChanged?.(this.state);
         this.destroy();
       } catch (error) {
         console.warn("Failed to update library lists", error);
-        this.listPicker.error = t("detail_lists_save_failed", {}, "Could not save list changes.");
+        this.listPicker.destructiveRemovalRequired =
+          error?.code === "SIMKL_DESTRUCTIVE_REMOVAL_REQUIRED";
+        this.listPicker.error = this.listPicker.destructiveRemovalRequired
+          ? "Removing this status will also clear watched history or a rating on Simkl. Confirm only if that is intended."
+          : t("detail_lists_save_failed", {}, "Could not save list changes.");
         this.mountListPickerDialog();
       }
       return true;

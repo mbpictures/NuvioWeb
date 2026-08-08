@@ -10,16 +10,14 @@ import {
   PosterOptionsDialogController,
   posterItemFromNode
 } from "../../components/posterOptionsMenu.js";
-import {
-  isTitleItemWatched,
-  renderTitleWatchedBadge
-} from "../../components/watchedTitleBadge.js";
+import { isTitleItemWatched, renderTitleWatchedBadge } from "../../components/watchedTitleBadge.js";
 import {
   activateLegacySidebarAction,
   bindRootSidebarEvents,
   getRootSidebarNodes,
   getRootSidebarSelectedNode,
   getSidebarProfileState,
+  focusWithoutAutoScroll,
   isSelectedSidebarAction,
   isRootSidebarNode,
   renderRootSidebar,
@@ -27,6 +25,7 @@ import {
   setModernSidebarPillIconOnly,
   setLegacySidebarExpanded
 } from "../../components/sidebarNavigation.js";
+import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
 
 const POSTER_HOLD_DELAY_MS = 650;
 const PICKER_MENU_EXIT_MS = 160;
@@ -188,18 +187,29 @@ export const LibraryScreen = {
     });
   },
 
-  handleControllerChange(state = null) {
+  handleControllerChange(state = null, change = null) {
     const nextState = state || this.controller?.getState?.() || null;
-    const partialRefresh = this.partialContentRefresh;
-    if (
-      partialRefresh &&
+    const canRefreshLibraryContent =
       nextState &&
       !nextState.isLoading &&
       !nextState.isSyncing &&
       !nextState.showManageDialog &&
       !nextState.listEditorState &&
-      !nextState.showDeleteConfirm
-    ) {
+      !nextState.showDeleteConfirm;
+
+    if (change?.reason === "metadataHydration" && canRefreshLibraryContent) {
+      if (this.focusZone === "sidebar") {
+        this.pendingHydrationState = nextState;
+        return;
+      }
+      this.pendingHydrationState = null;
+      this.updateRenderedLibraryContent(nextState, { preservePickerRow: false });
+      return;
+    }
+
+    this.pendingHydrationState = null;
+    const partialRefresh = this.partialContentRefresh;
+    if (partialRefresh && canRefreshLibraryContent) {
       this.partialContentRefresh = null;
       this.updateRenderedLibraryContent(nextState, {
         preservePickerRow: partialRefresh.structureSignature === filterStructureSignature(nextState)
@@ -213,7 +223,10 @@ export const LibraryScreen = {
   async mount() {
     this.container = document.getElementById("library");
     ScreenUtils.show(this.container);
-    this.controller = new LibraryController((state) => this.handleControllerChange(state));
+    const controller = new LibraryController((state, change) =>
+      this.handleControllerChange(state, change)
+    );
+    this.controller = controller;
     this.libraryRouteEnterPending = true;
     this.sidebarProfile = await getSidebarProfileState();
     this.layoutPrefs = LayoutPreferences.get();
@@ -232,13 +245,18 @@ export const LibraryScreen = {
     this.pendingPosterOptionsFocusKey = "";
     this.pendingPosterHoldTarget = null;
     this.pendingPosterHoldTimer = null;
+    this.gridRows = [];
     this.lastPrivacyFocus = "private";
     this.partialContentRefresh = null;
+    this.pendingHydrationState = null;
 
     this.render();
     this.bindEvents();
-    await this.controller.init();
-    this.controller.closePicker();
+    await controller.init();
+    if (this.controller !== controller || Router.getCurrent() !== "library") {
+      return;
+    }
+    controller.closePicker();
   },
 
   bindEvents() {
@@ -287,7 +305,7 @@ export const LibraryScreen = {
       }
     });
     target.classList.add("focused");
-    target.focus();
+    focusWithoutAutoScroll(target);
     const sidebarFocused = this.isSidebarNode(target);
     this.focusZone = sidebarFocused ? "sidebar" : "content";
     if (!this.layoutPrefs?.modernSidebar) {
@@ -318,9 +336,7 @@ export const LibraryScreen = {
         ${this.renderSidebar()}
         <main class="home-main library-main">
           <section class="library-loading-state">
-            <svg class="library-loading-spinner" viewBox="0 0 96 96" aria-hidden="true" focusable="false">
-              <circle class="library-loading-spinner-track" cx="48" cy="48" r="40"></circle>
-            </svg>
+            ${renderLoadingIndicator({ className: "library-loading-spinner" })}
             <div class="library-loading-label">${escapeHtml(t("library_syncing_library", {}, "Loading library"))}</div>
           </section>
         </main>
@@ -524,6 +540,7 @@ export const LibraryScreen = {
       contentMount.outerHTML = this.renderLibraryContentArea(state);
     }
 
+    this.buildGridRows();
     ScreenUtils.indexFocusables(this.container);
     bindRootSidebarEvents(this.container, {
       currentRoute: "library",
@@ -565,6 +582,7 @@ export const LibraryScreen = {
                        data-item-title="${escapeHtml(item.name || item.id || "Untitled")}"
                        data-poster-src="${escapeHtml(item.poster || "")}"
                        data-backdrop-src="${escapeHtml(item.background || "")}"
+                       data-addon-base-url="${escapeHtml(item.addonBaseUrl || "")}"
                        data-focus-key="${escapeHtml(focusKey)}">
                 <div class="library-grid-poster${item.poster ? "" : " placeholder"}"${item.poster ? ` style="background-image:url('${escapeHtml(item.poster)}')"` : ""}>
                   ${isWatched ? renderTitleWatchedBadge({ className: "library-watched-badge", iconClassName: "library-watched-badge-svg" }) : ""}
@@ -806,6 +824,7 @@ export const LibraryScreen = {
     `;
     this.libraryRouteEnterPending = false;
 
+    this.buildGridRows();
     ScreenUtils.indexFocusables(this.container);
     bindRootSidebarEvents(this.container, {
       currentRoute: "library",
@@ -898,7 +917,13 @@ export const LibraryScreen = {
           Router.navigate("detail", {
             itemId: target.id,
             itemType: target.type || "movie",
-            fallbackTitle: target.title || "Untitled"
+            fallbackTitle: target.title || "Untitled",
+            fallbackPoster: target.poster || "",
+            fallbackBackground: target.background || "",
+            addonBaseUrl: target.addonBaseUrl || "",
+            addonId: target.addonId || "",
+            addonName: target.addonName || "",
+            catalogType: target.catalogType || target.type || "movie"
           });
         },
         onDismiss: () => {
@@ -967,6 +992,27 @@ export const LibraryScreen = {
       return;
     }
     const state = this.controller.getState();
+
+    // When the sidebar is the active focus zone, keep focus there across
+    // re-renders (e.g. a background library sync) instead of snapping back to
+    // the last content item, which visually collapses the open sidebar.
+    const sidebarActive =
+      this.focusZone === "sidebar" &&
+      !state.listEditorState &&
+      !state.showDeleteConfirm &&
+      !state.showManageDialog &&
+      !state.expandedPicker;
+    if (sidebarActive) {
+      const sidebarNode =
+        getRootSidebarSelectedNode(this.container, this.layoutPrefs) ||
+        getRootSidebarNodes(this.container, this.layoutPrefs)[0] ||
+        null;
+      if (sidebarNode) {
+        this.setFocusedNode(sidebarNode);
+        return;
+      }
+    }
+
     let selector = null;
 
     if (state.listEditorState) {
@@ -1122,17 +1168,18 @@ export const LibraryScreen = {
     return remembered || findNearestNodeByCenterX(referenceNode, cards) || cards[0] || null;
   },
 
+  buildGridRows() {
+    const cards = Array.from(
+      this.container?.querySelectorAll(".library-grid-card.focusable") || []
+    );
+    this.gridRows = cards.length ? groupNodesByRow(cards) : [];
+  },
+
   resolveRelativeGridNode(current, direction) {
     if (!current || !current.matches?.(".library-grid-card.focusable")) {
       return null;
     }
-    const cards = Array.from(
-      this.container?.querySelectorAll(".library-grid-card.focusable") || []
-    );
-    if (!cards.length) {
-      return null;
-    }
-    const rows = groupNodesByRow(cards);
+    const rows = this.gridRows || [];
     if (!rows.length) {
       return null;
     }
@@ -1180,14 +1227,7 @@ export const LibraryScreen = {
     if (!node?.matches?.(".library-grid-card.focusable")) {
       return false;
     }
-    const cards = Array.from(
-      this.container?.querySelectorAll(".library-grid-card.focusable") || []
-    );
-    if (!cards.length) {
-      return false;
-    }
-    const rows = groupNodesByRow(cards);
-    return Boolean(rows[0]?.nodes?.includes(node));
+    return Boolean(this.gridRows?.[0]?.nodes?.includes(node));
   },
 
   handleActionsRowNavigation(event, current) {
@@ -1233,8 +1273,8 @@ export const LibraryScreen = {
   },
 
   handleContentRowMemoryNavigation(event, current) {
-    const state = this.controller.getState();
-    if (state.sourceMode !== "trakt" || state.expandedPicker || !current) {
+    const state = this.controller.state;
+    if (state.sourceMode === "local" || state.expandedPicker || !current) {
       return false;
     }
     const code = Number(event?.keyCode || 0);
@@ -1539,6 +1579,13 @@ export const LibraryScreen = {
       this.sidebarExpanded = false;
       setModernSidebarExpanded(this.container, false);
     }
+    if (this.pendingHydrationState) {
+      const pendingHydrationState = this.pendingHydrationState;
+      this.pendingHydrationState = null;
+      this.updateRenderedLibraryContent(pendingHydrationState, {
+        preservePickerRow: false
+      });
+    }
     const target =
       preferredNode ||
       (preferEntryPoint ? this.resolveMainEntryFocus() : null) ||
@@ -1753,7 +1800,7 @@ export const LibraryScreen = {
       return;
     }
 
-    const state = this.controller.getState();
+    const state = this.controller.state;
     const code = Number(event?.keyCode || 0);
     if (this.suppressHoldMenuEnterUntilKeyUp && code === 13) {
       event?.preventDefault?.();
@@ -1884,6 +1931,8 @@ export const LibraryScreen = {
     this.posterOptionsController = null;
     this.pendingPosterOptionsFocusKey = "";
     this.suppressHoldMenuEnterUntilKeyUp = false;
+    this.gridRows = [];
+    this.pendingHydrationState = null;
     this.controller?.dispose?.();
     this.controller = null;
     ScreenUtils.hide(this.container);

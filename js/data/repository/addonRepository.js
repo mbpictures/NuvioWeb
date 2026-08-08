@@ -5,6 +5,7 @@ import { AddonApi } from "../remote/api/addonApi.js";
 
 const ADDON_URLS_KEY = "installedAddonUrls";
 const ADDON_DISPLAY_NAMES_KEY = "installedAddonDisplayNames";
+const ADDON_ENABLED_STATES_KEY = "installedAddonEnabledStates";
 const PROFILES_KEY = "profiles";
 const PROFILE_SCOPED_VERSION = 1;
 const MANIFEST_SUFFIX = "/manifest.json";
@@ -188,12 +189,62 @@ class AddonRepository {
     }, {});
   }
 
+  normalizeAddonEnabledStates(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+    return Object.entries(value).reduce((accumulator, [url, enabled]) => {
+      const cleanUrl = this.normalizeCinemetaUrl(this.canonicalizeUrl(url));
+      if (cleanUrl) {
+        accumulator[cleanUrl] = enabled !== false;
+      }
+      return accumulator;
+    }, {});
+  }
+
   getInstalledAddonUrls() {
     return this.readProfileScopedValue(
       ADDON_URLS_KEY,
       (value) => this.normalizeAddonUrlList(value),
       DEFAULT_ADDON_URLS
     );
+  }
+
+  getAddonEnabledStates() {
+    return this.readProfileScopedValue(
+      ADDON_ENABLED_STATES_KEY,
+      (value) => this.normalizeAddonEnabledStates(value),
+      {}
+    );
+  }
+
+  isAddonEnabled(url) {
+    const cleanUrl = this.normalizeCinemetaUrl(this.canonicalizeUrl(url));
+    return cleanUrl ? this.getAddonEnabledStates()[cleanUrl] !== false : false;
+  }
+
+  setAddonEnabledStates(entries = [], options = {}) {
+    const replace = options?.replace !== false;
+    const current = replace ? {} : this.getAddonEnabledStates();
+    const next = { ...current };
+    (entries || []).forEach((entry) => {
+      const cleanUrl = this.normalizeCinemetaUrl(
+        this.canonicalizeUrl(entry?.url || entry?.baseUrl || entry?.base_url || "")
+      );
+      if (cleanUrl) {
+        next[cleanUrl] = entry?.enabled !== false;
+      }
+    });
+    const changed = JSON.stringify(this.getAddonEnabledStates()) !== JSON.stringify(next);
+    if (changed) {
+      this.writeProfileScopedValue(
+        ADDON_ENABLED_STATES_KEY,
+        (value) => this.normalizeAddonEnabledStates(value),
+        next
+      );
+      this.invalidateInstalledAddonsCache();
+    }
+    return changed;
   }
 
   getAddonDisplayNameOverrides() {
@@ -305,20 +356,33 @@ class AddonRepository {
     this.installedAddonsPromiseKey = "";
   }
 
-  getCachedInstalledAddons(urls = this.getInstalledAddonUrls()) {
-    const normalizedUrls = Array.isArray(urls) ? urls : [];
-    const addons = normalizedUrls
+  getCachedInstalledAddons(urls = null, options = {}) {
+    const includeDisabled = Boolean(options?.includeDisabled);
+    const normalizedUrls = Array.isArray(urls) ? urls : this.getInstalledAddonUrls();
+    const selectedUrls = includeDisabled
+      ? normalizedUrls
+      : normalizedUrls.filter((url) => this.isAddonEnabled(url));
+    const addons = selectedUrls
       .map((url) => this.manifestCache.get(this.canonicalizeUrl(url)))
       .filter(Boolean);
     return this.applyDisplayNames(addons);
   }
 
   async getInstalledAddons(options = {}) {
-    const urls = this.getInstalledAddonUrls();
+    const includeDisabled = Boolean(options?.includeDisabled);
+    const allUrls = this.getInstalledAddonUrls();
+    const enabledStates = this.getAddonEnabledStates();
+    const urls = includeDisabled
+      ? allUrls
+      : allUrls.filter(
+          (url) => enabledStates[this.normalizeCinemetaUrl(this.canonicalizeUrl(url))] !== false
+        );
     const cacheKey = JSON.stringify({
       profileId: this.getActiveStorageProfileId(),
       urls,
-      displayNames: this.getAddonDisplayNameOverrides()
+      displayNames: this.getAddonDisplayNameOverrides(),
+      enabledStates,
+      includeDisabled
     });
     const force = Boolean(options?.force);
     const cacheOnly = Boolean(options?.cacheOnly);
@@ -327,7 +391,7 @@ class AddonRepository {
     }
 
     if (cacheOnly) {
-      return this.getCachedInstalledAddons(urls);
+      return this.getCachedInstalledAddons(urls, { includeDisabled });
     }
 
     if (!force && this.installedAddonsPromise && this.installedAddonsPromiseKey === cacheKey) {
@@ -352,8 +416,12 @@ class AddonRepository {
       if (
         JSON.stringify({
           profileId: this.getActiveStorageProfileId(),
-          urls: this.getInstalledAddonUrls(),
-          displayNames: this.getAddonDisplayNameOverrides()
+          urls: includeDisabled
+            ? this.getInstalledAddonUrls()
+            : this.getInstalledAddonUrls().filter((url) => this.isAddonEnabled(url)),
+          displayNames: this.getAddonDisplayNameOverrides(),
+          enabledStates: this.getAddonEnabledStates(),
+          includeDisabled
         }) === cacheKey
       ) {
         this.installedAddonsCache = displayAddons;
@@ -389,6 +457,7 @@ class AddonRepository {
       ...current,
       clean
     ]);
+    this.setAddonEnabledStates([{ url: clean, enabled: true }], { replace: false });
     this.manifestErrorCache.delete(clean);
     this.invalidateInstalledAddonsCache();
     this.notifyAddonsChanged("add");
@@ -406,6 +475,13 @@ class AddonRepository {
       ADDON_URLS_KEY,
       (value) => this.normalizeAddonUrlList(value),
       next
+    );
+    const nextEnabledStates = this.getAddonEnabledStates();
+    delete nextEnabledStates[clean];
+    this.writeProfileScopedValue(
+      ADDON_ENABLED_STATES_KEY,
+      (value) => this.normalizeAddonEnabledStates(value),
+      nextEnabledStates
     );
     this.manifestCache.delete(clean);
     this.manifestErrorCache.delete(clean);
@@ -436,13 +512,27 @@ class AddonRepository {
       .map((url) => this.normalizeCinemetaUrl(this.canonicalizeUrl(url)))
       .filter(Boolean);
     const current = this.getInstalledAddonUrls();
+    const currentEnabledStates = this.getAddonEnabledStates();
+    const nextEnabledStates = normalized.reduce((states, url) => {
+      states[url] = currentEnabledStates[url] !== false;
+      return states;
+    }, {});
     const changed = JSON.stringify(current) !== JSON.stringify(normalized);
+    const enabledStatesChanged =
+      JSON.stringify(currentEnabledStates) !== JSON.stringify(nextEnabledStates);
     this.writeProfileScopedValue(
       ADDON_URLS_KEY,
       (value) => this.normalizeAddonUrlList(value),
       normalized
     );
-    if (changed) {
+    if (enabledStatesChanged) {
+      this.writeProfileScopedValue(
+        ADDON_ENABLED_STATES_KEY,
+        (value) => this.normalizeAddonEnabledStates(value),
+        nextEnabledStates
+      );
+    }
+    if (changed || enabledStatesChanged) {
       const normalizedSet = new Set(normalized);
       current
         .filter((url) => !normalizedSet.has(url))
@@ -452,10 +542,10 @@ class AddonRepository {
         });
       this.invalidateInstalledAddonsCache();
     }
-    if (changed && !silent) {
+    if ((changed || enabledStatesChanged) && !silent) {
       this.notifyAddonsChanged("reorder");
     }
-    return changed;
+    return changed || enabledStatesChanged;
   }
 
   onInstalledAddonsChanged(listener) {
@@ -524,6 +614,7 @@ class AddonRepository {
       baseUrl,
       types,
       rawTypes: types,
+      idPrefixes: Array.isArray(manifest.idPrefixes) ? manifest.idPrefixes : [],
       catalogs,
       resources: this.parseResources(manifest.resources || [], types)
     };
@@ -570,6 +661,102 @@ class AddonRepository {
         return null;
       })
       .filter(Boolean);
+  }
+
+  getResourceTypes(resource = {}) {
+    return (Array.isArray(resource?.types) ? resource.types : [])
+      .map((type) => String(type || "").trim())
+      .filter(Boolean);
+  }
+
+  getResourceIdPrefixes(addon = {}, resource = {}) {
+    const prefixes =
+      Array.isArray(resource?.idPrefixes) && resource.idPrefixes.length
+        ? resource.idPrefixes
+        : Array.isArray(addon?.idPrefixes)
+          ? addon.idPrefixes
+          : [];
+    return prefixes.map((prefix) => String(prefix || "").trim()).filter(Boolean);
+  }
+
+  resourceSupportsType(resource = {}, type = "") {
+    const targetType = String(type || "")
+      .trim()
+      .toLowerCase();
+    if (!targetType) {
+      return false;
+    }
+    const types = this.getResourceTypes(resource).map((resourceType) => resourceType.toLowerCase());
+    return !types.length || types.includes(targetType);
+  }
+
+  resourceSupportsId(addon = {}, resource = {}, id = "", options = {}) {
+    const prefixes = this.getResourceIdPrefixes(addon, resource);
+    if (!prefixes.length) {
+      return true;
+    }
+    const rawId = String(id || "");
+    if (options?.caseInsensitive) {
+      const normalizedId = rawId.toLowerCase();
+      return prefixes.some((prefix) => normalizedId.startsWith(prefix.toLowerCase()));
+    }
+    return prefixes.some((prefix) => rawId.startsWith(prefix));
+  }
+
+  resolveResourceRequestType(
+    addon = {},
+    resourceName = "",
+    requestedType = "",
+    id = "",
+    options = {}
+  ) {
+    const targetResource = String(resourceName || "")
+      .trim()
+      .toLowerCase();
+    const cleanRequestedType = String(requestedType || "").trim();
+    const resources = (addon?.resources || []).filter(
+      (resource) =>
+        String(resource?.name || "")
+          .trim()
+          .toLowerCase() === targetResource && this.resourceSupportsId(addon, resource, id, options)
+    );
+    if (!resources.length) {
+      return "";
+    }
+    if (
+      cleanRequestedType &&
+      resources.some((resource) => this.resourceSupportsType(resource, cleanRequestedType))
+    ) {
+      return cleanRequestedType;
+    }
+    if (!options?.allowIdTypeFallback) {
+      return "";
+    }
+
+    // A matching ID prefix is strong ownership evidence. Recover a mismatched
+    // catalog type only when the owning resource declares one unambiguous type.
+    const recoveredTypes = [];
+    resources.forEach((resource) => {
+      if (!this.getResourceIdPrefixes(addon, resource).length) {
+        return;
+      }
+      const resourceTypes = this.getResourceTypes(resource);
+      const candidateTypes = resourceTypes.length
+        ? resourceTypes
+        : Array.isArray(addon?.rawTypes)
+          ? addon.rawTypes
+          : addon?.types || [];
+      candidateTypes.forEach((type) => {
+        const cleanType = String(type || "").trim();
+        if (
+          cleanType &&
+          !recoveredTypes.some((existing) => existing.toLowerCase() === cleanType.toLowerCase())
+        ) {
+          recoveredTypes.push(cleanType);
+        }
+      });
+    });
+    return recoveredTypes.length === 1 ? recoveredTypes[0] : "";
   }
 
   normalizeCinemetaUrl(url) {

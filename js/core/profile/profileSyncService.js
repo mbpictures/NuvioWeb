@@ -26,6 +26,20 @@ function shouldTryLegacyTable(error) {
   return message.includes("PGRST205") || message.includes("Could not find the table");
 }
 
+export function shouldTryProfileTableFallback(error) {
+  if (!error) {
+    return false;
+  }
+  if (error.status === 404) {
+    return true;
+  }
+  if (typeof error.code === "string" && error.code === "PGRST202") {
+    return true;
+  }
+  const message = `${String(error.message || "")} ${String(error.detail || "")}`;
+  return message.includes("PGRST202") || message.includes("Could not find the function");
+}
+
 function mapProfileRow(row = {}) {
   const profileIndex = Number(row.profile_index || row.profileIndex || row.id || 1);
   const normalizedIndex =
@@ -59,6 +73,12 @@ export const ProfileSyncService = {
       try {
         rows = await SupabaseApi.rpc(PULL_RPC, {}, true);
       } catch (rpcError) {
+        // A table fallback is useful only for deployments that do not expose
+        // the profiles RPC. Retrying network, auth, or server failures through
+        // another webOS proxy request can otherwise hold boot past its watchdog.
+        if (!shouldTryProfileTableFallback(rpcError)) {
+          throw rpcError;
+        }
         const ownerId = await AuthManager.getEffectiveUserId();
         try {
           rows = await SupabaseApi.select(

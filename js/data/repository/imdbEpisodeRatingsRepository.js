@@ -1,8 +1,9 @@
-import { IMDB_RATINGS_API_BASE_URL } from "../../config.js";
+import { IMDB_RATINGS_API_BASE_URL, IMDB_TAPFRAME_API_BASE_URL } from "../../config.js";
 import { fetchViaVegaHost } from "../../platform/vega/vegaHostFetch.js";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const CACHE = new Map();
+const IN_FLIGHT = new Map();
 
 function normalizeBaseUrl(value = "") {
   const normalized = String(value || "").trim();
@@ -40,7 +41,7 @@ async function fetchJson(url, timeoutMs = 4500) {
   }
 }
 
-function mapRatingsPayload(payload = []) {
+export function mapRatingsPayload(payload = []) {
   const seasons = {};
   (Array.isArray(payload) ? payload : []).forEach((seasonEntry) => {
     const episodes = Array.isArray(seasonEntry?.episodes) ? seasonEntry.episodes : [];
@@ -48,7 +49,7 @@ function mapRatingsPayload(payload = []) {
       const seasonNumber = Number(episodeEntry?.season_number || 0);
       const episodeNumber = Number(episodeEntry?.episode_number || 0);
       const ratingValue = Number(episodeEntry?.vote_average);
-      if (seasonNumber <= 0 || episodeNumber <= 0 || !Number.isFinite(ratingValue)) {
+      if (seasonNumber < 0 || episodeNumber <= 0 || !Number.isFinite(ratingValue)) {
         return;
       }
       if (!Array.isArray(seasons[seasonNumber])) {
@@ -69,28 +70,82 @@ function mapRatingsPayload(payload = []) {
   return seasons;
 }
 
-export const imdbEpisodeRatingsRepository = {
-  async getSeasonRatingsByTmdbId(tmdbId) {
-    const normalizedBaseUrl = normalizeBaseUrl(IMDB_RATINGS_API_BASE_URL);
-    const normalizedTmdbId = Number(tmdbId || 0);
-    if (!normalizedBaseUrl || normalizedTmdbId <= 0) {
-      return {};
-    }
+function normalizeImdbId(value) {
+  const normalized = String(value || "")
+    .trim()
+    .split(":")[0];
+  return /^tt\d+$/i.test(normalized) ? normalized : "";
+}
 
-    const cacheKey = String(normalizedTmdbId);
-    const now = Date.now();
-    const cached = CACHE.get(cacheKey);
-    if (cached && cached.expiresAt > now) {
-      return cached.value;
-    }
+function normalizeTmdbId(value) {
+  const normalized = Number(value || 0);
+  return Number.isInteger(normalized) && normalized > 0 ? normalized : 0;
+}
 
-    const url = `${normalizedBaseUrl}api/shows/${encodeURIComponent(String(normalizedTmdbId))}/season-ratings`;
+async function getSeasonRatingsById({ baseUrl, id, cacheKey }) {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  if (!normalizedBaseUrl || !id) {
+    return {};
+  }
+
+  const now = Date.now();
+  const cached = CACHE.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  if (IN_FLIGHT.has(cacheKey)) {
+    return IN_FLIGHT.get(cacheKey);
+  }
+
+  const request = (async () => {
+    const url = `${normalizedBaseUrl}api/shows/${encodeURIComponent(String(id))}/season-ratings`;
     const payload = await fetchJson(url);
     const mapped = payload ? mapRatingsPayload(payload) : {};
     CACHE.set(cacheKey, {
       value: mapped,
-      expiresAt: now + CACHE_TTL_MS
+      expiresAt: Date.now() + CACHE_TTL_MS
     });
     return mapped;
+  })().finally(() => {
+    IN_FLIGHT.delete(cacheKey);
+  });
+
+  IN_FLIGHT.set(cacheKey, request);
+  return request;
+}
+
+export const imdbEpisodeRatingsRepository = {
+  async getEpisodeRatings({ imdbId, tmdbId } = {}) {
+    const normalizedImdbId = normalizeImdbId(imdbId);
+    const normalizedTmdbId = normalizeTmdbId(tmdbId);
+    if (!normalizedImdbId && !normalizedTmdbId) {
+      return {};
+    }
+
+    if (normalizedImdbId) {
+      const primary = await getSeasonRatingsById({
+        baseUrl: IMDB_TAPFRAME_API_BASE_URL,
+        id: normalizedImdbId,
+        cacheKey: `imdb:${normalizedImdbId}`
+      });
+      if (Object.keys(primary).length) {
+        return primary;
+      }
+    }
+
+    if (normalizedTmdbId) {
+      return getSeasonRatingsById({
+        baseUrl: IMDB_RATINGS_API_BASE_URL,
+        id: normalizedTmdbId,
+        cacheKey: `tmdb:${normalizedTmdbId}`
+      });
+    }
+
+    return {};
+  },
+
+  async getSeasonRatingsByTmdbId(tmdbId) {
+    return this.getEpisodeRatings({ tmdbId });
   }
 };

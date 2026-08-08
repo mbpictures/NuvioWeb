@@ -15,6 +15,7 @@ import {
   isTitleItemWatched,
   renderTitleWatchedBadge
 } from "../../components/watchedTitleBadge.js";
+import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
 
 const POSTER_HOLD_DELAY_MS = 650;
 
@@ -526,7 +527,13 @@ export const CatalogSeeAllScreen = {
           Router.navigate("detail", {
             itemId: target.id,
             itemType: target.type || "movie",
-            fallbackTitle: target.title || "Untitled"
+            fallbackTitle: target.title || "Untitled",
+            fallbackPoster: target.poster || "",
+            fallbackBackground: target.background || "",
+            addonBaseUrl: target.addonBaseUrl || "",
+            addonId: target.addonId || "",
+            addonName: target.addonName || "",
+            catalogType: target.catalogType || target.type || "movie"
           });
         },
         onDismiss: () => {
@@ -536,8 +543,18 @@ export const CatalogSeeAllScreen = {
           this.preserveViewportOnNextRender = true;
           this.render();
         },
-        onChanged: () => {
-          void this.refreshWatchedTitleIds().then(() => this.render());
+        onChanged: (state) => {
+          const itemId = String(state?.item?.id || "").trim();
+          if (!itemId) {
+            return;
+          }
+          const watchedTitleIds = new Set(this.watchedTitleIds || []);
+          if (state.isWatched) {
+            watchedTitleIds.add(itemId);
+          } else {
+            watchedTitleIds.delete(itemId);
+          }
+          this.watchedTitleIds = watchedTitleIds;
         }
       });
     }
@@ -563,7 +580,13 @@ export const CatalogSeeAllScreen = {
     Router.navigate("detail", {
       itemId: node.dataset.itemId,
       itemType: node.dataset.itemType || "movie",
-      fallbackTitle: node.dataset.itemTitle || "Untitled"
+      fallbackTitle: node.dataset.itemTitle || "Untitled",
+      fallbackPoster: node.dataset.posterSrc || "",
+      fallbackBackground: node.dataset.backdropSrc || "",
+      addonBaseUrl: node.dataset.addonBaseUrl || "",
+      addonId: node.dataset.addonId || "",
+      addonName: node.dataset.addonName || "",
+      catalogType: node.dataset.catalogType || node.dataset.itemType || "movie"
     });
     return true;
   },
@@ -578,10 +601,14 @@ export const CatalogSeeAllScreen = {
           <article class="seeall-card focusable"
                    data-action="openDetail"
                    data-item-id="${item.id || ""}"
-                    data-item-type="${item.type || descriptor.type || "movie"}"
+                    data-item-type="${item.type || item.catalogType || descriptor.type || "movie"}"
                    data-item-title="${escapeHtml(item.name || "Untitled")}"
                     data-poster-src="${escapeHtml(item.poster || "")}"
                     data-backdrop-src="${escapeHtml(item.background || item.backdrop || "")}"
+                    data-addon-base-url="${escapeHtml(descriptor.addonBaseUrl || item.addonBaseUrl || "")}"
+                    data-addon-id="${escapeHtml(descriptor.addonId || item.addonId || "")}"
+                    data-addon-name="${escapeHtml(descriptor.addonName || item.addonName || "")}"
+                    data-catalog-type="${escapeHtml(descriptor.type || item.catalogType || "")}"
                     data-focus-key="item:${item.id || index}"
                     data-item-index="${index}">
             <div class="seeall-card-poster-wrap">
@@ -619,7 +646,16 @@ export const CatalogSeeAllScreen = {
         <section class="seeall-grid">
           ${cards}
         </section>
-        ${this.loading ? `<div class="seeall-loading">${escapeHtml(t("discover_loading", {}, "Loading..."))}</div>` : ""}
+        ${
+          this.loading
+            ? `
+          <div class="seeall-loading">
+            ${renderLoadingIndicator()}
+            <span>${escapeHtml(t("discover_loading", {}, "Loading..."))}</span>
+          </div>
+        `
+            : ""
+        }
       </div>
     `;
 

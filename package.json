@@ -2,9 +2,11 @@
   "name": "nuvio-tv-web",
   "private": true,
   "type": "module",
-  "version": "0.3.8",
+  "version": "0.3.31",
   "scripts": {
     "build": "node ./scripts/build.mjs",
+    "prepare": "husky || true",
+    "test": "node --test \"**/*.test.mjs\"",
     "build:on-release": "node ./scripts/release-build-poller.mjs",
     "install:webos": "node ./scripts/ares-install-webos.mjs",
     "inspect:webos": "node ./scripts/ares-inspect-webos.mjs",
@@ -16,10 +18,8 @@
     "package:webos": "npm run build && node ./scripts/package-webos.mjs",
     "package:vega": "npm run build && node ./scripts/package-vega.mjs",
     "package:vega:release": "npm run build && node ./scripts/package-vega.mjs --release",
-    "format": "npm run format:incremental",
-    "format:incremental": "prettier --write \"js/ui/screens/home/**/*.js\" \"eslint.config.mjs\" \"package.json\" \".prettierrc.json\"",
-    "format:check": "npm run format:check:incremental",
-    "format:check:incremental": "prettier --check \"js/ui/screens/home/**/*.js\" \"eslint.config.mjs\" \"package.json\" \".prettierrc.json\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "serve": "node ./scripts/serve.mjs",
     "sync": "node ./scripts/sync-wrapper.mjs",
     "sync:tizen": "node ./scripts/sync-wrapper.mjs --tizen",
@@ -27,30 +27,28 @@
     "sync:tizenbrew": "node ./scripts/sync-tizenbrew.mjs"
   },
   "devDependencies": {
-    "@babel/core": "^7.29.0",
-    "@babel/plugin-transform-nullish-coalescing-operator": "^7.28.6",
-    "@babel/plugin-transform-optional-chaining": "^7.28.6",
-    "@babel/plugin-transform-regenerator": "^7.29.0",
-    "@babel/plugin-transform-runtime": "^7.29.0",
-    "@babel/preset-env": "^7.29.2",
-    "@babel/runtime": "^7.29.2",
     "@csstools/postcss-global-data": "^4.0.0",
     "@eslint/js": "^9.39.4",
     "@webos-tools/cli": "^3.2.4",
     "autoprefixer": "^10.4.27",
-    "core-js": "^3.49.0",
+    "core-js": "3.49.0",
+    "core-js-compat": "3.49.0",
     "cssnano": "^7.1.4",
     "esbuild": "^0.27.3",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^16.5.0",
+    "husky": "^9.1.7",
     "postcss": "^8.5.9",
-    "postcss-custom-properties": "^15.0.1",
     "prettier": "^3.8.4"
   },
+  "overrides": {
+    "flatted": "3.4.2"
+  },
   "dependencies": {
-    "intersection-observer": "^0.12.2",
+    "dashjs": "4.7.4",
+    "hls.js": "1.5.20",
     "jszip": "^3.10.1",
-    "whatwg-fetch": "^3.6.20"
+    "libbitsub": "^1.10.1"
   }
 }

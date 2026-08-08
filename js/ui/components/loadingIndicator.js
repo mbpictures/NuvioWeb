@@ -1,4 +1,5 @@
 const APP_LOADING_LOGO_SRC = "assets/brand/app_logo_wordmark.png";
+const LOADING_INDICATOR_SPOKE_COUNT = 12;
 
 function escapeAttribute(value = "") {
   return String(value || "")
@@ -18,9 +19,30 @@ export function renderLogoLoadingMarkup(options = {}) {
   `;
 }
 
+export function renderLoadingIndicator(options = {}) {
+  const className = String(options?.className || "").trim();
+  const label = String(options?.label || "").trim();
+  const spokes = Array.from(
+    { length: LOADING_INDICATOR_SPOKE_COUNT },
+    () => '<span class="nuvio-loading-indicator-spoke"></span>'
+  ).join("");
+  const accessibilityAttribute = label
+    ? `role="status" aria-label="${escapeAttribute(label)}"`
+    : 'aria-hidden="true"';
+
+  return `
+    <span class="nuvio-loading-indicator${className ? ` ${escapeAttribute(className)}` : ""}" ${accessibilityAttribute}>
+      ${spokes}
+    </span>
+  `;
+}
+
 export function createLoadingIndicator(text = "Loading...") {
   const node = document.createElement("div");
   node.className = "card";
-  node.innerHTML = `<p>${text}</p>`;
+  node.innerHTML = `
+    ${renderLoadingIndicator({ label: text })}
+    <p>${text}</p>
+  `;
   return node;
 }

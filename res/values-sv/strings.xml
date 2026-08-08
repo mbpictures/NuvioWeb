@@ -49,6 +49,7 @@
     <string name="cw_airs_date">Sänds %1$s</string>
     <string name="cw_airs_today">Sänds idag</string>
     <string name="cw_airs_tomorrow">Sänds imorgon</string>
+    <string name="cw_airs_in_days">Sänds om %1$d dagar</string>
     <string name="cw_action_go_to_details">Gå till detaljer</string>
     <string name="cw_action_start_from_beginning">Börja om från början</string>
     <string name="cw_action_remove">Ta bort</string>
@@ -547,6 +548,7 @@
     <string name="trakt_hide_unaired">Dölj osända avsnitt</string>
     <string name="trakt_all_history">All historik</string>
     <string name="trakt_days_format">%1$d dagar</string>
+    <string name="trakt_status_cw_window_updated">Fortsätt titta-fönstret har uppdaterats</string>
     <string name="debug_title">Debug</string>
     <string name="debug_subtitle">Utvecklarverktyg och funktionsflaggor (endast debug-byggen)</string>
     <string name="debug_section_popup">Popup / dialogtestning</string>
@@ -655,6 +657,7 @@
     <string name="player_via">via %1$s</string>
     <string name="player_subtitle_delay">Undertextfördröjning</string>
     <string name="player_error_title">Uppspelningsfel</string>
+    <string name="player_error_details">Information om uppspelningsfelet</string>
     <string name="player_go_back">Gå tillbaka</string>
     <string name="player_speed_title">Uppspelningshastighet</string>
     <string name="player_more_actions_title">Fler åtgärder</string>
@@ -900,6 +903,9 @@
     <string name="layout_selection_subtitle">Välj din hemskärmslayout</string>
     <string name="layout_selection_continue">Fortsätt</string>
     <string name="update_title">Appuppdatering</string>
+    <string name="update_installer_required">Använd Nuvio WebTV Installer för att uppdatera appen på TV:n.</string>
+    <string name="update_release_notes">Nyheter</string>
+    <string name="update_release_notes_unavailable">Ingen versionsbeskrivning är tillgänglig.</string>
     <string name="update_downloading">Laddar ner uppdatering</string>
     <string name="update_download">Ladda ner</string>
     <string name="update_downloading_ellipsis">Laddar ner…</string>
@@ -1409,6 +1415,7 @@
     <string name="collections_card_subtitle">Gruppera kataloger i mappar på din hemskärm</string>
     <string name="collections_tab_all">Alla</string>
     <string name="collections_tab_combined">Kombinerat</string>
+    <string name="common_all">Alla</string>
     <string name="detail.resume">Fortsätt</string>
     <string name="detail.resumeEpisodeShort">Fortsätt S{{season}}E{{episode}}</string>
     <string name="detail.playFromBeginning">Spela från början</string>
@@ -1418,4 +1425,31 @@
     <string name="player.audio.unsupported">Stöds inte</string>
     <string name="player.audio.unsupportedCodec">Kodeken stöds inte av den här enheten</string>
     <string name="player.audio.noSupportedTracks">Inga ljudspår som stöds är tillgängliga</string>
+    <string name="settings_stream_addon_logo_title">Tilläggslogotyp</string>
+    <string name="settings_stream_addon_logo_description">Visa tilläggets logotyp och namn bredvid strömkällor.</string>
+    <string name="autoplay_reuse_binge_group">Återanvänd binge-grupp</string>
+    <string name="autoplay_reuse_binge_group_sub">Kom ihåg och återanvänd den senaste binge-gruppen mellan sessioner (Fortsätt titta, Detaljer osv.).</string>
+    <string name="unsupported_device_title">TV:n stöds inte</string>
+    <string name="unsupported_device_message">Den här TV:n uppfyller inte minimikraven för den här versionen av Nuvio TV.</string>
+    <string name="unsupported_device_current_platform">Nuvarande plattform</string>
+    <string name="unsupported_device_current_firmware">Nuvarande firmware</string>
+    <string name="unsupported_device_required_platform">Plattform som krävs</string>
+    <string name="unsupported_device_close">Stäng</string>
+    <string name="unsupported_device_unavailable">Inte tillgänglig</string>
+    <string name="still_watching_title">Tittar du fortfarande?</string>
+    <string name="still_watching_continue">Spela</string>
+    <string name="still_watching_exit">Avsluta</string>
+    <string name="still_watching_countdown">Stoppar om %1$d</string>
+    <string name="still_watching_setting_title">Tittar du fortfarande?</string>
+    <string name="still_watching_setting_sub">Fråga efter flera automatiskt uppspelade avsnitt i följd.</string>
+    <string name="still_watching_threshold_title">Avsnittsgräns</string>
+    <string name="still_watching_threshold_sub">Antal automatiskt uppspelade avsnitt innan frågan visas.</string>
+    <string name="subtitle_position">Undertextposition</string>
+    <string name="subtitle_position_subtitle">Flytta undertexterna uppåt eller nedåt på skärmen.</string>
+    <string name="subtitle_font_size_subtitle">Textstorlek som används för undertexter under uppspelning.</string>
+    <string name="subtitle_bold_subtitle">Visa undertexten med fet stil.</string>
+    <string name="subtitle_outline_subtitle">Rita en kontur runt undertexten för bättre läsbarhet.</string>
+    <string name="subtitle_outline_color_subtitle">Färg på undertextens kontur.</string>
+    <string name="subtitle_text_color_subtitle">Färg på undertextens text.</string>
+    <string name="player_error_web_headers_unsupported">Den här källan är inte kompatibel med enhetens spelare eftersom den kräver särskilda begäranshuvuden. Prova en annan källa eller kontakta tilläggets leverantör.</string>
 </resources>

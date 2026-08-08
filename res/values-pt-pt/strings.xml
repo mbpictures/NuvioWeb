@@ -145,6 +145,7 @@
     <string name="cw_airs_date">Estreia em %1$s</string>
     <string name="cw_airs_today">Estreia hoje</string>
     <string name="cw_airs_tomorrow">Estreia amanhã</string>
+    <string name="cw_airs_in_days">Estreia daqui a %1$d dias</string>
     <string name="cw_action_go_to_details">Ir para os detalhes</string>
     <string name="cw_action_start_from_beginning">Começar do início</string>
     <string name="cw_action_remove">Remover</string>
@@ -1376,6 +1377,7 @@
     <string name="season_episode_format">T%1$d E%2$d</string>
     <string name="player_subtitle_delay">Atraso das Legendas</string>
     <string name="player_error_title">Erro de Reprodução</string>
+    <string name="player_error_details">Detalhes do erro de reprodução</string>
     <string name="player_go_back">Voltar atrás</string>
     <string name="player_speed_title">Velocidade de Reprodução</string>
     <string name="player_more_actions_title">Mais Ações</string>
@@ -1751,6 +1753,9 @@
     <string name="layout_selection_subtitle">Escolhe o esquema da tua página inicial</string>
     <string name="layout_selection_continue">Continuar</string>
     <string name="update_title">Atualização da App</string>
+    <string name="update_installer_required">Utilize o Nuvio WebTV Installer para atualizar a app na TV.</string>
+    <string name="update_release_notes">Novidades</string>
+    <string name="update_release_notes_unavailable">Não está disponível uma descrição da versão.</string>
     <string name="update_downloading">A transferir atualização</string>
     <string name="update_download">Transferir</string>
     <string name="update_downloading_ellipsis">A transferir…</string>
@@ -2611,4 +2616,27 @@
     <string name="player.audio.unsupported">Não suportado</string>
     <string name="player.audio.unsupportedCodec">Codec não suportado por este dispositivo</string>
     <string name="player.audio.noSupportedTracks">Nenhuma faixa de áudio suportada disponível</string>
+    <string name="settings_stream_addon_logo_title">Logótipo do addon</string>
+    <string name="settings_stream_addon_logo_description">Mostra o logótipo e o nome do addon junto das fontes de stream.</string>
+    <string name="unsupported_device_title">TV não suportada</string>
+    <string name="unsupported_device_message">Esta TV não cumpre os requisitos mínimos para esta versão do Nuvio TV.</string>
+    <string name="unsupported_device_current_platform">Plataforma atual</string>
+    <string name="unsupported_device_current_firmware">Firmware atual</string>
+    <string name="unsupported_device_required_platform">Plataforma necessária</string>
+    <string name="unsupported_device_close">Fechar</string>
+    <string name="unsupported_device_unavailable">Indisponível</string>
+    <string name="subtitle_position">Posição das legendas</string>
+    <string name="subtitle_position_subtitle">Move as legendas para cima ou para baixo no ecrã.</string>
+    <string name="subtitle_font_size_subtitle">Tamanho do texto utilizado nas legendas durante a reprodução.</string>
+    <string name="subtitle_bold_subtitle">Mostra o texto das legendas a negrito.</string>
+    <string name="subtitle_outline_subtitle">Desenha um contorno à volta do texto das legendas para melhorar a legibilidade.</string>
+    <string name="subtitle_outline_color_subtitle">Cor do contorno das legendas.</string>
+    <string name="subtitle_text_color_subtitle">Cor do texto das legendas.</string>
+    <string name="player_error_web_headers_unsupported">Esta fonte não é compatível com o leitor deste dispositivo porque requer cabeçalhos de pedido especiais. Experimente outra fonte ou contacte o fornecedor do add-on.</string>
+    <string name="settings_content_discovery">Conteúdo e descoberta</string>
+    <string name="settings_content_discovery_subtitle">Addons, plugins, catálogos e fontes de descoberta</string>
+    <string name="settings_content_discovery_addons_subtitle">Gerir addons, ordem dos catálogos e coleções</string>
+    <string name="settings_content_discovery_plugins_subtitle">Gerir repositórios e fornecedores de streams</string>
+    <string name="settings_stream_display_section">APRESENTAÇÃO</string>
+    <string name="playback_estimated_memory_usage">Uso estimado de memória: %1$d / %2$d MB</string>
 </resources>

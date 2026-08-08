@@ -8,6 +8,7 @@ import {
   posterItemFromNode,
   PosterOptionsDialogController
 } from "../../components/posterOptionsMenu.js";
+import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
 
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w780";
@@ -171,7 +172,10 @@ export const CastDetailScreen = {
   renderLoading() {
     this.container.innerHTML = `
       <div class="cast-detail-shell">
-        <div class="cast-detail-loading">Loading cast profile...</div>
+        <div class="cast-detail-loading">
+          ${renderLoadingIndicator()}
+          <span>Loading cast profile...</span>
+        </div>
       </div>
     `;
   },
@@ -193,10 +197,14 @@ export const CastDetailScreen = {
     const popular = [...allCredits].sort((left, right) => right.popularity - left.popularity);
     const latest = allCredits
       .filter((item) => item.releaseDate && item.releaseDate <= today)
-      .sort((left, right) => String(right.releaseDate || "").localeCompare(String(left.releaseDate || "")));
+      .sort((left, right) =>
+        String(right.releaseDate || "").localeCompare(String(left.releaseDate || ""))
+      );
     const upcoming = allCredits
       .filter((item) => item.releaseDate && item.releaseDate > today)
-      .sort((left, right) => String(left.releaseDate || "").localeCompare(String(right.releaseDate || "")));
+      .sort((left, right) =>
+        String(left.releaseDate || "").localeCompare(String(right.releaseDate || ""))
+      );
 
     return [
       { key: "popular", title: t("person_popular", {}, "Popular"), items: popular },
@@ -386,7 +394,13 @@ export const CastDetailScreen = {
           Router.navigate("detail", {
             itemId: target.id,
             itemType: target.type || "movie",
-            fallbackTitle: target.title || "Untitled"
+            fallbackTitle: target.title || "Untitled",
+            fallbackPoster: target.poster || "",
+            fallbackBackground: target.background || "",
+            addonBaseUrl: target.addonBaseUrl || "",
+            addonId: target.addonId || "",
+            addonName: target.addonName || "",
+            catalogType: target.catalogType || target.type || "movie"
           });
         },
         onDismiss: () => {

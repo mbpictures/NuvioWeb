@@ -1,13 +1,7 @@
 import { Router } from "../../ui/navigation/router.js";
 import { MAX_PROFILES, ProfileManager } from "../../core/profile/profileManager.js";
 import { ProfileSyncService } from "../../core/profile/profileSyncService.js";
-import { ProfileSettingsSyncService } from "../../core/profile/profileSettingsSyncService.js";
-import { TraktCredentialSyncService } from "../../core/profile/traktCredentialSyncService.js";
 import { StartupSyncService } from "../../core/profile/startupSyncService.js";
-import { CollectionSyncService } from "../../core/profile/collectionSyncService.js";
-import { HomeCatalogSettingsSyncService } from "../../core/profile/homeCatalogSettingsSyncService.js";
-import { WatchedItemsSyncService } from "../../core/profile/watchedItemsSyncService.js";
-import { WatchProgressSyncService } from "../../core/profile/watchProgressSyncService.js";
 import { ScreenUtils } from "../../ui/navigation/screen.js";
 import { AvatarRepository } from "../../data/remote/supabase/avatarRepository.js";
 import { ThemeManager } from "../../ui/theme/themeManager.js";
@@ -369,10 +363,16 @@ export const ProfileSelectionScreen = {
     this._bgThemeColors = null;
     this._bgTargetColor = null;
 
-    await ProfileSyncService.pull();
+    const skipInitialProfileSync = Boolean(params?.skipInitialProfileSync);
+    const profilePinEnabled = skipInitialProfileSync
+      ? params?.profilePinEnabled || {}
+      : (
+          await Promise.all([ProfileSyncService.pull(), ProfileSyncService.pullProfileLockStates()])
+        )[1];
     this.profiles = await ProfileManager.getProfiles();
-    await this.refreshProfilePinStates();
+    this.profilePinEnabled = profilePinEnabled;
     this.lastProfileFocusKey = `profile:${this.activeProfileId || "1"}`;
+    globalThis.NuvioBootGuard?.stage?.("Loading profile avatars");
     await this.loadAvatarCatalog();
     this.render();
   },
@@ -442,7 +442,7 @@ export const ProfileSelectionScreen = {
     const visibleProfiles = this.getVisibleProfiles();
     const canAddProfile = visibleProfiles.length < MAX_PROFILES;
     const totalItems = visibleProfiles.length + (canAddProfile ? 1 : 0);
-    const gridClass = totalItems >= 6 ? "profile-grid profile-grid-compact" : "profile-grid";
+    const gridClass = totalItems >= 5 ? "profile-grid profile-grid-compact" : "profile-grid";
     const title = this.isManagementMode
       ? t("profile_manage_title", {}, "Manage Profiles")
       : t("profile_selection_title", {}, "Who's watching?");
@@ -457,7 +457,7 @@ export const ProfileSelectionScreen = {
     const pinScreenPhaseClass = isPinActive
       ? ` is-pin-${escapeHtml(this.pinOverlayPhase || "open")}`
       : "";
-    const compactGridScreenClass = totalItems >= 6 ? " profile-screen-compact-grid" : "";
+    const compactGridScreenClass = totalItems >= 5 ? " profile-screen-compact-grid" : "";
 
     this.container.innerHTML = `
       <div class="profile-screen${pinScreenPhaseClass}${compactGridScreenClass}">
@@ -2098,16 +2098,13 @@ export const ProfileSelectionScreen = {
       await ProfileManager.setActiveProfile(profileId);
       StartupSyncService.enableProfileScopedSync();
       detailWatchedEnrichmentService.invalidateAllCache();
-      await ProfileSettingsSyncService.pull(profileId);
-      await TraktCredentialSyncService.pullFromRemote(profileId);
-      await CollectionSyncService.pull(profileId);
-      await HomeCatalogSettingsSyncService.pull(profileId);
-      await WatchedItemsSyncService.pull();
-      await WatchProgressSyncService.pull();
       await I18n.init();
       ThemeManager.apply();
       I18n.apply();
-      Router.navigate("home", { forceReload: true });
+      await Router.navigate("home", { forceReload: true });
+      void StartupSyncService.requestSyncNow().catch((error) => {
+        console.warn("Profile background sync failed", error);
+      });
     } catch (error) {
       console.warn("Failed to activate profile", error);
       this.isActivatingProfile = false;

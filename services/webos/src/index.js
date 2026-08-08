@@ -9,6 +9,9 @@ var requestLocalHttp = serverHost.requestLocalHttp;
 var requestActiveServerHttp = serverHost.requestActiveServerHttp;
 var requestActiveServerPath = serverHost.requestActiveServerPath;
 var SUPABASE_PROXY_PATH = require("./supabaseProxy").SUPABASE_PROXY_PATH;
+var bitmapSubtitles = require("./bitmapSubtitles");
+var getBitmapSubtitleWindow = bitmapSubtitles.getBitmapSubtitleWindow;
+var prepareBitmapSubtitleSource = bitmapSubtitles.prepareBitmapSubtitleSource;
 
 var RUNTIME_PATH = path.resolve(__dirname, "..", "runtime", "media-http.cjs");
 
@@ -304,6 +307,107 @@ function registerTracksCommand() {
         );
       }
     });
+  });
+}
+
+function registerSubtitleTextCommand() {
+  service.register("subtitleText", function (message) {
+    ensureRuntimeStarted();
+
+    if (runtimeState.error) {
+      respond(message, buildErrorPayload(runtimeState.error));
+      return;
+    }
+
+    var subtitleUrl = String(getMessagePayload(message).url || "").trim();
+    if (!/^https?:\/\//i.test(subtitleUrl)) {
+      respond(message, buildErrorPayload("Missing or unsupported subtitle URL"));
+      return;
+    }
+
+    var subtitlePath = "/subtitles.vtt?from=" + encodeURIComponent(subtitleUrl);
+    requestActiveServerHttp(
+      subtitlePath,
+      {
+        timeoutMs: 15000,
+        maxBodyBytes: 512 * 1024
+      },
+      function (error, result) {
+        if (error) {
+          respond(message, buildErrorPayload(error, { proxiedPath: subtitlePath }));
+          return;
+        }
+
+        var statusCode = result ? result.statusCode || 0 : 0;
+        if (statusCode < 200 || statusCode >= 300) {
+          respond(
+            message,
+            buildErrorPayload("Subtitle request failed with HTTP " + statusCode, {
+              proxiedPath: subtitlePath,
+              statusCode: statusCode
+            })
+          );
+          return;
+        }
+
+        respond(
+          message,
+          Object.assign(buildBasePayload(), {
+            proxiedPath: subtitlePath,
+            statusCode: statusCode,
+            contentType: String((result.headers && result.headers["content-type"]) || "text/vtt"),
+            body: String(result.body || ""),
+            bodyBytes: Number(result.bodyBytes || 0),
+            bodyTruncated: Boolean(result.bodyTruncated)
+          })
+        );
+      }
+    );
+  });
+}
+
+function registerBitmapSubtitleCommand() {
+  service.register("bitmapSubtitlePrepare", function (message) {
+    var payload = getMessagePayload(message);
+    prepareBitmapSubtitleSource({ url: payload.url })
+      .then(function (result) {
+        respond(message, Object.assign(buildBasePayload(), result, { returnValue: true }));
+      })
+      .catch(function (error) {
+        console.warn("[" + SERVICE_ID + "] bitmap subtitle preparation failed:", error);
+        respond(
+          message,
+          buildErrorPayload(error, {
+            bitmapSubtitle: true,
+            errorCode: String((error && error.code) || "BITMAP_SUBTITLE_PREPARE_FAILED"),
+            errorDetails: (error && error.details) || null
+          })
+        );
+      });
+  });
+
+  service.register("bitmapSubtitleWindow", function (message) {
+    var payload = getMessagePayload(message);
+    getBitmapSubtitleWindow({
+      url: payload.url,
+      trackNumber: payload.trackNumber,
+      startSeconds: payload.startSeconds,
+      endSeconds: payload.endSeconds
+    })
+      .then(function (result) {
+        respond(message, Object.assign(buildBasePayload(), result, { returnValue: true }));
+      })
+      .catch(function (error) {
+        console.error("[" + SERVICE_ID + "] bitmap subtitle extraction failed:", error);
+        respond(
+          message,
+          buildErrorPayload(error, {
+            bitmapSubtitle: true,
+            errorCode: String((error && error.code) || "BITMAP_SUBTITLE_FAILED"),
+            errorDetails: (error && error.details) || null
+          })
+        );
+      });
   });
 }
 
@@ -1283,5 +1387,7 @@ registerCommand("status", true);
 registerSupabaseProxyCommand();
 registerEngineFsKeepAliveCommands();
 registerTracksCommand();
+registerSubtitleTextCommand();
+registerBitmapSubtitleCommand();
 registerTorrentProxyCommands();
 registerEngineFsDiagnosticCommand();

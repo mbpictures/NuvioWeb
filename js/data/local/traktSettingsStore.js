@@ -2,12 +2,25 @@ import { createProfileScopedStore } from "./profileScopedStore.js";
 
 export const WatchProgressSource = {
   TRAKT: "trakt",
+  SIMKL: "simkl",
   NUVIO_SYNC: "nuvio_sync"
 };
 
 export const TraktLibrarySourceMode = {
   TRAKT: "trakt",
+  SIMKL: "simkl",
   LOCAL: "local"
+};
+
+export const SimklAnimeIdPreference = {
+  IMDB: "imdb",
+  MAL: "mal",
+  KITSU: "kitsu"
+};
+
+export const MoreLikeThisSourcePreference = {
+  TRAKT: "trakt",
+  TMDB: "tmdb"
 };
 
 export const TRAKT_CONTINUE_WATCHING_DAYS_CAP_ALL = 0;
@@ -17,16 +30,30 @@ const STORE_KEY = "traktSettings";
 
 function normalizeWatchProgressSource(value) {
   const normalized = String(value || WatchProgressSource.TRAKT).toLowerCase();
-  return normalized === WatchProgressSource.NUVIO_SYNC
-    ? WatchProgressSource.NUVIO_SYNC
-    : WatchProgressSource.TRAKT;
+  if (normalized === WatchProgressSource.NUVIO_SYNC) return WatchProgressSource.NUVIO_SYNC;
+  if (normalized === WatchProgressSource.SIMKL) return WatchProgressSource.SIMKL;
+  return WatchProgressSource.TRAKT;
 }
 
 function normalizeLibrarySourceMode(value) {
   const normalized = String(value || TraktLibrarySourceMode.TRAKT).toLowerCase();
-  return normalized === TraktLibrarySourceMode.LOCAL
-    ? TraktLibrarySourceMode.LOCAL
-    : TraktLibrarySourceMode.TRAKT;
+  if (normalized === TraktLibrarySourceMode.LOCAL) return TraktLibrarySourceMode.LOCAL;
+  if (normalized === TraktLibrarySourceMode.SIMKL) return TraktLibrarySourceMode.SIMKL;
+  return TraktLibrarySourceMode.TRAKT;
+}
+
+function normalizeSimklAnimeIdPreference(value) {
+  const normalized = String(value || SimklAnimeIdPreference.IMDB).toLowerCase();
+  return Object.values(SimklAnimeIdPreference).includes(normalized)
+    ? normalized
+    : SimklAnimeIdPreference.IMDB;
+}
+
+function normalizeMoreLikeThisSource(value) {
+  return String(value || MoreLikeThisSourcePreference.TRAKT).toLowerCase() ===
+    MoreLikeThisSourcePreference.TMDB
+    ? MoreLikeThisSourcePreference.TMDB
+    : MoreLikeThisSourcePreference.TRAKT;
 }
 
 export function normalizeTraktContinueWatchingDaysCap(days) {
@@ -48,7 +75,8 @@ function normalize(settings = {}) {
     showMetaComments: settings.showMetaComments !== false,
     watchProgressSource: normalizeWatchProgressSource(settings.watchProgressSource),
     librarySourceMode: normalizeLibrarySourceMode(settings.librarySourceMode),
-    enableScrobbling: settings.enableScrobbling !== false
+    simklAnimeIdPreference: normalizeSimklAnimeIdPreference(settings.simklAnimeIdPreference),
+    moreLikeThisSource: normalizeMoreLikeThisSource(settings.moreLikeThisSource)
   };
 }
 
@@ -90,7 +118,13 @@ export const TraktSettingsStore = {
     return this.set({ librarySourceMode: normalizeLibrarySourceMode(mode) });
   },
 
-  setEnableScrobbling(enabled) {
-    return this.set({ enableScrobbling: Boolean(enabled) });
+  setSimklAnimeIdPreference(preference) {
+    return this.set({
+      simklAnimeIdPreference: normalizeSimklAnimeIdPreference(preference)
+    });
+  },
+
+  setMoreLikeThisSource(source) {
+    return this.set({ moreLikeThisSource: normalizeMoreLikeThisSource(source) });
   }
 };

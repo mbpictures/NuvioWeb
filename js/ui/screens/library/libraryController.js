@@ -201,7 +201,7 @@ function itemMatchesYear(item, year) {
 
 function buildFacets(allItems, state) {
   const listFiltered =
-    state.sourceMode === LibrarySourceMode.TRAKT && state.selectedListKey
+    state.sourceMode !== LibrarySourceMode.LOCAL && state.selectedListKey
       ? allItems.filter(
           (item) => Array.isArray(item.listKeys) && item.listKeys.includes(state.selectedListKey)
         )
@@ -244,7 +244,7 @@ function sortForState(items, state) {
   });
 
   const listFiltered =
-    state.sourceMode === LibrarySourceMode.TRAKT && state.selectedListKey
+    state.sourceMode !== LibrarySourceMode.LOCAL && state.selectedListKey
       ? typeFiltered.filter(
           (item) => Array.isArray(item.listKeys) && item.listKeys.includes(state.selectedListKey)
         )
@@ -355,13 +355,18 @@ export class LibraryController {
     this.onChange = onChange;
     this.state = makeInitialState();
     this.messageTimer = null;
+    this.reloadToken = 0;
+    this.disposed = false;
   }
 
   async init() {
+    this.disposed = false;
     await this.reload();
   }
 
   dispose() {
+    this.disposed = true;
+    this.reloadToken += 1;
     if (this.messageTimer) {
       clearTimeout(this.messageTimer);
       this.messageTimer = null;
@@ -383,7 +388,7 @@ export class LibraryController {
     };
   }
 
-  setState(patch) {
+  setState(patch, options = {}) {
     this.state = {
       ...this.state,
       ...patch
@@ -419,10 +424,16 @@ export class LibraryController {
       this.state.lastFocusedPosterKey = firstItem ? `${firstItem.type}:${firstItem.id}` : null;
       persistedPosterFocusKey = this.state.lastFocusedPosterKey;
     }
-    this.onChange(this.getState());
+    if (options.notify !== false) {
+      this.onChange(this.getState(), {
+        reason: options.reason || "state"
+      });
+    }
   }
 
   async reload(options = {}) {
+    const reloadToken = this.reloadToken + 1;
+    this.reloadToken = reloadToken;
     const preserveOverlay = options.preserveOverlay === true;
     if (!preserveOverlay) {
       this.state = {
@@ -432,15 +443,21 @@ export class LibraryController {
       this.onChange(this.getState());
     }
 
-    const [sourceMode, listTabs, allItems, watchedItems] = await Promise.all([
-      libraryRepository.getSourceMode(),
-      libraryRepository.getListTabs(),
-      libraryRepository.getItems(),
+    const sourceMode = await libraryRepository.getSourceMode();
+    if (this.disposed || reloadToken !== this.reloadToken) {
+      return;
+    }
+    const [listTabs, allItems, watchedItems] = await Promise.all([
+      libraryRepository.getListTabs({ sourceMode }),
+      libraryRepository.getItems({ hydrate: false, sourceMode }),
       watchedItemsRepository.getAll(5000).catch(() => [])
     ]);
+    if (this.disposed || reloadToken !== this.reloadToken) {
+      return;
+    }
 
     const nextSelectedListKey =
-      sourceMode === LibrarySourceMode.TRAKT
+      sourceMode !== LibrarySourceMode.LOCAL
         ? this.state.selectedListKey &&
           listTabs.some((item) => item.key === this.state.selectedListKey)
           ? this.state.selectedListKey
@@ -448,7 +465,7 @@ export class LibraryController {
         : null;
 
     const availableSortOptions =
-      sourceMode === LibrarySourceMode.TRAKT
+      sourceMode !== LibrarySourceMode.LOCAL
         ? LIBRARY_SORT_OPTIONS
         : LIBRARY_SORT_OPTIONS.filter((option) => option.key !== LibrarySortOptionKey.DEFAULT);
     const facets = buildFacets(allItems, {
@@ -476,7 +493,7 @@ export class LibraryController {
       (item) => item.key === this.state.selectedSortKey
     )
       ? this.state.selectedSortKey
-      : sourceMode === LibrarySourceMode.TRAKT
+      : sourceMode !== LibrarySourceMode.LOCAL
         ? LibrarySortOptionKey.DEFAULT
         : LibrarySortOptionKey.ADDED_DESC;
     const manageSelectedListKey =
@@ -504,6 +521,7 @@ export class LibraryController {
       manageSelectedListKey,
       isNuvioAccount: sourceMode === LibrarySourceMode.LOCAL && AuthManager.isAuthenticated,
       isTraktAuthenticated: sourceMode === LibrarySourceMode.TRAKT,
+      isSimklAuthenticated: sourceMode === LibrarySourceMode.SIMKL,
       watchedTitleIds: buildWatchedTitleIdSet(watchedItems),
       isLoading: false,
       isSyncing: false,
@@ -512,11 +530,38 @@ export class LibraryController {
     };
     this.state.visibleItems = sortForState(this.state.allItems, this.state);
     this.onChange(this.getState());
+
+    let hydrationChanged = false;
+    void libraryRepository
+      .hydrateItems(allItems, {
+        shouldContinue: () => !this.disposed && reloadToken === this.reloadToken,
+        onBatch: (enrichedItems) => {
+          if (this.disposed || reloadToken !== this.reloadToken) {
+            return;
+          }
+          hydrationChanged = true;
+          this.setState({ allItems: enrichedItems }, { notify: false });
+        }
+      })
+      .then((enrichedItems) => {
+        if (!hydrationChanged || this.disposed || reloadToken !== this.reloadToken) {
+          return;
+        }
+        this.setState({ allItems: enrichedItems }, { reason: "metadataHydration" });
+      })
+      .catch((error) => {
+        if (!this.disposed && reloadToken === this.reloadToken) {
+          console.warn("Library metadata enrichment failed", error);
+        }
+      });
   }
 
   getSourceLabel() {
     if (this.state.sourceMode === LibrarySourceMode.TRAKT) {
       return t("library_source_trakt", {}, "TRAKT");
+    }
+    if (this.state.sourceMode === LibrarySourceMode.SIMKL) {
+      return "SIMKL";
     }
     if (this.state.isNuvioAccount) {
       return t("library_source_nuvio", {}, "NUVIO");
@@ -565,6 +610,9 @@ export class LibraryController {
         `No ${selectedTypeLabel} in this list`
       );
     }
+    if (this.state.sourceMode === LibrarySourceMode.SIMKL) {
+      return `No ${selectedTypeLabel} in this Simkl status`;
+    }
     return t("library_empty_local_title", [selectedTypeLabel], `No ${selectedTypeLabel} yet`);
   }
 
@@ -582,6 +630,9 @@ export class LibraryController {
         {},
         "Use + in details to add items to watchlist or lists"
       );
+    }
+    if (this.state.sourceMode === LibrarySourceMode.SIMKL) {
+      return "Use + in details to move items between Simkl statuses";
     }
     return t("library_empty_local_subtitle", {}, "Start saving your favorites to see them here");
   }

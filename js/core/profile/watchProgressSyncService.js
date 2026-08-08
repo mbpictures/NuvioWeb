@@ -4,6 +4,7 @@ import { SupabaseApi } from "../../data/remote/supabase/supabaseApi.js";
 import { ProfileManager } from "./profileManager.js";
 import { LocalStore } from "../storage/localStore.js";
 import { TraktAuthStore } from "../../data/local/traktAuthStore.js";
+import { SimklAuthStore } from "../../data/local/simklAuthStore.js";
 import { TraktSettingsStore, WatchProgressSource } from "../../data/local/traktSettingsStore.js";
 
 const PULL_RPC = "sync_pull_watch_progress";
@@ -63,6 +64,31 @@ function itemsByProgressKey(items = []) {
   return new Map(normalizeProgressItems(items).map((item) => [progressKey(item), item]));
 }
 
+// Supabase stores the portable progress fields only. Keep device-local metadata
+// when the matching remote row wins a merge, just as Android preserves display
+// metadata while merging watch progress. streamIdentity is also local-only and
+// is what Continue Watching uses to reopen the source selected for this item.
+function preserveLocalProgressMetadata(progress, localItem) {
+  if (!progress || !localItem) {
+    return progress;
+  }
+  const localTitle = String(localItem.title || "").trim();
+  const localStreamIdentity = String(localItem.streamIdentity || "").trim();
+  return {
+    ...progress,
+    ...(localTitle ? { title: localItem.title } : {}),
+    ...(localItem.poster ? { poster: localItem.poster } : {}),
+    ...(localItem.background ? { background: localItem.background } : {}),
+    ...(localItem.logo ? { logo: localItem.logo } : {}),
+    ...(localItem.episodeTitle ? { episodeTitle: localItem.episodeTitle } : {}),
+    ...(localItem.imdbId ? { imdbId: localItem.imdbId } : {}),
+    ...(localItem.tmdbId ? { tmdbId: localItem.tmdbId } : {}),
+    ...(localItem.traktId ? { traktId: localItem.traktId } : {}),
+    ...(localItem.year ? { year: localItem.year } : {}),
+    ...(localStreamIdentity ? { streamIdentity: localItem.streamIdentity } : {})
+  };
+}
+
 function readSyncState() {
   const state = LocalStore.get(SYNC_STATE_KEY, {});
   return state && typeof state === "object" ? state : {};
@@ -107,14 +133,14 @@ function mergeProgressItems(localItems = [], remoteItems = [], baselineItems = [
         return;
       }
       if (remoteChanged && !localChanged) {
-        merged.push(remoteItem);
+        merged.push(preserveLocalProgressMetadata(remoteItem, localItem));
         return;
       }
-      merged.push(
+      const winner =
         Number(localItem.updatedAt || 0) > Number(remoteItem.updatedAt || 0)
           ? localItem
-          : remoteItem
-      );
+          : remoteItem;
+      merged.push(preserveLocalProgressMetadata(winner, localItem));
       return;
     }
 
@@ -208,7 +234,7 @@ function mapProgressRow(row = {}) {
       normalizedVideoId.startsWith(SYNTHETIC_EPISODE_VIDEO_PREFIX)
         ? null
         : normalizedVideoId,
-    season: Number.isFinite(seasonNum) && seasonNum > 0 ? seasonNum : null,
+    season: seasonRaw != null && Number.isFinite(seasonNum) && seasonNum >= 0 ? seasonNum : null,
     episode: Number.isFinite(episodeNum) && episodeNum > 0 ? episodeNum : null,
     positionMs: normalizedTimes.positionMs,
     durationMs: normalizedTimes.durationMs,
@@ -247,12 +273,26 @@ function resolveProfileId() {
 
 function shouldUseSupabaseWatchProgressSync() {
   const source = TraktSettingsStore.get().watchProgressSource || WatchProgressSource.TRAKT;
-  return !(TraktAuthStore.isAuthenticated() && source === WatchProgressSource.TRAKT);
+  const providerSelected =
+    (TraktAuthStore.isAuthenticated() && source === WatchProgressSource.TRAKT) ||
+    (SimklAuthStore.isAuthenticated() && source === WatchProgressSource.SIMKL);
+  return !providerSelected;
 }
 
 function toPositiveIntegerOrNull(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) {
+    return null;
+  }
+  return Math.trunc(n);
+}
+
+function toNonNegativeIntegerOrNull(value) {
+  if (value == null || value === "") {
+    return null;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) {
     return null;
   }
   return Math.trunc(n);
@@ -264,7 +304,7 @@ function toRemoteVideoId(item = {}) {
   if (explicitVideoId && explicitVideoId !== "main" && explicitVideoId !== contentId) {
     return explicitVideoId;
   }
-  const season = toPositiveIntegerOrNull(item.season);
+  const season = toNonNegativeIntegerOrNull(item.season);
   const episode = toPositiveIntegerOrNull(item.episode);
   if (season != null || episode != null) {
     return `${SYNTHETIC_EPISODE_VIDEO_PREFIX}${season || 0}:${episode || 0}`;
@@ -277,7 +317,7 @@ function toRemoteVideoId(item = {}) {
 
 function toProgressKey(item = {}) {
   const contentId = String(item.contentId || "").trim();
-  const season = toPositiveIntegerOrNull(item.season);
+  const season = toNonNegativeIntegerOrNull(item.season);
   const episode = toPositiveIntegerOrNull(item.episode);
   if (contentId && season != null && episode != null) {
     return `${contentId}_s${season}e${episode}`;
@@ -287,7 +327,7 @@ function toProgressKey(item = {}) {
 
 function syncIdentityKey(item = {}) {
   const contentId = String(item.contentId || "").trim();
-  const season = toPositiveIntegerOrNull(item.season);
+  const season = toNonNegativeIntegerOrNull(item.season);
   const episode = toPositiveIntegerOrNull(item.episode);
   if (contentId && season != null && episode != null) {
     return `${contentId}:episode:${season}:${episode}`;

@@ -9,7 +9,8 @@ const DEFAULT_THEME = {
   fontFamily: "INTER",
   language: null,
   amoledMode: false,
-  amoledSurfacesMode: false
+  amoledSurfacesMode: false,
+  settingsUiStyle: "CLASSIC"
 };
 
 const THEME_BY_ACCENT = new Map([
@@ -54,7 +55,12 @@ function normalizeTheme(settings = {}) {
     ...DEFAULT_THEME,
     ...settings,
     themeName,
-    accentColor: normalizedAccent
+    accentColor: normalizedAccent,
+    settingsUiStyle: ["CLASSIC", "HORIZON", "ZEN"].includes(
+      String(settings?.settingsUiStyle || "").toUpperCase()
+    )
+      ? String(settings.settingsUiStyle).toUpperCase()
+      : "CLASSIC"
   };
 }
 

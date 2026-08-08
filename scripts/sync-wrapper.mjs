@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { constants as fsConstants } from "node:fs";
 import { readAppMetadata, syncVersionFiles } from "./appMetadata.mjs";
+import { compatibilityPolicy } from "./compatibilityPolicy.mjs";
 import { writeRuntimeEnvScriptFile } from "./envProperties.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -17,78 +18,6 @@ const webOsServiceDirName = webOsServiceId;
 const tizenEngineFsServiceDirName = "tizen";
 const tizenEngineFsServiceRelativePath = "services/tizen/enginefs-service.js";
 const tizenEngineFsRuntimeDirRelativePath = "services/tizen/runtime";
-const webOsLegacyPreloadScript = `  <script>
-    if (typeof Object.assign !== "function") {
-      Object.assign = function assign(target) {
-        if (target == null) {
-          throw new TypeError("Cannot convert undefined or null to object");
-        }
-        var output = Object(target);
-        for (var index = 1; index < arguments.length; index += 1) {
-          var source = arguments[index];
-          if (source == null) {
-            continue;
-          }
-          for (var key in source) {
-            if (Object.prototype.hasOwnProperty.call(source, key)) {
-              output[key] = source[key];
-            }
-          }
-        }
-        return output;
-      };
-    }
-  </script>`;
-const flexGapDetectionScript = `  <script>
-    (function detectLegacyFeatureSupport() {
-      var root = document.documentElement;
-      function removeClass(name) {
-        root.className = (" " + root.className + " ")
-          .replace(new RegExp(" " + name + " ", "g"), " ")
-          .replace(/^\\s+|\\s+$/g, "");
-      }
-      function supports(prop, value) {
-        var css = window.CSS;
-        return Boolean(css && typeof css.supports === "function" && css.supports(prop, value));
-      }
-      try {
-        var test = document.createElement("div");
-        var child = document.createElement("div");
-        test.style.position = "absolute";
-        test.style.left = "-9999px";
-        test.style.top = "-9999px";
-        test.style.display = "flex";
-        test.style.flexDirection = "column";
-        test.style.rowGap = "1px";
-        child.style.height = "1px";
-        test.appendChild(child.cloneNode());
-        test.appendChild(child.cloneNode());
-        root.appendChild(test);
-        if (test.scrollHeight === 3) {
-          removeClass("no-flex-gap");
-        }
-        root.removeChild(test);
-      } catch (error) {
-        removeClass("no-flex-gap");
-      }
-      if (supports("display", "grid")) {
-        removeClass("no-css-grid");
-      }
-      if (supports("--nuvio-probe", "0")) {
-        removeClass("no-css-vars");
-      }
-      if (supports("font-size", "clamp(1px, 2px, 3px)")) {
-        removeClass("no-css-math");
-      }
-      if (supports("aspect-ratio", "1 / 1")) {
-        removeClass("no-aspect-ratio");
-      }
-      if (supports("backdrop-filter", "blur(1px)") || supports("-webkit-backdrop-filter", "blur(1px)")) {
-        removeClass("no-backdrop-filter");
-      }
-    })();
-  </script>
-`;
 const wrapperIconFiles = {
   webosIcon: {
     source: path.join(rootDir, "assets", "images", "icon.png"),
@@ -230,6 +159,8 @@ async function syncBuild(targetDir) {
   ]);
 
   await cp(path.join(distDir, "app.bundle.js"), path.join(targetDir, "app.bundle.js"));
+  await cp(path.join(distDir, "core-js.bundle.js"), path.join(targetDir, "core-js.bundle.js"));
+  await cp(path.join(distDir, "boot-guard.js"), path.join(targetDir, "boot-guard.js"));
   await cp(path.join(distDir, "youtube-proxy.html"), path.join(targetDir, "youtube-proxy.html"));
   try {
     await cp(path.join(distDir, "nuvio.env.js"), path.join(targetDir, "nuvio.env.js"));
@@ -254,25 +185,37 @@ async function resolveBundledWebOsRuntime(targetDir) {
 
 function buildWebOsIndexHtml({ webOsScriptPath = "" } = {}) {
   const webOsScriptTag = webOsScriptPath ? `  <script src="${webOsScriptPath}"></script>\n` : "";
+  const compatibilityOptions = JSON.stringify({
+    platform: "webos",
+    minVersion: Number.parseInt(compatibilityPolicy.webOsRequiredVersion, 10),
+    minChrome: compatibilityPolicy.webOsChromiumVersion,
+    requiredLabel: `LG webOS ${compatibilityPolicy.webOsRequiredVersion}+ · Chromium ${compatibilityPolicy.webOsChromiumVersion}+ (${compatibilityPolicy.webOsSupportYear}+)`
+  });
 
   return `<!DOCTYPE html>
-<html lang="en" class="no-flex-gap no-css-grid no-css-vars no-css-math no-backdrop-filter no-aspect-ratio">
+<html lang="en" class="no-flex-gap no-css-math no-backdrop-filter no-aspect-ratio">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <title>${appName}</title>
-${flexGapDetectionScript}  <link rel="stylesheet" href="css/base.css" />
+  <script src="assets/runtime/legacy-features.js"></script>
+  <link rel="stylesheet" href="css/base.css" />
   <link rel="stylesheet" href="css/layout.css" />
   <link rel="stylesheet" href="css/components.css" />
   <link rel="stylesheet" href="css/themes.css" />
 </head>
 <body>
+  <script src="boot-guard.js"></script>
+  <script src="core-js.bundle.js" onerror="window.NuvioBootGuard &amp;&amp; window.NuvioBootGuard.scriptFailed(this.src)"></script>
   <script>window.__NUVIO_PLATFORM__ = "webos";</script>
-${webOsLegacyPreloadScript}
   <script src="nuvio.env.js"></script>
   <script src="assets/libs/qrcode-generator.js"></script>
-${webOsScriptTag}  <script defer src="app.bundle.js"></script>
+${webOsScriptTag}  <script>
+    window.NuvioBootGuard.runCompatibilityGate(${compatibilityOptions}, function startNuvioApp() {
+      window.NuvioBootGuard.loadScript("app.bundle.js");
+    });
+  </script>
 </body>
 </html>
 `;
@@ -280,25 +223,35 @@ ${webOsScriptTag}  <script defer src="app.bundle.js"></script>
 
 function buildTizenIndexHtml() {
   return `<!DOCTYPE html>
-<html lang="en" class="no-flex-gap no-css-grid no-css-vars no-css-math no-backdrop-filter no-aspect-ratio">
+<html lang="en" class="no-flex-gap no-css-math no-backdrop-filter no-aspect-ratio">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=1920, height=1080, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <title>${appName}</title>
-${flexGapDetectionScript}  <link rel="stylesheet" href="css/base.css" />
+  <script src="$WEBAPIS/webapis/webapis.js"></script>
+  <script src="assets/runtime/legacy-features.js"></script>
+  <link rel="stylesheet" href="css/base.css" />
   <link rel="stylesheet" href="css/layout.css" />
   <link rel="stylesheet" href="css/components.css" />
   <link rel="stylesheet" href="css/themes.css" />
 </head>
 <body>
-  <script defer src="main.js"></script>
+  <script src="boot-guard.js"></script>
+  <script src="core-js.bundle.js" onerror="window.NuvioBootGuard &amp;&amp; window.NuvioBootGuard.scriptFailed(this.src)"></script>
+  <script defer src="main.js" onerror="window.NuvioBootGuard &amp;&amp; window.NuvioBootGuard.scriptFailed(this.src)"></script>
 </body>
 </html>
 `;
 }
 
 function buildTizenMainJs({ engineFsServiceId = "" } = {}) {
+  const compatibilityOptions = JSON.stringify({
+    platform: "tizen",
+    minVersion: Number.parseInt(compatibilityPolicy.tizenRequiredVersion, 10),
+    minChrome: compatibilityPolicy.chromiumVersion,
+    requiredLabel: `Samsung Tizen ${compatibilityPolicy.tizenRequiredVersion}+ · Chromium ${compatibilityPolicy.chromiumVersion}+ (${compatibilityPolicy.tizenSupportYear}+)`
+  });
   return `/// <reference path="../../index.d.ts" />
 
 (function bootstrapTizen() {
@@ -306,53 +259,6 @@ function buildTizenMainJs({ engineFsServiceId = "" } = {}) {
 
   window.__NUVIO_PLATFORM__ = "tizen";
   window.__NUVIO_TIZEN_ENGINEFS_SERVICE_ID__ = ${JSON.stringify(engineFsServiceId)};
-
-  function ensureRuntimeCompatibility() {
-    if (typeof window.globalThis === "undefined") {
-      window.globalThis = window;
-    }
-
-    if (!String.prototype.replaceAll) {
-      String.prototype.replaceAll = function replaceAll(searchValue, replaceValue) {
-        var source = String(this);
-        if (searchValue instanceof RegExp) {
-          return source.replace(searchValue, replaceValue);
-        }
-        return source.split(String(searchValue)).join(String(replaceValue));
-      };
-    }
-
-    if (!Object.fromEntries) {
-      Object.fromEntries = function fromEntries(entries) {
-        var result = {};
-        var iterator;
-        var next;
-        var entry;
-
-        if (!entries) {
-          return result;
-        }
-
-        if (typeof Symbol !== "undefined" && entries[Symbol.iterator]) {
-          iterator = entries[Symbol.iterator]();
-          while (!(next = iterator.next()).done) {
-            entry = next.value;
-            result[entry[0]] = entry[1];
-          }
-          return result;
-        }
-
-        for (var index = 0; index < entries.length; index += 1) {
-          result[entries[index][0]] = entries[index][1];
-        }
-        return result;
-      };
-    }
-
-    if (typeof window.Node === "undefined") {
-      window.Node = { ELEMENT_NODE: 1 };
-    }
-  }
 
   function registerRemoteKeys() {
     var tvInput = window.tizen && window.tizen.tvinputdevice;
@@ -383,15 +289,30 @@ function buildTizenMainJs({ engineFsServiceId = "" } = {}) {
     script.async = false;
     script.src = src;
     script.defer = false;
+    script.onerror = function handleStartupScriptError() {
+      if (window.NuvioBootGuard) {
+        window.NuvioBootGuard.scriptFailed(src);
+      }
+    };
+    if (window.NuvioBootGuard) {
+      window.NuvioBootGuard.stage("Loading " + src);
+    }
     document.body.appendChild(script);
   }
 
-  ensureRuntimeCompatibility();
+  function startNuvioApp() {
+    loadScript("nuvio.env.js");
+    loadScript("assets/libs/qrcode-generator.js");
+    loadScript("app.bundle.js");
+  }
+
   registerRemoteKeys();
 
-  loadScript("nuvio.env.js");
-  loadScript("assets/libs/qrcode-generator.js");
-  loadScript("app.bundle.js");
+  if (window.NuvioBootGuard && typeof window.NuvioBootGuard.runCompatibilityGate === "function") {
+    window.NuvioBootGuard.runCompatibilityGate(${compatibilityOptions}, startNuvioApp);
+  } else {
+    startNuvioApp();
+  }
 }());
 `;
 }
@@ -445,6 +366,7 @@ async function updateWebOsMetadata(targetDir) {
   appInfo.largeIcon = wrapperIconFiles.webosLargeIcon.target;
   appInfo.splashBackground = wrapperIconFiles.webosSplash.target;
   appInfo.services = [webOsServiceId];
+  appInfo.requiredVersion = compatibilityPolicy.webOsRequiredVersion;
   delete appInfo.disableBackHistoryAPI;
 
   await writeTextFile(appInfoPath, `${JSON.stringify(appInfo, null, 2)}\n`);
@@ -569,6 +491,18 @@ function upsertTizenWidgetVersion(xml, version) {
   return xml;
 }
 
+function upsertTizenRequiredVersion(xml, version) {
+  const applicationPattern = /<tizen:application\b([^>]*?)\brequired_version="[^"]*"([^>]*)\/>/;
+  if (applicationPattern.test(xml)) {
+    return xml.replace(applicationPattern, `<tizen:application$1required_version="${version}"$2/>`);
+  }
+
+  return xml.replace(
+    /<tizen:application\b([^>]*)\/>/,
+    `<tizen:application$1 required_version="${version}"/>`
+  );
+}
+
 async function updateTizenMetadata(targetDir) {
   const { version: appVersion } = await readAppMetadata();
   const configPath = path.join(targetDir, "config.xml");
@@ -581,6 +515,7 @@ async function updateTizenMetadata(targetDir) {
   configXml = upsertTizenIcon(configXml, wrapperIconFiles.tizenIcon.target);
   configXml = upsertXmlTag(configXml, "name", appName);
   configXml = upsertTizenWidgetVersion(configXml, appVersion);
+  configXml = upsertTizenRequiredVersion(configXml, compatibilityPolicy.tizenRequiredVersion);
   configXml = upsertTizenFeature(configXml, "http://tizen.org/feature/web.service");
   const tizenAppId = readTizenApplicationId(configXml);
   const engineFsServiceId = tizenAppId ? `${tizenAppId}.EngineFsService` : "";

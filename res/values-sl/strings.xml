@@ -145,6 +145,7 @@
     <string name="cw_airs_date">Na sporedu %1$s</string>
     <string name="cw_airs_today">Na sporedu danes</string>
     <string name="cw_airs_tomorrow">Na sporedu jutri</string>
+    <string name="cw_airs_in_days">Na sporedu čez %1$d dni</string>
     <string name="cw_action_go_to_details">Pojdi na podrobnosti</string>
     <string name="cw_action_start_from_beginning">Začni od začetka</string>
     <string name="cw_action_remove">Odstrani</string>
@@ -1151,6 +1152,7 @@
     <string name="season_episode_format">S%1$d E%2$d</string>
     <string name="player_subtitle_delay">Zakasnitev podnapisov</string>
     <string name="player_error_title">Napaka pri predvajanju</string>
+    <string name="player_error_details">Podrobnosti napake pri predvajanju</string>
     <string name="player_go_back">Nazaj</string>
     <string name="player_speed_title">Hitrost predvajanja</string>
     <string name="player_more_actions_title">Več dejanj</string>
@@ -1450,6 +1452,9 @@
     <string name="layout_selection_subtitle">Izberite postavitev vašega domačega zaslona</string>
     <string name="layout_selection_continue">Nadaljuj</string>
     <string name="update_title">Posodobitev aplikacije</string>
+    <string name="update_installer_required">Za posodobitev aplikacije na televizorju uporabite Nuvio WebTV Installer.</string>
+    <string name="update_release_notes">Kaj je novega</string>
+    <string name="update_release_notes_unavailable">Opis izdaje ni na voljo.</string>
     <string name="update_downloading">Prenašanje posodobitve</string>
     <string name="update_download">Prenos</string>
     <string name="update_downloading_ellipsis">Prenašanje…</string>
@@ -2202,4 +2207,23 @@
     <string name="player.audio.unsupported">Ni podprto</string>
     <string name="player.audio.unsupportedCodec">Ta naprava ne podpira kodeka</string>
     <string name="player.audio.noSupportedTracks">Na voljo ni podprtih zvočnih sledi</string>
+    <string name="settings_stream_addon_logo_title">Logotip dodatka</string>
+    <string name="settings_stream_addon_logo_description">Prikaži logotip in ime dodatka ob virih pretočnega predvajanja.</string>
+    <string name="autoplay_reuse_binge_group">Ponovno uporabi Binge skupino</string>
+    <string name="autoplay_reuse_binge_group_sub">Zapomni si in ponovno uporabi zadnjo skupino med sejami (Nadaljuj ogled, Podrobnosti itd.).</string>
+    <string name="unsupported_device_title">Televizor ni podprt</string>
+    <string name="unsupported_device_message">Ta televizor ne izpolnjuje minimalnih zahtev za to različico Nuvio TV.</string>
+    <string name="unsupported_device_current_platform">Trenutna platforma</string>
+    <string name="unsupported_device_current_firmware">Trenutna vdelana programska oprema</string>
+    <string name="unsupported_device_required_platform">Zahtevana platforma</string>
+    <string name="unsupported_device_close">Zapri</string>
+    <string name="unsupported_device_unavailable">Ni na voljo</string>
+    <string name="subtitle_position">Položaj podnapisov</string>
+    <string name="subtitle_position_subtitle">Premakne podnapise navzgor ali navzdol po zaslonu.</string>
+    <string name="subtitle_font_size_subtitle">Velikost besedila, uporabljena za podnapise med predvajanjem.</string>
+    <string name="subtitle_bold_subtitle">Prikaži besedilo podnapisov krepko.</string>
+    <string name="subtitle_outline_subtitle">Nariše obrobo okoli besedila podnapisov za boljšo berljivost.</string>
+    <string name="subtitle_outline_color_subtitle">Barva obrobe podnapisov.</string>
+    <string name="subtitle_text_color_subtitle">Barva besedila podnapisov.</string>
+    <string name="player_error_web_headers_unsupported">Ta vir ni združljiv s predvajalnikom te naprave, ker zahteva posebne glave zahteve. Poskusite z drugim virom ali se obrnite na ponudnika dodatka.</string>
 </resources>

@@ -49,6 +49,9 @@
     <string name="cw_min_left">%1$d perc van hátra</string>
     <string name="cw_almost_done">Mindjárt kész</string>
     <string name="cw_airs_date">Premier: %1$s</string>
+    <string name="cw_airs_today">Premier ma</string>
+    <string name="cw_airs_tomorrow">Premier holnap</string>
+    <string name="cw_airs_in_days">Premier %1$d nap múlva</string>
     <string name="cw_action_go_to_details">Részletek</string>
     <string name="cw_action_start_from_beginning">Indítás elölről</string>
     <string name="cw_action_remove">Eltávolítás</string>
@@ -558,6 +561,7 @@
     <string name="trakt_hide_unaired">Még nem vetített epizódok elrejtése</string>
     <string name="trakt_all_history">Teljes előzmény</string>
     <string name="trakt_days_format">%1$d nap</string>
+    <string name="trakt_status_cw_window_updated">A Megtekintés folytatása ablak frissítve</string>
 	
     <!-- DebugSettingsScreen -->
     <string name="debug_title">Hibakeresés</string>
@@ -682,6 +686,7 @@
     <string name="player_via">forrás: %1$s</string>
     <string name="player_subtitle_delay">Felirat késleltetése</string>
     <string name="player_error_title">Lejátszási hiba</string>
+    <string name="player_error_details">Lejátszási hiba részletei</string>
     <string name="player_go_back">Vissza</string>
     <string name="player_speed_title">Lejátszási sebesség</string>
     <string name="player_more_actions_title">További műveletek</string>
@@ -924,6 +929,9 @@
 	
     <!-- UpdatePromptDialog -->
     <string name="update_title">Alkalmazásfrissítés</string>
+    <string name="update_installer_required">A TV-n lévő alkalmazás frissítéséhez használd a Nuvio WebTV Installert.</string>
+    <string name="update_release_notes">Újdonságok</string>
+    <string name="update_release_notes_unavailable">Nem érhető el kiadási leírás.</string>
     <string name="update_downloading">Frissítés letöltése</string>
     <string name="update_unknown_sources">A folytatáshoz engedélyezd a telepítést ismeretlen forrásokból.</string>	
     <!-- AccountScreen -->
@@ -998,4 +1006,35 @@
     <string name="player.audio.unsupported">Nem támogatott</string>
     <string name="player.audio.unsupportedCodec">Ezt a kodeket az eszköz nem támogatja</string>
     <string name="player.audio.noSupportedTracks">Nincs elérhető támogatott hangsáv</string>
+    <string name="settings_stream_addon_logo_title">Kiegészítő logója</string>
+    <string name="settings_stream_addon_logo_description">A kiegészítő logójának és nevének megjelenítése a stream források mellett.</string>
+    <string name="autoplay_reuse_binge_group">Binge csoport újrafelhasználása</string>
+    <string name="autoplay_reuse_binge_group_sub">Az utolsó binge csoport megjegyzése és újrafelhasználása a munkamenetek között (Megtekintés folytatása, Részletek stb.).</string>
+    <string name="autoplay_timeout_title">Forrásválasztási időkorlát</string>
+    <string name="autoplay_timeout_sub">Várakozási idő a bővítményekre a kiválasztás előtt.</string>
+    <string name="autoplay_timeout_instant">Azonnal</string>
+    <string name="autoplay_timeout_unlimited">Korlátlan</string>
+    <string name="unsupported_device_title">A TV nem támogatott</string>
+    <string name="unsupported_device_message">Ez a TV nem felel meg a Nuvio TV ezen verziójához szükséges minimumkövetelményeknek.</string>
+    <string name="unsupported_device_current_platform">Jelenlegi platform</string>
+    <string name="unsupported_device_current_firmware">Jelenlegi firmware</string>
+    <string name="unsupported_device_required_platform">Szükséges platform</string>
+    <string name="unsupported_device_close">Bezárás</string>
+    <string name="unsupported_device_unavailable">Nem elérhető</string>
+    <string name="still_watching_title">Nézed még?</string>
+    <string name="still_watching_continue">Lejátszás</string>
+    <string name="still_watching_exit">Kilépés</string>
+    <string name="still_watching_countdown">Leállítás %1$d múlva</string>
+    <string name="still_watching_setting_title">Nézed még?</string>
+    <string name="still_watching_setting_sub">Kérdés egymás után automatikusan lejátszott epizódok után.</string>
+    <string name="still_watching_threshold_title">Epizód küszöb</string>
+    <string name="still_watching_threshold_sub">Az automatikusan lejátszott epizódok száma a kérdés előtt.</string>
+    <string name="subtitle_position">Felirat pozíciója</string>
+    <string name="subtitle_position_subtitle">A felirat mozgatása felfelé vagy lefelé a képernyőn.</string>
+    <string name="subtitle_font_size_subtitle">A lejátszás során a feliratokhoz használt szövegméret.</string>
+    <string name="subtitle_bold_subtitle">A felirat szövegének félkövér megjelenítése.</string>
+    <string name="subtitle_outline_subtitle">Körvonal rajzolása a felirat szövege köré az olvashatóság érdekében.</string>
+    <string name="subtitle_outline_color_subtitle">A felirat körvonalának színe.</string>
+    <string name="subtitle_text_color_subtitle">A felirat szövegének színe.</string>
+    <string name="player_error_web_headers_unsupported">Ez a forrás nem kompatibilis az eszköz lejátszójával, mert speciális kérésfejléceket igényel. Próbálj másik forrást, vagy vedd fel a kapcsolatot a kiegészítő szolgáltatójával.</string>
 </resources>

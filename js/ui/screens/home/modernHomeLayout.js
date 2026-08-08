@@ -3,6 +3,10 @@ export const MODERN_HOME_CONSTANTS = {
   heroRapidNavThresholdMs: 130,
   heroRapidSettleMs: 400,
   keyRepeatThrottleMs: 80,
+  verticalKeyRepeatThrottleMs: 112,
+  trackPaginationIdleMs: 160,
+  trackPaginationPrefetchDelayMs: 40,
+  trackPaginationLoadAheadItems: 4,
   cameraFollowDelayMs: 140,
   cameraFollowDurationXMs: 440,
   cameraFollowDurationYMs: 440,
@@ -23,8 +27,10 @@ export function renderModernHomeLayout({
   continueWatchingItems = [],
   continueWatchingLoading = false,
   continueWatchingLoadingCount = 0,
+  continueWatchingRenderLimit = 30,
   useEpisodeThumbnailsInCw = true,
   blurContinueWatchingNextUp = false,
+  continueWatchingCardStyle = "card",
   rowItemLimit = 15,
   showHeroSection = false,
   showPosterLabels = true,
@@ -51,7 +57,7 @@ export function renderModernHomeLayout({
     const isCollectionRow = rowData?.rowKind === "collection";
     const items = Array.isArray(rowData?.result?.data?.items) ? rowData.result.data.items : [];
     const isLoading = rowData?.result?.status === "loading";
-    const rowItems = items.length ? items : (rowData.loadingItems || []);
+    const rowItems = items.length ? items : rowData.loadingItems || [];
     if (!rowItems.length) {
       return;
     }
@@ -71,28 +77,37 @@ export function renderModernHomeLayout({
     }
 
     const maxItems = Math.max(1, Number(rowItemLimit || 15));
+    const focusedItemLimit =
+      focusedRowKey === rowKey && Number.isFinite(focusedItemIndex)
+        ? Math.max(0, Number(focusedItemIndex)) + 1
+        : 0;
     const visibleItems = isCollectionRow
       ? rowItems
-      : rowItems.slice(0, maxItems);
+      : rowItems.slice(0, Math.max(maxItems, focusedItemLimit));
     const rowTitle = isCollectionRow
       ? String(rowData.collectionTitle || rowData.collection?.title || "Collection")
       : formatCatalogRowTitle(rowData.catalogName, rowData.type, showCatalogTypeSuffix);
-    const deferRowImages = typeof shouldDeferRowImages === "function"
-      ? shouldDeferRowImages(rowIndex, rowKey, focusedRowKey)
-      : false;
-    const cardsMarkup = visibleItems.map((item, itemIndex) => createPosterCardMarkup(
-      item,
-      rowIndex,
-      itemIndex,
-      rowData.type,
-      rowData,
-      showPosterLabels,
-      "modern",
-      expandFocusedPoster && focusedRowKey === rowKey && focusedItemIndex === itemIndex,
-      preferLandscapePosters,
-      deferRowImages,
-      watchedTitleIds
-    )).join("");
+    const deferRowImages =
+      typeof shouldDeferRowImages === "function"
+        ? shouldDeferRowImages(rowIndex, rowKey, focusedRowKey)
+        : false;
+    const cardsMarkup = visibleItems
+      .map((item, itemIndex) =>
+        createPosterCardMarkup(
+          item,
+          rowIndex,
+          itemIndex,
+          rowData.type,
+          rowData,
+          showPosterLabels,
+          "modern",
+          expandFocusedPoster && focusedRowKey === rowKey && focusedItemIndex === itemIndex,
+          preferLandscapePosters,
+          deferRowImages,
+          watchedTitleIds
+        )
+      )
+      .join("");
 
     sectionsMarkup.push(`
       <section class="home-row home-modern-row home-row-enter" data-row-key="${escapeHtml(rowKey)}" data-row-index="${rowIndex}">
@@ -110,22 +125,30 @@ export function renderModernHomeLayout({
     catalogSeeAllMap,
     markup: `
       <section class="home-modern-stage">
-        ${showHeroSection ? renderModernHeroMarkup({
-          heroItem,
-          heroCandidates,
-          buildModernHeroPresentation,
-          renderHeroBackdropImage,
-          escapeHtml,
-          escapeAttribute
-        }) : (continueWatchingLoading ? renderModernHeroSkeletonMarkup() : "")}
+        ${
+          showHeroSection
+            ? renderModernHeroMarkup({
+                heroItem,
+                heroCandidates,
+                buildModernHeroPresentation,
+                renderHeroBackdropImage,
+                escapeHtml,
+                escapeAttribute
+              })
+            : continueWatchingLoading
+              ? renderModernHeroSkeletonMarkup()
+              : ""
+        }
         <div class="home-modern-rows-viewport">
           <div class="home-modern-rows-scroll">
             ${renderContinueWatchingSection(continueWatchingItems, {
               rowKey: "continue_watching",
               loading: continueWatchingLoading,
               loadingCount: continueWatchingLoadingCount,
+              itemLimit: continueWatchingRenderLimit,
               useEpisodeThumbnails: useEpisodeThumbnailsInCw,
-              blurNextUp: blurContinueWatchingNextUp
+              blurNextUp: blurContinueWatchingNextUp,
+              cardStyle: continueWatchingCardStyle
             })}
             <div class="home-modern-catalogs">
               ${sectionsMarkup.join("")}
@@ -141,7 +164,9 @@ export function buildModernNavigationRows(container) {
   const rows = [];
   const continueTrack = container?.querySelector(".home-row-continue .home-track");
   if (continueTrack) {
-    const continueNodes = Array.from(continueTrack.querySelectorAll(".home-content-card.focusable"));
+    const continueNodes = Array.from(
+      continueTrack.querySelectorAll(".home-content-card.focusable")
+    );
     if (continueNodes.length) {
       rows.push(continueNodes);
     }
@@ -172,9 +197,13 @@ function buildHeroIndicators(items = [], activeItem = null) {
   }
   const activeId = String(activeItem?.id || "");
   const activeIndex = items.findIndex((item) => String(item?.id || "") === activeId);
-  return items.map((_, index) => `
+  return items
+    .map(
+      (_, index) => `
     <span class="home-hero-indicator${index === activeIndex ? " is-active" : ""}"></span>
-  `).join("");
+  `
+    )
+    .join("");
 }
 
 function renderModernHeroMarkup({
@@ -192,8 +221,9 @@ function renderModernHeroMarkup({
   const primaryLeft = display.leadingMeta
     .map((token) => `<span>${escapeHtml(token)}</span>`)
     .join('<span class="home-hero-dot">•</span>');
-  const primaryRightParts = display.trailingMeta
-    .map((token) => `<span>${escapeHtml(token)}</span>`);
+  const primaryRightParts = display.trailingMeta.map(
+    (token) => `<span>${escapeHtml(token)}</span>`
+  );
   if (display.showImdbPrimary) {
     primaryRightParts.push(`
       <span class="home-hero-imdb">
@@ -205,7 +235,9 @@ function renderModernHeroMarkup({
   const hasPrimaryRight = primaryRightParts.length > 0;
   const secondaryParts = [];
   if (display.secondaryHighlightText) {
-    secondaryParts.push(`<span class="home-modern-hero-highlight">${escapeHtml(display.secondaryHighlightText)}</span>`);
+    secondaryParts.push(
+      `<span class="home-modern-hero-highlight">${escapeHtml(display.secondaryHighlightText)}</span>`
+    );
   }
   display.badges.forEach((badge) => {
     secondaryParts.push(`<span class="home-modern-hero-badge">${escapeHtml(badge)}</span>`);
@@ -219,7 +251,9 @@ function renderModernHeroMarkup({
     `);
   }
   if (display.languageText) {
-    secondaryParts.push(`<span class="home-modern-hero-secondary-detail">${escapeHtml(display.languageText)}</span>`);
+    secondaryParts.push(
+      `<span class="home-modern-hero-secondary-detail">${escapeHtml(display.languageText)}</span>`
+    );
   }
   return `
     <section class="home-hero home-hero-modern">
@@ -229,11 +263,13 @@ function renderModernHeroMarkup({
                data-item-title="${escapeAttribute(heroItem?.name || "Untitled")}">
         <div class="home-modern-hero-media">
           <div class="home-hero-backdrop-wrap">
-          ${typeof renderHeroBackdropImage === "function"
+          ${
+            typeof renderHeroBackdropImage === "function"
               ? renderHeroBackdropImage(display)
-              : (display.backdrop
+              : display.backdrop
                 ? `<img class="home-hero-backdrop" src="${escapeAttribute(display.backdrop)}" alt="${escapeAttribute(display.title)}" decoding="async" fetchpriority="high" />`
-                : '<div class="home-hero-backdrop placeholder"></div>')}
+                : '<div class="home-hero-backdrop placeholder"></div>'
+          }
           </div>
           <div class="home-hero-trailer-layer"></div>
         </div>

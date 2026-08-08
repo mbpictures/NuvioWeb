@@ -30,6 +30,8 @@ import {
   isTitleItemWatched,
   renderTitleWatchedBadge
 } from "../../components/watchedTitleBadge.js";
+import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
+import { buildSearchTargets, catalogSupportsExtra } from "./searchCatalogTargets.js";
 
 const POSTER_HOLD_DELAY_MS = 650;
 const SEARCH_RESULTS_PER_ROW_DEFAULT = 18;
@@ -111,22 +113,6 @@ function formatCatalogRowTitle(catalogName, addonName, type, showTypeSuffix = tr
   return endsWithType ? base : `${base} - ${typeLabel}`;
 }
 
-function catalogSupportsExtra(catalog = {}, name = "") {
-  const target = String(name || "")
-    .trim()
-    .toLowerCase();
-  if (!target) return false;
-  return (
-    Array.isArray(catalog.extra) &&
-    catalog.extra.some(
-      (entry) =>
-        String(entry?.name || "")
-          .trim()
-          .toLowerCase() === target
-    )
-  );
-}
-
 function isSearchableCatalogType(type) {
   const normalized = String(type || "")
     .trim()
@@ -137,26 +123,6 @@ function isSearchableCatalogType(type) {
     normalized === "tv" ||
     normalized === "anime"
   );
-}
-
-function buildSearchTargets(addons = []) {
-  const targets = [];
-  addons.forEach((addon) => {
-    (addon.catalogs || []).forEach((catalog) => {
-      if (!catalogSupportsExtra(catalog, "search")) return;
-      if (!isSearchableCatalogType(catalog.apiType)) return;
-      targets.push({
-        addonBaseUrl: addon.baseUrl,
-        addonId: addon.id,
-        addonName: addon.displayName,
-        catalogId: catalog.id,
-        catalogName: catalog.name,
-        type: catalog.apiType,
-        supportsSkip: catalogSupportsExtra(catalog, "skip")
-      });
-    });
-  });
-  return targets;
 }
 
 function isPerformanceConstrainedRuntime() {
@@ -531,7 +497,10 @@ export const SearchScreen = {
           pillIconOnly: Boolean(this.pillIconOnly)
         })}
         <main class="home-main search-content search-loading-shell">
-          <div class="search-loading">${escapeHtml(t("discover_loading", {}, "Loading..."))}</div>
+          <div class="search-loading">
+            ${renderLoadingIndicator()}
+            <span>${escapeHtml(t("discover_loading", {}, "Loading..."))}</span>
+          </div>
         </main>
       </div>
     `;
@@ -541,7 +510,18 @@ export const SearchScreen = {
   async reloadRows() {
     const token = this.loadToken;
     if (this.mode === "search" && this.query.length >= 2) {
-      this.rows = await this.searchRows(this.query, { token });
+      this.rows = await this.searchRows(this.query, {
+        token,
+        onFirstResults: (rows) => {
+          if (token !== this.loadToken) return;
+          this.rows = rows;
+          if (this.shouldPatchResultsWithoutReplacingInput()) {
+            this.renderResultsOnly();
+            return;
+          }
+          this.requestRender();
+        }
+      });
     } else if (this.mode === "discover") {
       this.rows = await this.loadDiscoverRows();
     } else {
@@ -678,12 +658,14 @@ export const SearchScreen = {
       });
   },
 
-  async searchRows(query, { token = this.loadToken } = {}) {
+  async searchRows(query, { token = this.loadToken, onFirstResults = null } = {}) {
     const addons = await addonRepository.getInstalledAddons();
     const searchableCatalogs = buildSearchTargets(addons);
     const batchSize = getSearchCatalogBatchSize();
     const itemLimit = getSearchResultsPerRow();
-    const responses = [];
+    const responses = new Array(searchableCatalogs.length);
+    let nextCatalogIndex = 0;
+    let publishedFirstResults = false;
     const runCatalogSearch = async (catalog) => {
       try {
         const result = await withTimeout(
@@ -711,46 +693,63 @@ export const SearchScreen = {
       }
     };
 
-    if (batchSize > 0 && searchableCatalogs.length > batchSize) {
-      for (let index = 0; index < searchableCatalogs.length; index += batchSize) {
-        if (token !== this.loadToken) {
-          break;
-        }
-        const batch = searchableCatalogs.slice(index, index + batchSize);
-        responses.push(...(await Promise.all(batch.map(runCatalogSearch))));
-        if (index + batchSize < searchableCatalogs.length) {
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-      }
-    } else {
-      responses.push(...(await Promise.all(searchableCatalogs.map(runCatalogSearch))));
-    }
+    const buildRows = () =>
+      responses
+        .filter(({ result } = {}) => result?.status === "success" && result?.data?.items?.length)
+        .map(({ catalog, result }) => {
+          const items = result?.data?.items || [];
+          return {
+            title: formatCatalogRowTitle(
+              catalog.catalogName,
+              catalog.addonName,
+              catalog.type,
+              this.layoutPrefs?.catalogTypeSuffixEnabled !== false
+            ),
+            subtitle:
+              this.layoutPrefs?.catalogAddonNameEnabled !== false
+                ? `from ${catalog.addonName || "Addon"}`
+                : "",
+            type: catalog.type,
+            addonBaseUrl: catalog.addonBaseUrl,
+            addonId: catalog.addonId,
+            addonName: catalog.addonName,
+            catalogId: catalog.catalogId,
+            catalogName: catalog.catalogName,
+            hasMore: Boolean(items.length > itemLimit || result?.data?.hasMore),
+            items: items.slice(0, itemLimit)
+          };
+        });
 
-    return responses
-      .filter(({ result }) => result?.status === "success" && result?.data?.items?.length)
-      .map(({ catalog, result }) => {
-        const items = result?.data?.items || [];
-        return {
-          title: formatCatalogRowTitle(
-            catalog.catalogName,
-            catalog.addonName,
-            catalog.type,
-            this.layoutPrefs?.catalogTypeSuffixEnabled !== false
-          ),
-          subtitle:
-            this.layoutPrefs?.catalogAddonNameEnabled !== false
-              ? `from ${catalog.addonName || "Addon"}`
-              : "",
-          type: catalog.type,
-          addonBaseUrl: catalog.addonBaseUrl,
-          addonId: catalog.addonId,
-          addonName: catalog.addonName,
-          catalogId: catalog.catalogId,
-          catalogName: catalog.catalogName,
-          hasMore: Boolean(items.length > itemLimit || result?.data?.hasMore),
-          items: items.slice(0, itemLimit)
-        };
-      });
+    const publishFirstResults = () => {
+      if (
+        publishedFirstResults ||
+        token !== this.loadToken ||
+        typeof onFirstResults !== "function"
+      ) {
+        return;
+      }
+      const rows = buildRows();
+      if (!rows.length) return;
+      publishedFirstResults = true;
+      onFirstResults(rows);
+    };
+
+    const runWorker = async () => {
+      while (token === this.loadToken) {
+        const index = nextCatalogIndex;
+        nextCatalogIndex += 1;
+        if (index >= searchableCatalogs.length) return;
+        responses[index] = await runCatalogSearch(searchableCatalogs[index]);
+        publishFirstResults();
+      }
+    };
+    const workerCount = Math.min(
+      batchSize > 0 ? batchSize : searchableCatalogs.length,
+      searchableCatalogs.length
+    );
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+
+    return buildRows();
   },
 
   renderRows() {
@@ -769,7 +768,7 @@ export const SearchScreen = {
           <span class="search-empty-icon material-icons" aria-hidden="true">search</span>
           <h2>${escapeHtml(t("search_start_title", {}, "Start Searching"))}</h2>
           <p>${escapeHtml(
-            this.layoutPrefs?.searchDiscoverEnabled
+            this.layoutPrefs?.discoverLocation === "in_search"
               ? t("search_start_subtitle", {}, "Enter at least 2 characters")
               : t(
                   "search_start_subtitle_no_discover",
@@ -800,6 +799,10 @@ export const SearchScreen = {
                      data-item-title="${item.name || "Untitled"}"
                      data-poster-src="${escapeHtml(item.poster || "")}"
                      data-backdrop-src="${escapeHtml(item.background || item.backdrop || item.landscapePoster || "")}"
+                     data-addon-base-url="${escapeHtml(row.addonBaseUrl || item.addonBaseUrl || "")}"
+                     data-addon-id="${escapeHtml(row.addonId || item.addonId || "")}"
+                     data-addon-name="${escapeHtml(row.addonName || item.addonName || "")}"
+                     data-catalog-type="${escapeHtml(row.type || item.catalogType || "")}"
                      data-row-key="${escapeHtml(rowKey)}">
               <div class="search-result-poster-wrap">
                 ${item.poster ? `<img class="search-result-poster" src="${item.poster}" alt="${item.name || "content"}" loading="lazy" decoding="async" />` : `<div class="search-result-poster placeholder"></div>`}
@@ -852,9 +855,9 @@ export const SearchScreen = {
           pillIconOnly: Boolean(this.pillIconOnly)
         })}
         <main class="home-main search-content">
-          <section class="search-header${this.layoutPrefs?.searchDiscoverEnabled ? "" : " no-discover"}">
+          <section class="search-header${this.layoutPrefs?.discoverLocation === "in_search" ? "" : " no-discover"}">
             ${
-              this.layoutPrefs?.searchDiscoverEnabled
+              this.layoutPrefs?.discoverLocation === "in_search"
                 ? `
               <button class="search-discover-btn focusable" data-action="openDiscover">
                 <span class="search-action-icon material-icons" aria-hidden="true">explore</span>
@@ -978,7 +981,13 @@ export const SearchScreen = {
             dataset: {
               itemId: target.id,
               itemType: target.type || "movie",
-              itemTitle: target.title || "Untitled"
+              itemTitle: target.title || "Untitled",
+              posterSrc: target.poster || "",
+              backdropSrc: target.background || "",
+              addonBaseUrl: target.addonBaseUrl || "",
+              addonId: target.addonId || "",
+              addonName: target.addonName || "",
+              catalogType: target.catalogType || target.type || "movie"
             }
           });
         },
@@ -1630,6 +1639,10 @@ export const SearchScreen = {
       if (current !== input) {
         this.focusNode(current, input);
       }
+      const valueLength = String(input.value || "").length;
+      try {
+        input.setSelectionRange(valueLength, valueLength);
+      } catch (_) {}
     });
 
     input.addEventListener("keydown", async (event) => {
@@ -1724,7 +1737,7 @@ export const SearchScreen = {
 
     if (action === "openDetail") this.openDetailFromNode(node);
     if (action === "openCatalogSeeAll") this.openCatalogSeeAllFromNode(node);
-    if (action === "openDiscover" && this.layoutPrefs?.searchDiscoverEnabled)
+    if (action === "openDiscover" && this.layoutPrefs?.discoverLocation === "in_search")
       Router.navigate("discover");
     if (action === "openVoice") this.handleVoiceSearch();
   },
@@ -1838,8 +1851,15 @@ export const SearchScreen = {
   openDetailFromNode(node) {
     Router.navigate("detail", {
       itemId: node.dataset.itemId,
-      itemType: node.dataset.itemType || "movie",
-      fallbackTitle: node.dataset.itemTitle || "Untitled"
+      itemType: node.dataset.itemType || node.dataset.catalogType || "movie",
+      fallbackTitle: node.dataset.itemTitle || "Untitled",
+      fallbackPoster: node.dataset.posterSrc || "",
+      fallbackBackground: node.dataset.backdropSrc || "",
+      addonBaseUrl: node.dataset.addonBaseUrl || "",
+      addonId: node.dataset.addonId || "",
+      addonName: node.dataset.addonName || "",
+      catalogType: node.dataset.catalogType || node.dataset.itemType || "movie",
+      returnToSearchOnBack: true
     });
   },
 

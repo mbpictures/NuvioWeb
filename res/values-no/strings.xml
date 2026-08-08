@@ -54,6 +54,7 @@
     <string name="cw_airs_date">Sendinger %1$s</string>
     <string name="cw_airs_today">Sendes i dag</string>
     <string name="cw_airs_tomorrow">Sendes i morgen</string>
+    <string name="cw_airs_in_days">Sendes om %1$d dager</string>
     <string name="cw_action_go_to_details">Gå til detaljer</string>
     <string name="cw_action_start_from_beginning">Start fra begynnelsen</string>
     <string name="cw_action_remove">Fjern</string>
@@ -604,6 +605,7 @@
     <string name="trakt_hide_unaired">Skjul ikke sendt episoder</string>
     <string name="trakt_all_history">All historikk</string>
     <string name="trakt_days_format">%1$d dager</string>
+    <string name="trakt_status_cw_window_updated">Fortsett å se-vinduet er oppdatert</string>
     <string name="debug_title">Feilsøking</string>
     <string name="debug_subtitle">Utviklerverktøy og funksjonsflagg (bare feilsøkingsutgaver)</string>
     <string name="debug_section_popup">Popup-/dialogtesting</string>
@@ -752,6 +754,7 @@
     <string name="player_via">via %1$s</string>
     <string name="player_subtitle_delay">Undertekst forsinkelse</string>
     <string name="player_error_title">Avspillingsfeil</string>
+    <string name="player_error_details">Detaljer om avspillingsfeilen</string>
     <string name="player_go_back">Gå tilbake</string>
     <string name="player_speed_title">Avspillingshastighet</string>
     <string name="player_more_actions_title">Flere handlinger</string>
@@ -968,6 +971,9 @@
     <string name="layout_selection_subtitle">Velg oppsettet for hjemmeskjermen</string>
     <string name="layout_selection_continue">Fortsett</string>
     <string name="update_title">Appoppdatering</string>
+    <string name="update_installer_required">Bruk Nuvio WebTV Installer for å oppdatere appen på TV-en.</string>
+    <string name="update_release_notes">Dette er nytt</string>
+    <string name="update_release_notes_unavailable">Ingen utgivelsesbeskrivelse er tilgjengelig.</string>
     <string name="update_downloading">Laster ned oppdatering</string>
     <string name="update_download">Last ned</string>
     <string name="update_downloading_ellipsis">Laster ned…</string>
@@ -1033,4 +1039,31 @@
     <string name="player.audio.unsupported">Ikke støttet</string>
     <string name="player.audio.unsupportedCodec">Kodeken støttes ikke av denne enheten</string>
     <string name="player.audio.noSupportedTracks">Ingen støttede lydspor er tilgjengelige</string>
+    <string name="settings_stream_addon_logo_title">Tilleggslogo</string>
+    <string name="settings_stream_addon_logo_description">Vis logoen og navnet til tillegget ved siden av strømmekildene.</string>
+    <string name="autoplay_reuse_binge_group">Bruk bingegruppe på nytt</string>
+    <string name="autoplay_reuse_binge_group_sub">Husk og bruk den siste bingegruppen på nytt mellom økter (Fortsett å se, Detaljer osv.).</string>
+    <string name="unsupported_device_title">TV-en støttes ikke</string>
+    <string name="unsupported_device_message">Denne TV-en oppfyller ikke minimumskravene for denne versjonen av Nuvio TV.</string>
+    <string name="unsupported_device_current_platform">Gjeldende plattform</string>
+    <string name="unsupported_device_current_firmware">Gjeldende fastvare</string>
+    <string name="unsupported_device_required_platform">Påkrevd plattform</string>
+    <string name="unsupported_device_close">Lukk</string>
+    <string name="unsupported_device_unavailable">Ikke tilgjengelig</string>
+    <string name="still_watching_title">Ser du fortsatt?</string>
+    <string name="still_watching_continue">Spill av</string>
+    <string name="still_watching_exit">Avslutt</string>
+    <string name="still_watching_countdown">Stopper om %1$d</string>
+    <string name="still_watching_setting_title">Ser du fortsatt?</string>
+    <string name="still_watching_setting_sub">Spør etter flere automatisk avspilte episoder på rad.</string>
+    <string name="still_watching_threshold_title">Episodegrense</string>
+    <string name="still_watching_threshold_sub">Antall automatisk avspilte episoder før du blir spurt.</string>
+    <string name="subtitle_position">Undertekstposisjon</string>
+    <string name="subtitle_position_subtitle">Flytt undertekstene opp eller ned på skjermen.</string>
+    <string name="subtitle_font_size_subtitle">Tekststørrelse som brukes for undertekster under avspilling.</string>
+    <string name="subtitle_bold_subtitle">Vis undertekstteksten i fet skrift.</string>
+    <string name="subtitle_outline_subtitle">Tegn et omriss rundt undertekstteksten for bedre lesbarhet.</string>
+    <string name="subtitle_outline_color_subtitle">Farge på undertekstens omriss.</string>
+    <string name="subtitle_text_color_subtitle">Farge på undertekstteksten.</string>
+    <string name="player_error_web_headers_unsupported">Denne kilden er ikke kompatibel med enhetens spiller fordi den krever spesielle forespørselshoder. Prøv en annen kilde eller kontakt tilleggsleverandøren.</string>
 </resources>

@@ -2,6 +2,7 @@ import { access, cp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { constants as fsConstants } from "node:fs";
+import { compatibilityPolicy } from "./compatibilityPolicy.mjs";
 import { writeRuntimeEnvScriptFile } from "./envProperties.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -9,56 +10,6 @@ const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
 const appName = "Nuvio TV";
 const tizenIconSource = path.join(rootDir, "assets", "images", "tizenIcon.png");
-const flexGapDetectionScript = `  <script>
-    (function detectLegacyFeatureSupport() {
-      var root = document.documentElement;
-      function removeClass(name) {
-        root.className = (" " + root.className + " ")
-          .replace(new RegExp(" " + name + " ", "g"), " ")
-          .replace(/^\\s+|\\s+$/g, "");
-      }
-      function supports(prop, value) {
-        var css = window.CSS;
-        return Boolean(css && typeof css.supports === "function" && css.supports(prop, value));
-      }
-      try {
-        var test = document.createElement("div");
-        var child = document.createElement("div");
-        test.style.position = "absolute";
-        test.style.left = "-9999px";
-        test.style.top = "-9999px";
-        test.style.display = "flex";
-        test.style.flexDirection = "column";
-        test.style.rowGap = "1px";
-        child.style.height = "1px";
-        test.appendChild(child.cloneNode());
-        test.appendChild(child.cloneNode());
-        root.appendChild(test);
-        if (test.scrollHeight === 3) {
-          removeClass("no-flex-gap");
-        }
-        root.removeChild(test);
-      } catch (error) {
-        removeClass("no-flex-gap");
-      }
-      if (supports("display", "grid")) {
-        removeClass("no-css-grid");
-      }
-      if (supports("--nuvio-probe", "0")) {
-        removeClass("no-css-vars");
-      }
-      if (supports("font-size", "clamp(1px, 2px, 3px)")) {
-        removeClass("no-css-math");
-      }
-      if (supports("aspect-ratio", "1 / 1")) {
-        removeClass("no-aspect-ratio");
-      }
-      if (supports("backdrop-filter", "blur(1px)") || supports("-webkit-backdrop-filter", "blur(1px)")) {
-        removeClass("no-backdrop-filter");
-      }
-    })();
-  </script>
-`;
 
 function fail(message) {
   throw new Error(
@@ -151,6 +102,8 @@ async function syncBuild(targetAppDir, envSourcePath) {
   ]);
 
   await cp(path.join(distDir, "app.bundle.js"), path.join(targetAppDir, "app.bundle.js"));
+  await cp(path.join(distDir, "core-js.bundle.js"), path.join(targetAppDir, "core-js.bundle.js"));
+  await cp(path.join(distDir, "boot-guard.js"), path.join(targetAppDir, "boot-guard.js"));
   await cp(path.join(distDir, "youtube-proxy.html"), path.join(targetAppDir, "youtube-proxy.html"));
   if (envSourcePath) {
     await writeRuntimeEnvScriptFile(path.join(targetAppDir, "nuvio.env.js"), {
@@ -171,25 +124,34 @@ async function syncBuild(targetAppDir, envSourcePath) {
 
 function buildIndexHtml() {
   return `<!DOCTYPE html>
-<html lang="en" class="no-flex-gap no-css-grid no-css-vars no-css-math no-backdrop-filter no-aspect-ratio">
+<html lang="en" class="no-flex-gap no-css-math no-backdrop-filter no-aspect-ratio">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=1920, height=1080, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <title>${appName}</title>
-${flexGapDetectionScript}  <link rel="stylesheet" href="css/base.css" />
+  <script src="assets/runtime/legacy-features.js"></script>
+  <link rel="stylesheet" href="css/base.css" />
   <link rel="stylesheet" href="css/layout.css" />
   <link rel="stylesheet" href="css/components.css" />
   <link rel="stylesheet" href="css/themes.css" />
 </head>
 <body>
-  <script defer src="main.js"></script>
+  <script src="boot-guard.js"></script>
+  <script src="core-js.bundle.js" onerror="window.NuvioBootGuard &amp;&amp; window.NuvioBootGuard.scriptFailed(this.src)"></script>
+  <script defer src="main.js" onerror="window.NuvioBootGuard &amp;&amp; window.NuvioBootGuard.scriptFailed(this.src)"></script>
 </body>
 </html>
 `;
 }
 
 function buildMainJs() {
+  const compatibilityOptions = JSON.stringify({
+    platform: "tizen",
+    minVersion: Number.parseInt(compatibilityPolicy.tizenRequiredVersion, 10),
+    minChrome: compatibilityPolicy.chromiumVersion,
+    requiredLabel: `Samsung Tizen ${compatibilityPolicy.tizenRequiredVersion}+ · Chromium ${compatibilityPolicy.chromiumVersion}+ (${compatibilityPolicy.tizenSupportYear}+)`
+  });
   return `window.__NUVIO_PLATFORM__ = "tizen";
 
 var tvInput = window.tizen && window.tizen.tvinputdevice;
@@ -217,14 +179,29 @@ function loadScript(src) {
   script.async = false;
   script.src = src;
   script.defer = false;
+  script.onerror = function handleStartupScriptError() {
+    if (window.NuvioBootGuard) {
+      window.NuvioBootGuard.scriptFailed(src);
+    }
+  };
+  if (window.NuvioBootGuard) {
+    window.NuvioBootGuard.stage("Loading " + src);
+  }
   document.body.appendChild(script);
 }
 
-loadScript("nuvio.env.js");
-loadScript("js/runtime/polyfills.js");
-loadScript("js/runtime/env.js");
-loadScript("assets/libs/qrcode-generator.js");
-loadScript("app.bundle.js");
+function startNuvioApp() {
+  loadScript("nuvio.env.js");
+  loadScript("js/runtime/env.js");
+  loadScript("assets/libs/qrcode-generator.js");
+  loadScript("app.bundle.js");
+}
+
+if (window.NuvioBootGuard && typeof window.NuvioBootGuard.runCompatibilityGate === "function") {
+  window.NuvioBootGuard.runCompatibilityGate(${compatibilityOptions}, startNuvioApp);
+} else {
+  startNuvioApp();
+}
 `;
 }
 

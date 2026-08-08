@@ -2,6 +2,7 @@ import { AuthManager } from "../auth/authManager.js";
 import { SupabaseApi } from "../../data/remote/supabase/supabaseApi.js";
 import { TraktAuthStore } from "../../data/local/traktAuthStore.js";
 import { ProfileManager } from "./profileManager.js";
+import { getSyncClientId } from "../sync/syncClientIdentity.js";
 
 const TRAKT_PROVIDER = "trakt";
 const PULL_RPC = "sync_pull_provider_credentials";
@@ -132,6 +133,7 @@ export const TraktCredentialSyncService = {
           PUSH_RPC,
           {
             p_profile_id: resolvedProfileId,
+            p_origin_client_id: getSyncClientId(),
             p_credentials: [
               {
                 provider: TRAKT_PROVIDER,
@@ -197,6 +199,7 @@ export const TraktCredentialSyncService = {
           DELETE_RPC,
           {
             p_profile_id: resolveProfileId(profileId),
+            p_origin_client_id: getSyncClientId(),
             p_provider: TRAKT_PROVIDER
           },
           true

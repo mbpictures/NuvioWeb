@@ -9,6 +9,8 @@ import { WatchedItemsSyncService } from "./watchedItemsSyncService.js";
 import { PluginSyncService } from "./pluginSyncService.js";
 import { ProfileSettingsSyncService } from "./profileSettingsSyncService.js";
 import { TraktCredentialSyncService } from "./traktCredentialSyncService.js";
+import { SimklCredentialSyncService } from "./simklCredentialSyncService.js";
+import { SimklSyncService } from "../../data/repository/simklSyncService.js";
 import { CollectionSyncService } from "./collectionSyncService.js";
 import { HomeCatalogSettingsSyncService } from "./homeCatalogSettingsSyncService.js";
 import { ThemeManager } from "../../ui/theme/themeManager.js";
@@ -57,7 +59,7 @@ export const StartupSyncService = {
   addonPushTimer: null,
   unsubscribeAddonChanges: null,
 
-  async start({ profileScopedSyncEnabled = false } = {}) {
+  async start({ profileScopedSyncEnabled = false, runInitialPull = true } = {}) {
     if (this.started) {
       if (profileScopedSyncEnabled) {
         this.profileScopedSyncEnabled = true;
@@ -71,7 +73,9 @@ export const StartupSyncService = {
       this.scheduleAddonPush();
     });
 
-    await this.syncPull({ includeProfileScoped: this.profileScopedSyncEnabled });
+    if (runInitialPull) {
+      await this.syncPull({ includeProfileScoped: this.profileScopedSyncEnabled });
+    }
 
     this.intervalId = setInterval(() => {
       this.syncCycle();
@@ -99,6 +103,23 @@ export const StartupSyncService = {
     this.profileScopedSyncEnabled = true;
   },
 
+  async requestSyncNow({ pushAfterPull = false } = {}) {
+    if (!this.started || this.inFlight) {
+      return false;
+    }
+    this.inFlight = true;
+    try {
+      const includeProfileScoped = this.profileScopedSyncEnabled;
+      await this.syncPull({ includeProfileScoped });
+      if (pushAfterPull && includeProfileScoped) {
+        await this.syncPush();
+      }
+      return true;
+    } finally {
+      this.inFlight = false;
+    }
+  },
+
   async syncPull({ includeProfileScoped = this.profileScopedSyncEnabled } = {}) {
     if (!AuthManager.isAuthenticated) {
       return false;
@@ -118,6 +139,10 @@ export const StartupSyncService = {
           I18n.apply();
         }
         await TraktCredentialSyncService.pullFromRemote(ProfileManager.getActiveProfileId());
+        await SimklCredentialSyncService.pullFromRemote(ProfileManager.getActiveProfileId());
+        await SimklSyncService.refresh().catch((error) => {
+          console.warn("Simkl automatic refresh failed", error);
+        });
         if (!includeProfileScoped) {
           return didApplyProfileSettings;
         }
@@ -147,6 +172,7 @@ export const StartupSyncService = {
       await ProfileSyncService.push();
       await ProfileSettingsSyncService.push();
       await TraktCredentialSyncService.pushCurrentToRemote(ProfileManager.getActiveProfileId());
+      await SimklCredentialSyncService.pushCurrentToRemote(ProfileManager.getActiveProfileId());
       await CollectionSyncService.push();
       await HomeCatalogSettingsSyncService.push();
       await PluginSyncService.push();
@@ -160,19 +186,7 @@ export const StartupSyncService = {
   },
 
   async syncCycle() {
-    if (!this.started || this.inFlight) {
-      return;
-    }
-    this.inFlight = true;
-    try {
-      const includeProfileScoped = this.profileScopedSyncEnabled;
-      await this.syncPull({ includeProfileScoped });
-      if (includeProfileScoped) {
-        await this.syncPush();
-      }
-    } finally {
-      this.inFlight = false;
-    }
+    return this.requestSyncNow({ pushAfterPull: true });
   },
 
   scheduleAddonPush() {

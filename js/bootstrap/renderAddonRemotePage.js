@@ -38,7 +38,9 @@ function clonePrefs(prefs = {}) {
     order: Array.isArray(prefs.order) ? [...prefs.order] : [],
     disabled: Array.isArray(prefs.disabled) ? [...prefs.disabled] : [],
     customTitles:
-      prefs.customTitles && typeof prefs.customTitles === "object" && !Array.isArray(prefs.customTitles)
+      prefs.customTitles &&
+      typeof prefs.customTitles === "object" &&
+      !Array.isArray(prefs.customTitles)
         ? { ...prefs.customTitles }
         : {}
   };
@@ -287,7 +289,7 @@ const AddonRemotePage = {
     this.isBootstrapping = true;
     this.render();
 
-    this.draftAddons = await addonRepository.getInstalledAddons();
+    this.draftAddons = await addonRepository.getInstalledAddons({ includeDisabled: true });
     this.collections = CollectionsStore.get();
     this.catalogPrefs = clonePrefs(HomeCatalogStore.get());
     this.rebuildCatalogItems();

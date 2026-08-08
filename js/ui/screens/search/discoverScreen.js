@@ -20,6 +20,7 @@ import {
   focusWithoutAutoScroll,
   setLegacySidebarExpanded
 } from "../../components/sidebarNavigation.js";
+import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
 
 const POSTER_HOLD_DELAY_MS = 650;
 const PICKER_MENU_EXIT_MS = 160;
@@ -436,6 +437,10 @@ export const DiscoverScreen = {
                         data-item-title="${item.name || "Untitled"}"
                         data-poster-src="${escapeHtml(item.poster || "")}"
                         data-backdrop-src="${escapeHtml(item.background || item.backdrop || "")}"
+                        data-addon-base-url="${escapeHtml(selectedCatalog?.addonBaseUrl || item.addonBaseUrl || "")}"
+                        data-addon-id="${escapeHtml(selectedCatalog?.addonId || item.addonId || "")}"
+                        data-addon-name="${escapeHtml(selectedCatalog?.addonName || item.addonName || "")}"
+                        data-catalog-type="${escapeHtml(selectedCatalog?.type || item.catalogType || "")}"
                         data-focus-key="item:${item.id || index}"
                         data-item-index="${index}">
                  <div class="seeall-card-poster-wrap">
@@ -463,7 +468,12 @@ export const DiscoverScreen = {
 
   renderDiscoverLoadingMarkup() {
     return this.loading
-      ? `<div class="seeall-loading">${escapeHtml(t("discover_loading", {}, "Loading..."))}</div>`
+      ? `
+        <div class="seeall-loading">
+          ${renderLoadingIndicator()}
+          <span>${escapeHtml(t("discover_loading", {}, "Loading..."))}</span>
+        </div>
+      `
       : "";
   },
 
@@ -802,10 +812,9 @@ export const DiscoverScreen = {
 
   closePickerMenu() {
     if (!this.openPicker) return;
+    const action = actionForPickerKind(this.openPicker);
     this.openPicker = null;
-    if (!this.suppressInitialLoadingRenders) {
-      this.requestRender();
-    }
+    this.closePickerMenuInDom(action);
   },
 
   isPosterHoldTarget(node) {
@@ -890,7 +899,13 @@ export const DiscoverScreen = {
           Router.navigate("detail", {
             itemId: target.id,
             itemType: target.type || "movie",
-            fallbackTitle: target.title || "Untitled"
+            fallbackTitle: target.title || "Untitled",
+            fallbackPoster: target.poster || "",
+            fallbackBackground: target.background || "",
+            addonBaseUrl: target.addonBaseUrl || "",
+            addonId: target.addonId || "",
+            addonName: target.addonName || "",
+            catalogType: target.catalogType || target.type || "movie"
           });
         },
         onDismiss: () => {
@@ -930,7 +945,13 @@ export const DiscoverScreen = {
     Router.navigate("detail", {
       itemId: node.dataset.itemId,
       itemType: node.dataset.itemType || "movie",
-      fallbackTitle: node.dataset.itemTitle || "Untitled"
+      fallbackTitle: node.dataset.itemTitle || "Untitled",
+      fallbackPoster: node.dataset.posterSrc || "",
+      fallbackBackground: node.dataset.backdropSrc || "",
+      addonBaseUrl: node.dataset.addonBaseUrl || "",
+      addonId: node.dataset.addonId || "",
+      addonName: node.dataset.addonName || "",
+      catalogType: node.dataset.catalogType || node.dataset.itemType || "movie"
     });
     return true;
   },
@@ -1013,7 +1034,7 @@ export const DiscoverScreen = {
     this.lastFocusedDiscoverItemId = "";
     this.openPicker = null;
     if (!hasChanged) {
-      this.requestRender();
+      this.closePickerMenuInDom(this.lastFocusedAction);
       return;
     }
     if (option) {
@@ -1543,10 +1564,12 @@ export const DiscoverScreen = {
     if (Platform.isBackEvent(event)) {
       event?.preventDefault?.();
       if (this.closePosterOptionsMenu()) {
+        Router.suppressNextPopstate?.();
         return;
       }
       if (this.openPicker) {
         this.closePickerMenu();
+        Router.suppressNextPopstate?.();
         return;
       }
       await Router.back();
@@ -1599,16 +1622,9 @@ export const DiscoverScreen = {
       }
       if (isLeftKey(event) || isRightKey(event)) {
         const movingRight = isRightKey(event);
-        const action =
-          this.openPicker === "type"
-            ? "discoverFilterType"
-            : this.openPicker === "catalog"
-              ? "discoverFilterCatalog"
-              : "discoverFilterGenre";
         this.openPicker = null;
-        this.lastFocusedAction = action;
         this.moveFilterFocus(movingRight ? 1 : -1);
-        this.requestRender();
+        this.closePickerMenuInDom(this.lastFocusedAction);
         return;
       }
       return;

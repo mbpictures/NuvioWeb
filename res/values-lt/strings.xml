@@ -46,6 +46,7 @@
     <string name="cw_airs_date">Pasirodo %1$s</string>
     <string name="cw_airs_today">Pasirodo šiandien</string>
     <string name="cw_airs_tomorrow">Pasirodo rytoj</string>
+    <string name="cw_airs_in_days">Pasirodo po %1$d dienos</string>
     <string name="cw_action_go_to_details">Eiti į informaciją</string>
     <string name="cw_action_start_from_beginning">Pradėti iš pradžių</string>
     <string name="cw_action_remove">Pašalinti</string>
@@ -544,6 +545,7 @@
     <string name="trakt_hide_unaired">Slėpti neišleistas serijas</string>
     <string name="trakt_all_history">Visa istorija</string>
     <string name="trakt_days_format">%1$d d.</string>
+    <string name="trakt_status_cw_window_updated">„Tęsti žiūrėjimą“ langas atnaujintas</string>
     <string name="debug_title">Derinimas (Debug)</string>
     <string name="debug_subtitle">Kūrėjo įrankiai ir funkcijų vėliavėlės (tik derinimo versijoms)</string>
     <string name="debug_section_popup">Iššokančių langų / dialogų testavimas</string>
@@ -654,6 +656,7 @@ Klaida: Bandomoji simuliuojama klaida — tai nėra tikras gedimas. Šaltinis gr
     <string name="player_via">per %1$s</string>
     <string name="player_subtitle_delay">Subtitrų delsa</string>
     <string name="player_error_title">Atkūrimo klaida</string>
+    <string name="player_error_details">Atkūrimo klaidos informacija</string>
     <string name="player_go_back">Grįžti atgal</string>
     <string name="player_speed_title">Atkūrimo greitis</string>
     <string name="player_more_actions_title">Daugiau veiksmų</string>
@@ -858,6 +861,9 @@ Klaida: Bandomoji simuliuojama klaida — tai nėra tikras gedimas. Šaltinis gr
     <string name="layout_selection_subtitle">Pasirinkite, kaip norite matyti pradinį ekraną</string>
     <string name="layout_selection_continue">Tęsti</string>
     <string name="update_title">Programos atnaujinimas</string>
+    <string name="update_installer_required">Norėdami atnaujinti programą televizoriuje, naudokite Nuvio WebTV Installer.</string>
+    <string name="update_release_notes">Kas naujo</string>
+    <string name="update_release_notes_unavailable">Leidimo aprašymas nepasiekiamas.</string>
     <string name="update_downloading">Atsiunčiama…</string>
     <string name="update_download">Atsisiųsti</string>
     <string name="update_downloading_ellipsis">Atsiunčiama…</string>
@@ -920,4 +926,31 @@ Klaida: Bandomoji simuliuojama klaida — tai nėra tikras gedimas. Šaltinis gr
     <string name="player.audio.unsupported">Nepalaikoma</string>
     <string name="player.audio.unsupportedCodec">Šis įrenginys nepalaiko kodeko</string>
     <string name="player.audio.noSupportedTracks">Nėra palaikomų garso takelių</string>
+    <string name="settings_stream_addon_logo_title">Priedo logotipas</string>
+    <string name="settings_stream_addon_logo_description">Rodyti priedo logotipą ir pavadinimą šalia srauto šaltinių.</string>
+    <string name="autoplay_reuse_binge_group">Pakartotinai naudoti „Binge“ grupę</string>
+    <string name="autoplay_reuse_binge_group_sub">Įsiminti ir pakartotinai naudoti paskutinę grupę tarp seansų (Tęsti žiūrėjimą, Išsami informacija ir kt.).</string>
+    <string name="unsupported_device_title">Televizorius nepalaikomas</string>
+    <string name="unsupported_device_message">Šis televizorius neatitinka minimalių šios „Nuvio TV“ versijos reikalavimų.</string>
+    <string name="unsupported_device_current_platform">Dabartinė platforma</string>
+    <string name="unsupported_device_current_firmware">Dabartinė programinė aparatinė įranga</string>
+    <string name="unsupported_device_required_platform">Reikalinga platforma</string>
+    <string name="unsupported_device_close">Uždaryti</string>
+    <string name="unsupported_device_unavailable">Nepasiekiama</string>
+    <string name="still_watching_title">Ar vis dar žiūrite?</string>
+    <string name="still_watching_continue">Leisti</string>
+    <string name="still_watching_exit">Išeiti</string>
+    <string name="still_watching_countdown">Sustabdoma po %1$d</string>
+    <string name="still_watching_setting_title">Ar vis dar žiūrite?</string>
+    <string name="still_watching_setting_sub">Rodyti klausimą po iš eilės automatiškai paleistų serijų.</string>
+    <string name="still_watching_threshold_title">Serijų slenkstis</string>
+    <string name="still_watching_threshold_sub">Automatiškai paleistų serijų skaičius prieš parodant klausimą.</string>
+    <string name="subtitle_position">Subtitrų padėtis</string>
+    <string name="subtitle_position_subtitle">Perkelkite subtitrus aukštyn arba žemyn ekrane.</string>
+    <string name="subtitle_font_size_subtitle">Teksto dydis, naudojamas subtitrams atkūrimo metu.</string>
+    <string name="subtitle_bold_subtitle">Rodyti subtitrų tekstą paryškintą.</string>
+    <string name="subtitle_outline_subtitle">Nubrėžti kontūrą aplink subtitrų tekstą, kad būtų geriau įskaitoma.</string>
+    <string name="subtitle_outline_color_subtitle">Subtitrų kontūro spalva.</string>
+    <string name="subtitle_text_color_subtitle">Subtitrų teksto spalva.</string>
+    <string name="player_error_web_headers_unsupported">Šis šaltinis nesuderinamas su šio įrenginio grotuvu, nes jam reikia specialių užklausos antraščių. Išbandykite kitą šaltinį arba susisiekite su priedo teikėju.</string>
 </resources>

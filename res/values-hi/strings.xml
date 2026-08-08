@@ -46,6 +46,7 @@
     <string name="cw_airs_date">%1$s को प्रसारित होगा</string>
     <string name="cw_airs_today">आज प्रसारित होगा</string>
     <string name="cw_airs_tomorrow">कल प्रसारित होगा</string>
+    <string name="cw_airs_in_days">%1$d दिनों में प्रसारित होगा</string>
     <string name="cw_action_go_to_details">विवरण देखें</string>
     <string name="cw_action_start_from_beginning">शुरुआत से चलाएँ</string>
     <string name="cw_action_remove">हटाएँ</string>
@@ -536,6 +537,7 @@
     <string name="trakt_hide_unaired">अनएयर्ड एपिसोड छुपाएँ</string>
     <string name="trakt_all_history">सारा इतिहास</string>
     <string name="trakt_days_format">%1$d दिन</string>
+    <string name="trakt_status_cw_window_updated">देखना जारी रखें विंडो अपडेट की गई</string>
     <string name="debug_title">डीबग</string>
     <string name="debug_subtitle">डेवलपर टूल्स और फीचर फ्लैग्स (केवल डीबग बिल्ड)</string>
     <string name="debug_section_popup">पॉपअप / डायलॉग टेस्टिंग</string>
@@ -644,6 +646,7 @@
     <string name="player_via">%1$s के माध्यम से</string>
     <string name="player_subtitle_delay">सबटाइटल देरी</string>
     <string name="player_error_title">प्लेबैक त्रुटि</string>
+    <string name="player_error_details">प्लेबैक त्रुटि का विवरण</string>
     <string name="player_go_back">वापस जाएँ</string>
     <string name="player_speed_title">प्लेबैक गति</string>
     <string name="player_more_actions_title">अधिक विकल्प</string>
@@ -847,6 +850,9 @@
     <string name="layout_selection_subtitle">अपना होम स्क्रीन लेआउट चुनें</string>
     <string name="layout_selection_continue">जारी रखें</string>
     <string name="update_title">ऐप अपडेट</string>
+    <string name="update_installer_required">अपने टीवी पर ऐप अपडेट करने के लिए Nuvio WebTV Installer का उपयोग करें।</string>
+    <string name="update_release_notes">नया क्या है</string>
+    <string name="update_release_notes_unavailable">रिलीज़ का विवरण उपलब्ध नहीं है।</string>
     <string name="update_downloading">अपडेट डाउनलोड हो रहा है</string>
     <string name="update_download">डाउनलोड</string>
     <string name="update_downloading_ellipsis">डाउनलोड हो रहा है…</string>
@@ -1042,4 +1048,31 @@
     <string name="player.audio.unsupported">समर्थित नहीं</string>
     <string name="player.audio.unsupportedCodec">यह डिवाइस इस कोडेक का समर्थन नहीं करता</string>
     <string name="player.audio.noSupportedTracks">कोई समर्थित ऑडियो ट्रैक उपलब्ध नहीं है</string>
+    <string name="settings_stream_addon_logo_title">ऐड-ऑन लोगो</string>
+    <string name="settings_stream_addon_logo_description">स्ट्रीम स्रोतों के आगे ऐड-ऑन का लोगो और नाम दिखाएँ।</string>
+    <string name="autoplay_reuse_binge_group">बिंज ग्रुप का फिर से उपयोग करें</string>
+    <string name="autoplay_reuse_binge_group_sub">सत्रों के बीच अंतिम बिंज ग्रुप को याद रखें और फिर उपयोग करें (देखना जारी रखें, विवरण आदि)।</string>
+    <string name="unsupported_device_title">टीवी समर्थित नहीं है</string>
+    <string name="unsupported_device_message">यह टीवी Nuvio TV के इस संस्करण की न्यूनतम आवश्यकताओं को पूरा नहीं करता।</string>
+    <string name="unsupported_device_current_platform">वर्तमान प्लेटफ़ॉर्म</string>
+    <string name="unsupported_device_current_firmware">वर्तमान फ़र्मवेयर</string>
+    <string name="unsupported_device_required_platform">आवश्यक प्लेटफ़ॉर्म</string>
+    <string name="unsupported_device_close">बंद करें</string>
+    <string name="unsupported_device_unavailable">उपलब्ध नहीं</string>
+    <string name="still_watching_title">क्या आप अभी भी देख रहे हैं?</string>
+    <string name="still_watching_continue">चलाएँ</string>
+    <string name="still_watching_exit">बाहर निकलें</string>
+    <string name="still_watching_countdown">%1$d में रुक जाएगा</string>
+    <string name="still_watching_setting_title">क्या आप अभी भी देख रहे हैं?</string>
+    <string name="still_watching_setting_sub">लगातार अपने आप चले एपिसोड के बाद पूछें।</string>
+    <string name="still_watching_threshold_title">एपिसोड सीमा</string>
+    <string name="still_watching_threshold_sub">पूछने से पहले अपने आप चलने वाले एपिसोड की संख्या।</string>
+    <string name="subtitle_position">उपशीर्षक स्थिति</string>
+    <string name="subtitle_position_subtitle">उपशीर्षक को स्क्रीन पर ऊपर या नीचे ले जाएँ।</string>
+    <string name="subtitle_font_size_subtitle">प्लेबैक के दौरान उपशीर्षक के लिए उपयोग किया जाने वाला टेक्स्ट आकार।</string>
+    <string name="subtitle_bold_subtitle">उपशीर्षक टेक्स्ट को बोल्ड में दिखाएँ।</string>
+    <string name="subtitle_outline_subtitle">पठनीयता के लिए उपशीर्षक टेक्स्ट के चारों ओर आउटलाइन बनाएँ।</string>
+    <string name="subtitle_outline_color_subtitle">उपशीर्षक आउटलाइन का रंग।</string>
+    <string name="subtitle_text_color_subtitle">उपशीर्षक टेक्स्ट का रंग।</string>
+    <string name="player_error_web_headers_unsupported">यह स्रोत इस डिवाइस के प्लेयर के साथ संगत नहीं है क्योंकि इसके लिए विशेष अनुरोध हेडर आवश्यक हैं। कोई अन्य स्रोत आज़माएँ या ऐड-ऑन प्रदाता से संपर्क करें।</string>
 </resources>

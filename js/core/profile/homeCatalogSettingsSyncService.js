@@ -74,7 +74,8 @@ function currentPullToken(profileId = null) {
   if (!AuthManager.isAuthenticated) {
     return null;
   }
-  const userId = normalizeString(decodeJwtPayload(SessionStore.accessToken)?.sub) || "authenticated";
+  const userId =
+    normalizeString(decodeJwtPayload(SessionStore.accessToken)?.sub) || "authenticated";
   return `${userId}:${resolveProfileId(profileId)}`;
 }
 
@@ -431,15 +432,17 @@ async function fetchBestRemotePayload(profileId, localPayload) {
   }
 
   const selected =
-    rows
-      .filter((row) => (row.payload.items || []).length > 0)
-      .sort((left, right) =>
-        String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
-      )[0] ||
-    shared ||
-    legacyRows.sort((left, right) =>
-      String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
-    )[0];
+    (shared?.payload?.items || []).length > 0
+      ? shared
+      : legacyRows
+          .filter((row) => (row.payload.items || []).length > 0)
+          .sort((left, right) =>
+            String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
+          )[0] ||
+        shared ||
+        legacyRows.sort((left, right) =>
+          String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
+        )[0];
 
   return selected ? withNewestStandaloneSettings(selected, rows) : null;
 }

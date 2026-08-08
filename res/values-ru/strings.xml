@@ -109,6 +109,7 @@
     <string name="cw_airs_date">Выходит %1$s</string>
     <string name="cw_airs_today">Выходит сегодня</string>
     <string name="cw_airs_tomorrow">Выходит завтра</string>
+    <string name="cw_airs_in_days">Выходит через %1$d дней</string>
     <string name="cw_action_go_to_details">Перейти к деталям</string>
     <string name="cw_action_start_from_beginning">Начать сначала</string>
     <string name="cw_action_remove">Удалить</string>
@@ -851,6 +852,7 @@
     <string name="player_via">через %1$s</string>
     <string name="player_subtitle_delay">Задержка субтитров</string>
     <string name="player_error_title">Ошибка воспроизведения</string>
+    <string name="player_error_details">Подробности ошибки воспроизведения</string>
     <string name="player_go_back">Назад</string>
     <string name="player_speed_title">Скорость воспроизведения</string>
     <string name="player_more_actions_title">Дополнительные действия</string>
@@ -1127,6 +1129,9 @@
     <string name="layout_selection_subtitle">Выберите макет вашего главного экрана</string>
     <string name="layout_selection_continue">Продолжить</string>
     <string name="update_title">Обновление приложения</string>
+    <string name="update_installer_required">Используйте Nuvio WebTV Installer, чтобы обновить приложение на телевизоре.</string>
+    <string name="update_release_notes">Что нового</string>
+    <string name="update_release_notes_unavailable">Описание выпуска недоступно.</string>
     <string name="update_downloading">Скачивание обновления</string>
     <string name="update_download">Скачать</string>
     <string name="update_downloading_ellipsis">Скачивание…</string>
@@ -2353,4 +2358,21 @@
     <string name="player.audio.unsupported">Не поддерживается</string>
     <string name="player.audio.unsupportedCodec">Кодек не поддерживается этим устройством</string>
     <string name="player.audio.noSupportedTracks">Нет доступных поддерживаемых аудиодорожек</string>
+    <string name="settings_stream_addon_logo_title">Логотип дополнения</string>
+    <string name="settings_stream_addon_logo_description">Показывать логотип и название дополнения рядом с источниками потоков.</string>
+    <string name="unsupported_device_title">Телевизор не поддерживается</string>
+    <string name="unsupported_device_message">Этот телевизор не соответствует минимальным требованиям для этой версии Nuvio TV.</string>
+    <string name="unsupported_device_current_platform">Текущая платформа</string>
+    <string name="unsupported_device_current_firmware">Текущая прошивка</string>
+    <string name="unsupported_device_required_platform">Требуемая платформа</string>
+    <string name="unsupported_device_close">Закрыть</string>
+    <string name="unsupported_device_unavailable">Недоступно</string>
+    <string name="subtitle_position">Положение субтитров</string>
+    <string name="subtitle_position_subtitle">Перемещение субтитров вверх или вниз по экрану.</string>
+    <string name="subtitle_font_size_subtitle">Размер текста, используемый для субтитров во время воспроизведения.</string>
+    <string name="subtitle_bold_subtitle">Показывать текст субтитров жирным шрифтом.</string>
+    <string name="subtitle_outline_subtitle">Рисовать обводку вокруг текста субтитров для лучшей читаемости.</string>
+    <string name="subtitle_outline_color_subtitle">Цвет обводки субтитров.</string>
+    <string name="subtitle_text_color_subtitle">Цвет текста субтитров.</string>
+    <string name="player_error_web_headers_unsupported">Этот источник несовместим с плеером данного устройства, так как требует специальных заголовков запроса. Попробуйте другой источник или обратитесь к разработчику дополнения.</string>
 </resources>

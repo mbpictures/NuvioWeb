@@ -4,11 +4,11 @@
   <br />
   <br />
 
-  [![Contributors][contributors-shield]][contributors-url]
-  [![Forks][forks-shield]][forks-url]
-  [![Stargazers][stars-shield]][stars-url]
-  [![Issues][issues-shield]][issues-url]
-  [![License][license-shield]][license-url]
+[![Contributors][contributors-shield]][contributors-url]
+[![Forks][forks-shield]][forks-url]
+[![Stargazers][stars-shield]][stars-url]
+[![Issues][issues-shield]][issues-url]
+[![License][license-shield]][license-url]
 
   <p>
     A modern TV web app for Samsung Tizen and LG webOS powered by the Stremio addon ecosystem.
@@ -32,7 +32,8 @@ The project is optimized for a TV-first experience, with remote-control navigati
 
 ### Compatibility requirement
 
-NuvioTV Web officially supports **Samsung Tizen and LG webOS TVs from 2020 onward**.
+NuvioTV Web officially supports **Samsung Tizen TVs from 2019 onward** and
+**LG webOS TVs from 2020 onward**.
 
 ### Nuvio WebTV Installer
 
@@ -298,6 +299,7 @@ For comprehensive legal information, including our full disclaimer, third-party 
 </a>
 
 <!-- MARKDOWN LINKS & IMAGES -->
+
 [contributors-shield]: https://img.shields.io/github/contributors/NuvioMedia/NuvioWeb.svg?style=for-the-badge
 [contributors-url]: https://github.com/NuvioMedia/NuvioWeb/graphs/contributors
 [forks-shield]: https://img.shields.io/github/forks/NuvioMedia/NuvioWeb.svg?style=for-the-badge

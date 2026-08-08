@@ -1,5 +1,4 @@
 import { TraktAuthService, requestJson } from "./traktAuthService.js";
-import { TraktSettingsStore } from "../local/traktSettingsStore.js";
 
 const START_DEBOUNCE_MS = 15000;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -82,7 +81,7 @@ async function markAsWatchedLocally(context) {
       item.season = context.seasonNumber;
       item.episode = context.episodeNumber;
     }
-    await watchedItemsRepository.mark(item);
+    await watchedItemsRepository.mark(item, { skipTrackingWrite: true });
   } catch (error) {
     console.warn("[TraktScrobble] mark-as-watched failed", error);
   }
@@ -135,11 +134,7 @@ async function sendScrobbleRequest(action, context) {
 
 export const TraktScrobbleService = {
   isEnabled() {
-    if (!TraktAuthService.isAuthenticated()) {
-      return false;
-    }
-    const settings = TraktSettingsStore.get();
-    return settings.enableScrobbling === true;
+    return TraktAuthService.isAuthenticated();
   },
 
   start(context) {

@@ -3,13 +3,14 @@
   var existing = root.__NUVIO_ENV__ || {};
 
   root.__NUVIO_ENV__ = {
-    SUPABASE_URL: typeof existing.SUPABASE_URL === "undefined" ? "" : existing.SUPABASE_URL,
-    SUPABASE_ANON_KEY:
-      typeof existing.SUPABASE_ANON_KEY === "undefined" ? "" : existing.SUPABASE_ANON_KEY,
-    TV_LOGIN_REDIRECT_BASE_URL:
-      typeof existing.TV_LOGIN_REDIRECT_BASE_URL === "undefined"
+    NUVIO_SUPABASE_URL:
+      typeof existing.NUVIO_SUPABASE_URL === "undefined" ? "" : existing.NUVIO_SUPABASE_URL,
+    NUVIO_SUPABASE_ANON_KEY:
+      typeof existing.NUVIO_SUPABASE_ANON_KEY === "undefined"
         ? ""
-        : existing.TV_LOGIN_REDIRECT_BASE_URL,
+        : existing.NUVIO_SUPABASE_ANON_KEY,
+    TV_LOGIN_WEB_BASE_URL:
+      typeof existing.TV_LOGIN_WEB_BASE_URL === "undefined" ? "" : existing.TV_LOGIN_WEB_BASE_URL,
     YOUTUBE_PROXY_URL:
       typeof existing.YOUTUBE_PROXY_URL === "undefined"
         ? "youtube-proxy.html"
@@ -24,14 +25,24 @@
       typeof existing.IMDB_RATINGS_API_BASE_URL === "undefined"
         ? ""
         : existing.IMDB_RATINGS_API_BASE_URL,
+    IMDB_TAPFRAME_API_BASE_URL:
+      typeof existing.IMDB_TAPFRAME_API_BASE_URL === "undefined"
+        ? ""
+        : existing.IMDB_TAPFRAME_API_BASE_URL,
     AVATAR_PUBLIC_BASE_URL:
       typeof existing.AVATAR_PUBLIC_BASE_URL === "undefined" ? "" : existing.AVATAR_PUBLIC_BASE_URL,
-    CONTRIBUTIONS_URL:
-      typeof existing.CONTRIBUTIONS_URL === "undefined" ? "" : existing.CONTRIBUTIONS_URL,
+    UNIQUE_CONTRIBUTIONS_BASE_URL:
+      typeof existing.UNIQUE_CONTRIBUTIONS_BASE_URL === "undefined"
+        ? ""
+        : existing.UNIQUE_CONTRIBUTIONS_BASE_URL,
     DONATIONS_BASE_URL:
       typeof existing.DONATIONS_BASE_URL === "undefined" ? "" : existing.DONATIONS_BASE_URL,
     DONATIONS_DONATE_URL:
       typeof existing.DONATIONS_DONATE_URL === "undefined" ? "" : existing.DONATIONS_DONATE_URL,
+    SPONSOR_NAMES:
+      typeof existing.SPONSOR_NAMES === "undefined" || !String(existing.SPONSOR_NAMES).trim()
+        ? "ragmehos."
+        : existing.SPONSOR_NAMES,
     TMDB_API_KEY: typeof existing.TMDB_API_KEY === "undefined" ? "" : existing.TMDB_API_KEY,
     TRAKT_CLIENT_ID:
       typeof existing.TRAKT_CLIENT_ID === "undefined" ? "" : existing.TRAKT_CLIENT_ID,
@@ -44,6 +55,16 @@
     TRAKT_REDIRECT_URI:
       typeof existing.TRAKT_REDIRECT_URI === "undefined"
         ? "urn:ietf:wg:oauth:2.0:oob"
-        : existing.TRAKT_REDIRECT_URI
+        : existing.TRAKT_REDIRECT_URI,
+    SIMKL_CLIENT_ID:
+      typeof existing.SIMKL_CLIENT_ID === "undefined" ? "" : existing.SIMKL_CLIENT_ID,
+    SIMKL_API_URL:
+      typeof existing.SIMKL_API_URL === "undefined"
+        ? "https://api.simkl.com"
+        : existing.SIMKL_API_URL,
+    SIMKL_APP_NAME:
+      typeof existing.SIMKL_APP_NAME === "undefined" || !String(existing.SIMKL_APP_NAME).trim()
+        ? "nuvio"
+        : existing.SIMKL_APP_NAME
   };
 })();

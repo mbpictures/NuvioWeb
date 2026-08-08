@@ -145,6 +145,7 @@
     <string name="cw_airs_date">Ausstrahlung am %1$s</string>
     <string name="cw_airs_today">Ausstrahlung heute</string>
     <string name="cw_airs_tomorrow">Ausstrahlung morgen</string>
+    <string name="cw_airs_in_days">Ausstrahlung in %1$d Tagen</string>
     <string name="cw_action_go_to_details">Zu den Details gehen</string>
     <string name="cw_action_start_from_beginning">Von Anfang an starten</string>
     <string name="cw_action_remove">Entfernen</string>
@@ -1164,6 +1165,7 @@
     <string name="season_episode_format">S%1$d E%2$d</string>
     <string name="player_subtitle_delay">Untertitelverzögerung</string>
     <string name="player_error_title">Wiedergabefehler</string>
+    <string name="player_error_details">Details zum Wiedergabefehler</string>
     <string name="player_go_back">Zurück</string>
     <string name="player_speed_title">Wiedergabegeschwindigkeit</string>
     <string name="player_more_actions_title">Weitere Aktionen</string>
@@ -1467,6 +1469,9 @@
     <string name="layout_selection_subtitle">Wählen Sie Ihr Startbildschirm-Layout aus</string>
     <string name="layout_selection_continue">Weiter</string>
     <string name="update_title">App-Aktualisierung</string>
+    <string name="update_installer_required">Verwende den Nuvio WebTV Installer, um die App auf deinem Fernseher zu aktualisieren.</string>
+    <string name="update_release_notes">Neuigkeiten</string>
+    <string name="update_release_notes_unavailable">Keine Versionsbeschreibung verfügbar.</string>
     <string name="update_downloading">Update wird heruntergeladen</string>
     <string name="update_download">Herunterladen</string>
     <string name="update_downloading_ellipsis">Herunterladen…</string>
@@ -2083,4 +2088,23 @@
     <string name="player.audio.unsupported">Nicht unterstützt</string>
     <string name="player.audio.unsupportedCodec">Codec wird von diesem Gerät nicht unterstützt</string>
     <string name="player.audio.noSupportedTracks">Keine unterstützten Audiospuren verfügbar</string>
+    <string name="settings_stream_addon_logo_title">Add-on-Logo</string>
+    <string name="settings_stream_addon_logo_description">Zeige das Logo und den Namen des Add-ons neben Stream-Quellen an.</string>
+    <string name="autoplay_reuse_binge_group">Binge-Gruppe wiederverwenden</string>
+    <string name="autoplay_reuse_binge_group_sub">Die letzte Binge-Gruppe sitzungsübergreifend speichern und wiederverwenden (Weiterschauen, Details usw.).</string>
+    <string name="unsupported_device_title">TV wird nicht unterstützt</string>
+    <string name="unsupported_device_message">Dieser Fernseher erfüllt nicht die Mindestanforderungen für diese Version von Nuvio TV.</string>
+    <string name="unsupported_device_current_platform">Aktuelle Plattform</string>
+    <string name="unsupported_device_current_firmware">Aktuelle Firmware</string>
+    <string name="unsupported_device_required_platform">Erforderliche Plattform</string>
+    <string name="unsupported_device_close">Schließen</string>
+    <string name="unsupported_device_unavailable">Nicht verfügbar</string>
+    <string name="subtitle_position">Untertitelposition</string>
+    <string name="subtitle_position_subtitle">Untertitel auf dem Bildschirm nach oben oder unten verschieben.</string>
+    <string name="subtitle_font_size_subtitle">Textgröße, die während der Wiedergabe für Untertitel verwendet wird.</string>
+    <string name="subtitle_bold_subtitle">Untertiteltext fett anzeigen.</string>
+    <string name="subtitle_outline_subtitle">Einen Umriss um den Untertiteltext zeichnen, um die Lesbarkeit zu verbessern.</string>
+    <string name="subtitle_outline_color_subtitle">Farbe des Untertitelumrisses.</string>
+    <string name="subtitle_text_color_subtitle">Farbe des Untertiteltextes.</string>
+    <string name="player_error_web_headers_unsupported">Diese Quelle ist mit dem Player dieses Geräts nicht kompatibel, da sie spezielle Anfrage-Header erfordert. Versuchen Sie eine andere Quelle oder wenden Sie sich an den Add-on-Anbieter.</string>
 </resources>

@@ -11,7 +11,8 @@ const DEFAULTS = {
   showLetterboxd: true,
   showTomatoes: true,
   showAudience: true,
-  showMetacritic: true
+  showMetacritic: true,
+  showMal: true
 };
 
 function normalizeMdbListSettings(value = {}) {
@@ -26,7 +27,8 @@ function normalizeMdbListSettings(value = {}) {
     showLetterboxd: value?.showLetterboxd !== false,
     showTomatoes: value?.showTomatoes !== false,
     showAudience: value?.showAudience !== false,
-    showMetacritic: value?.showMetacritic !== false
+    showMetacritic: value?.showMetacritic !== false,
+    showMal: value?.showMal !== false
   };
 }
 

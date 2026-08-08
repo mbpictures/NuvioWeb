@@ -342,6 +342,17 @@ button:focus-visible {
   gap: 8px;
 }
 
+.account-settings-loading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.account-settings-loading .nuvio-loading-indicator {
+  width: 40px;
+  height: 40px;
+}
+
 .account-info span,
 .status-card .status-label,
 .stat-label,
@@ -1691,6 +1702,95 @@ button:focus-visible {
   line-height: 1.4;
 }
 
+/* App update prompt — follows Android TV UpdatePromptDialog dimensions and hierarchy. */
+.nuvio-dialog-panel.app-update-dialog {
+  position: relative;
+  border-color: var(--focus-color, #ffffff);
+  gap: 24px;
+}
+
+.app-update-dialog .nuvio-dialog-title {
+  padding-right: 180px;
+  font-weight: 700;
+}
+
+.app-update-dialog .nuvio-dialog-subtitle {
+  margin-top: -10px;
+  padding-right: 120px;
+}
+
+.app-update-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.app-update-version {
+  position: absolute;
+  top: 58px;
+  right: 48px;
+  color: #b3b3b3;
+  font-size: 26px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: 2px;
+  opacity: 0.8;
+}
+
+.app-update-notes-label {
+  color: #ffffff;
+  font-size: 27px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.app-update-notes {
+  max-height: min(40vh, 440px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 18px 24px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.025);
+  color: #b3b3b3;
+  font-size: 26px;
+  line-height: 1.5;
+  scrollbar-width: thin;
+  scrollbar-color: var(--focus-color, #f5f5f5) transparent;
+}
+
+.app-update-notes-heading {
+  color: #ffffff;
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
+
+.app-update-notes-paragraph + .app-update-notes-paragraph,
+.app-update-notes-bullet + .app-update-notes-paragraph,
+.app-update-notes-heading + .app-update-notes-paragraph {
+  margin-top: 12px;
+}
+
+.app-update-notes-bullet {
+  position: relative;
+  padding-left: 28px;
+}
+
+.app-update-notes-bullet::before {
+  content: "•";
+  position: absolute;
+  left: 4px;
+  color: var(--focus-color, #f5f5f5);
+}
+
+.nuvio-dialog-actions.app-update-actions {
+  align-items: center;
+}
+
+.app-update-actions .nuvio-dialog-button {
+  width: min(100%, 360px);
+  text-align: center;
+}
+
 /* Actions column — gap=16dp=32px */
 .nuvio-dialog-actions {
   display: flex;
@@ -1946,19 +2046,110 @@ button:focus-visible {
   height: 100%;
 }
 
-.home-loading-spinner {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  border: 4px solid rgba(158, 158, 158, 0.22);
-  border-top-color: #9e9e9e;
-  animation: homeLoadingSpin 820ms linear infinite;
+.nuvio-loading-indicator {
+  position: relative;
+  display: inline-block;
+  width: 96px;
+  height: 96px;
+  flex: none;
+  overflow: visible;
+  color: var(--text-secondary);
 }
 
-@keyframes homeLoadingSpin {
-  to {
-    transform: rotate(360deg);
+.nuvio-loading-indicator-spoke {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  opacity: 0;
+  transform-origin: 50% 50%;
+  animation: nuvioLoadingIndicatorFade 1000ms cubic-bezier(0.167, 0.167, 0.833, 0.833) infinite;
+}
+
+.nuvio-loading-indicator-spoke::before {
+  content: "";
+  position: absolute;
+  top: 17.333%;
+  left: 46.667%;
+  width: 6.667%;
+  height: 17%;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(1) {
+  transform: rotate(0deg);
+  animation-delay: 0ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(2) {
+  transform: rotate(30deg);
+  animation-delay: -916.667ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(3) {
+  transform: rotate(60deg);
+  animation-delay: -833.333ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(4) {
+  transform: rotate(90deg);
+  animation-delay: -750ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(5) {
+  transform: rotate(120deg);
+  animation-delay: -666.667ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(6) {
+  transform: rotate(150deg);
+  animation-delay: -583.333ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(7) {
+  transform: rotate(180deg);
+  animation-delay: -500ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(8) {
+  transform: rotate(210deg);
+  animation-delay: -416.667ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(9) {
+  transform: rotate(240deg);
+  animation-delay: -333.333ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(10) {
+  transform: rotate(270deg);
+  animation-delay: -250ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(11) {
+  transform: rotate(300deg);
+  animation-delay: -166.667ms;
+}
+
+.nuvio-loading-indicator-spoke:nth-child(12) {
+  transform: rotate(330deg);
+  animation-delay: -83.333ms;
+}
+
+@keyframes nuvioLoadingIndicatorFade {
+  from {
+    opacity: 1;
   }
+  to {
+    opacity: 0;
+  }
+}
+
+.home-loading-spinner {
+  width: 96px;
+  height: 96px;
 }
 
 .home-shell {
@@ -2028,6 +2219,19 @@ button:focus-visible {
 
 .home-route-content {
   min-height: 100%;
+}
+
+/* Tizen keeps the rendered Home catalog alive between routes. Move the whole
+   retained layer offscreen as well as hiding it: some composited descendants
+   can outlive ancestor visibility changes while the next route is mounting. */
+#home.home-dom-preserved {
+  z-index: -1;
+  transform: translateX(-200vw) !important;
+}
+
+#home.home-dom-preserved .root-sidebar-legacy,
+#home.home-dom-preserved .modern-sidebar-shell {
+  display: none !important;
 }
 
 .home-route-content-enter {
@@ -2286,7 +2490,8 @@ button:focus-visible {
   cursor: pointer;
   color: var(--text-secondary);
   /* ATV profileLeadingInset 18dp -> 36px */
-  padding: 0 var(--legacy-sidebar-label-end) 0 36px;
+  /* ATV profile row has no trailing inset, leaving 88dp for the profile name. */
+  padding: 0 0 0 36px;
   justify-content: flex-start;
   opacity: 0;
   visibility: hidden;
@@ -2384,6 +2589,13 @@ button:focus-visible {
 
 .home-shell.home-modern-sidebar-enabled .home-main {
   margin-left: 0;
+}
+
+/* Inherit the fixed Tizen canvas instead of recalculating nested 100vh. */
+.tizen-tv .home-shell,
+.tizen-tv .home-main,
+.tizen-tv .home-sidebar {
+  height: 100%;
 }
 
 .library-main {
@@ -2806,6 +3018,16 @@ button:focus-visible {
   justify-content: center;
   color: rgba(236, 244, 252, 0.86);
   font-size: 24px;
+}
+
+.search-loading {
+  flex-direction: column;
+  gap: 20px;
+}
+
+.search-loading .nuvio-loading-indicator {
+  width: 96px;
+  height: 96px;
 }
 
 .search-loading-shell {
@@ -3331,15 +3553,6 @@ button:focus-visible {
   text-align: center;
 }
 
-.discover-loading-spinner {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 3px solid rgba(255, 255, 255, 0.12);
-  border-top-color: var(--secondary-color);
-  animation: discoverSpinner 800ms linear infinite;
-}
-
 .discover-loading-label {
   font-size: 18px;
   line-height: 24px;
@@ -3373,12 +3586,6 @@ button:focus-visible {
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@keyframes discoverSpinner {
-  to {
-    transform: rotate(360deg);
   }
 }
 
@@ -3989,18 +4196,6 @@ button:focus-visible {
 .library-loading-spinner {
   width: 96px;
   height: 96px;
-  animation: librarySpin 1332ms linear infinite;
-}
-
-.library-loading-spinner-track {
-  fill: none;
-  stroke: #9e9e9e;
-  stroke-width: 8;
-  stroke-linecap: round;
-  stroke-dasharray: 188 252;
-  stroke-dashoffset: 0;
-  transform-origin: center;
-  animation: librarySpinnerDash 1332ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 .library-loading-label {
@@ -4438,30 +4633,6 @@ button:focus-visible {
   border-color: transparent;
   box-shadow: none;
   transform: scale(1.1);
-}
-
-@keyframes librarySpin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes librarySpinnerDash {
-  0% {
-    stroke-dasharray: 1 252;
-    stroke-dashoffset: 0;
-  }
-  50% {
-    stroke-dasharray: 188 252;
-    stroke-dashoffset: -64;
-  }
-  100% {
-    stroke-dasharray: 188 252;
-    stroke-dashoffset: -252;
-  }
 }
 
 @keyframes libraryPickerMenuOpen {
@@ -5979,6 +6150,40 @@ button:focus-visible {
   );
 }
 
+/* Android TV parity: the optional fullscreen backdrop expands the media
+   behind the rows and uses the stronger fullscreen gradient stops. */
+.home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop .home-modern-hero-media {
+  right: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop
+  .home-modern-hero-media::before {
+  width: 65%;
+  right: auto;
+  background: linear-gradient(
+    90deg,
+    var(--bg-color) 0%,
+    rgb(var(--bg-color-rgb) / 0.9) 22%,
+    rgb(var(--bg-color-rgb) / 0.8) 46%,
+    rgb(var(--bg-color-rgb) / 0.42) 76%,
+    transparent 100%
+  );
+}
+
+.home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop
+  .home-modern-hero-media::after {
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    transparent 64%,
+    rgb(var(--bg-color-rgb) / 0.35) 74.8%,
+    rgb(var(--bg-color-rgb) / 0.75) 85.6%,
+    var(--bg-color) 100%
+  );
+}
+
 .home-screen-shell.home-layout-modern .home-modern-hero-media .home-hero-backdrop-wrap,
 .home-screen-shell.home-layout-modern .home-modern-hero-media .home-hero-backdrop {
   position: absolute;
@@ -6101,6 +6306,12 @@ button:focus-visible {
 
 .home-screen-shell.home-layout-modern
   .home-modern-hero-card.is-hero-meta-enriching
+  .home-modern-hero-copy {
+  visibility: hidden;
+}
+
+.home-screen-shell.home-layout-modern
+  .home-modern-hero-card.is-hero-focus-pending
   .home-modern-hero-copy {
   visibility: hidden;
 }
@@ -7077,6 +7288,54 @@ button:focus-visible {
   max-height: 100%;
 }
 
+.trakt-route-shell .settings-tracking-panel {
+  width: min(78vw, 1180px);
+}
+
+.trakt-route-shell .settings-tracking-hero {
+  min-height: 132px;
+}
+
+.trakt-route-shell .settings-tracking-account-card {
+  border-color: rgba(var(--focus-color-rgb), 0.18);
+}
+
+.settings-row-leading-image {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  object-fit: contain;
+}
+
+.detail-more-like-source {
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+.trakt-route-shell .settings-tracking-attribution {
+  padding: 4px 8px 24px;
+  text-align: center;
+}
+
+.trakt-route-shell .settings-tracking-sync-info {
+  margin: 8px 0;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.trakt-route-shell .settings-tracking-sync-info p {
+  margin: 0 0 8px;
+}
+
+.trakt-route-shell .settings-tracking-sync-info p:last-child {
+  margin-bottom: 0;
+}
+
 .nuvio-route-slide-enter,
 .trakt-route-shell.trakt-route-enter .settings-trakt-panel {
   --nuvio-route-slide-distance: 8.333vw;
@@ -7682,6 +7941,16 @@ button:focus-visible {
   line-height: min(2.08vw, 40px);
 }
 
+.supporters-status {
+  flex-direction: column;
+  gap: min(1.46vw, 28px);
+}
+
+.supporters-status .nuvio-loading-indicator {
+  width: min(5vw, 96px);
+  height: min(5vw, 96px);
+}
+
 .supporters-error-state {
   flex-direction: column;
   gap: min(1.46vw, 28px); /* ATV 14dp -> 28px */
@@ -7830,8 +8099,7 @@ button:focus-visible {
 }
 
 .trakt-route-shell .settings-trakt-dialog,
-.trakt-route-shell .settings-trakt-confirm-dialog,
-.trakt-route-shell .settings-trakt-grid-dialog {
+.trakt-route-shell .settings-trakt-confirm-dialog {
   width: min(1240px, calc(100vw - 320px));
 }
 
@@ -7959,6 +8227,15 @@ button:focus-visible {
   color: var(--text-secondary);
   font-size: 28px;
   line-height: 1.2;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.settings-account-loading .nuvio-loading-indicator,
+.settings-account-sync-loading .nuvio-loading-indicator {
+  width: 40px;
+  height: 40px;
 }
 
 .settings-account-description {
@@ -8105,7 +8382,10 @@ button:focus-visible {
 }
 
 .settings-account-sync-loading {
+  flex-direction: row;
   align-items: center;
+  justify-content: center;
+  gap: 16px;
   color: var(--text-secondary);
   font-size: 24px;
   line-height: 1.2;
@@ -8755,15 +9035,6 @@ button:focus-visible {
   width: min(620px, calc(100vw - 160px));
 }
 
-.settings-trakt-grid-dialog {
-  width: min(620px, calc(100vw - 160px));
-}
-
-.settings-trakt-grid-dialog .settings-dialog-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
 .settings-layout-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -9389,6 +9660,27 @@ button:focus-visible {
   letter-spacing: 0.1px;
 }
 
+.settings-single-choice-option {
+  justify-content: space-between;
+}
+
+.settings-single-choice-option .settings-dialog-option-label {
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-single-choice-option-check {
+  margin-left: 12px;
+  color: var(--secondary-color);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.settings-single-choice-option.focused .settings-single-choice-option-check {
+  color: #111;
+}
+
 .settings-text-dialog,
 .settings-p2p-consent-dialog {
   width: calc(100vw - 96px);
@@ -9743,12 +10035,23 @@ button:focus-visible {
   border-radius: 32px;
   outline: none;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   -ms-overflow-style: none;
   scrollbar-color: transparent transparent;
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+/* Older Tizen/webOS flex engines can expand the nested flex item to its
+   content height, leaving nothing for scrollTop to move. Give the log viewport
+   a physical height while preserving the normal flexible layout elsewhere. */
+html.legacy-tizen .debug-console-log-frame,
+html.legacy-webos .debug-console-log-frame {
+  flex: 0 0 auto;
+  height: calc(100vh - 232px);
+  min-height: 240px;
 }
 
 .debug-console-log-list::-webkit-scrollbar {
@@ -10754,8 +11057,9 @@ button:focus-visible {
   --player-text-secondary: var(--text-secondary);
   --player-text-tertiary: var(--text-tertiary);
   --player-subtitle-color: #ffffff;
+  --player-subtitle-background: transparent;
   --player-subtitle-outline-color: #000000;
-  --player-subtitle-font-size: 100%;
+  --player-subtitle-font-size: 120%;
   --player-html-subtitle-font-size: clamp(30px, 4.4vh, 82px);
   --player-subtitle-font-weight: 500;
   --player-subtitle-shadow: 0 0 2px #000000, 0 0 4px #000000;
@@ -10772,7 +11076,7 @@ button:focus-visible {
   font-size: var(--player-subtitle-font-size);
   font-weight: var(--player-subtitle-font-weight) !important;
   text-shadow: var(--player-subtitle-shadow);
-  background: transparent;
+  background: var(--player-subtitle-background);
 }
 
 #videoPlayer::-webkit-media-text-track-display,
@@ -10785,15 +11089,12 @@ button:focus-visible {
 
 .player-html-subtitles {
   position: absolute;
-  right: 5vw;
-  bottom: calc(8vh + var(--player-subtitle-offset));
-  left: 5vw;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  inset: 0;
   z-index: 12;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.18em;
   color: var(--player-subtitle-color);
   font-size: var(--player-html-subtitle-font-size);
   font-weight: var(--player-subtitle-font-weight);
@@ -10807,13 +11108,180 @@ button:focus-visible {
   display: none;
 }
 
+.player-bitmap-subtitles {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 12;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.player-bitmap-subtitles.hidden {
+  display: none;
+}
+
+.player-html-subtitle-cue {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 0.18em;
+  max-width: 90vw;
+}
+
+.player-html-subtitle-default {
+  right: 5vw;
+  bottom: 8vh;
+  left: 5vw;
+  align-items: center;
+  transform: translateY(var(--player-subtitle-offset));
+}
+
+.player-html-subtitle-default.player-html-subtitle-align-start {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.player-html-subtitle-default.player-html-subtitle-align-end {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.player-html-subtitle-positioned {
+  transform: translateY(-50%) translateY(var(--player-subtitle-offset));
+}
+
+.player-html-subtitle-positioned.player-html-subtitle-align-start {
+  right: 30vw;
+  left: 5vw;
+  align-items: flex-start;
+  text-align: left;
+}
+
+.player-html-subtitle-positioned.player-html-subtitle-align-center {
+  right: 5vw;
+  left: 5vw;
+  align-items: center;
+  text-align: center;
+}
+
+.player-html-subtitle-positioned.player-html-subtitle-align-end {
+  right: 5vw;
+  left: 30vw;
+  align-items: flex-end;
+  text-align: right;
+}
+
 .player-html-subtitle-line {
   display: inline-block;
   max-width: min(86vw, 1500px);
   padding: 0.06em 0.28em;
   white-space: pre-wrap;
   word-break: break-word;
+  background: var(--player-subtitle-background);
+}
+
+.settings-shell[data-settings-style="classic"] .settings-workspace {
+  gap: 28px;
+}
+
+.settings-shell[data-settings-style="classic"] .settings-group-card {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.settings-shell[data-settings-style="zen"] .settings-group-card {
   background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.settings-shell[data-settings-style="zen"] .settings-row {
+  border-radius: 8px;
+}
+
+.settings-shell[data-settings-style="horizon"] .settings-workspace {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 116px minmax(0, 1fr);
+  gap: 20px;
+}
+
+.settings-shell[data-settings-style="horizon"] .settings-sidebar {
+  flex-direction: row;
+  gap: 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.settings-shell[data-settings-style="horizon"] .settings-nav-item {
+  flex: 0 0 auto;
+  min-height: 88px;
+  padding: 0 28px;
+}
+
+.settings-shell[data-settings-style="horizon"] .settings-nav-chevron,
+.settings-shell[data-settings-style="horizon"] .settings-scroll-indicator-up,
+.settings-shell[data-settings-style="horizon"] .settings-scroll-indicator-down {
+  display: none;
+}
+
+.home-row-continue-wide .home-continue-card {
+  width: calc(var(--poster-card-width, 126px) * 1.7);
+}
+
+.home-row-continue-poster .home-continue-card {
+  width: var(--poster-card-width, 126px);
+}
+
+.home-row-continue-poster .home-continue-media {
+  aspect-ratio: 2 / 3;
+}
+
+.home-card-depth.depth-posters .poster-card,
+.home-card-depth.depth-posters .home-content-card:not(.home-continue-card),
+.home-card-depth.depth-continue-watching .home-continue-card {
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, var(--card-depth-edge, 0.28)),
+    inset 0 18px 28px rgba(255, 255, 255, var(--card-depth-sheen, 0.1));
+}
+
+html[data-card-depth="true"][data-card-depth-episodes="true"] .series-episode-card,
+html[data-card-depth="true"][data-card-depth-cast="true"] .movie-cast-card,
+html[data-card-depth="true"][data-card-depth-trailers="true"] .detail-trailer-card {
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, var(--card-depth-edge, 0.28)),
+    inset 0 var(--card-depth-coverage-size, 12px) 28px rgba(255, 255, 255, var(--card-depth-sheen, 0.1));
+}
+
+.home-classic-focus-gradient .home-screen-main {
+  background: linear-gradient(90deg, transparent 52%, rgba(255, 255, 255, 0.045) 100%);
+}
+
+/* Match Android TV's default caption presentation on LG webOS: regular
+   system typography, transparent background, and a crisp outline. */
+.player-platform-webos #videoPlayer::cue {
+  font-family: "Roboto", Arial, sans-serif;
+  background-color: transparent !important;
+}
+
+.player-platform-webos #videoPlayer::-webkit-media-text-track-display-backdrop {
+  background-color: transparent !important;
+}
+
+.player-platform-webos .player-html-subtitles {
+  font-family: "Roboto", Arial, sans-serif;
+  line-height: 1.2;
+}
+
+.player-platform-webos .player-html-subtitle-cue {
+  gap: 0;
+}
+
+.player-platform-webos .player-html-subtitle-line {
+  padding: 0 0.08em;
+  background-color: transparent !important;
 }
 
 .player-loading-overlay {
@@ -10831,6 +11299,10 @@ button:focus-visible {
 .player-loading-overlay.hidden {
   opacity: 0;
   pointer-events: none;
+}
+
+.player-loading-overlay.playback-ready {
+  transition: none;
 }
 
 .player-loading-spinner {
@@ -10999,16 +11471,11 @@ button:focus-visible {
   position: absolute;
   top: 50%;
   left: 50%;
-  box-sizing: border-box;
-  width: 72px;
-  height: 72px;
-  margin-top: -36px;
-  margin-left: -36px;
-  border-radius: 50%;
-  border: 6px solid rgba(255, 255, 255, 0.18);
-  border-top-color: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 0 22px rgba(0, 0, 0, 0.35);
-  animation: playerLoadingSpinnerRotate 900ms linear infinite;
+  width: 96px;
+  height: 96px;
+  margin-top: -48px;
+  margin-left: -48px;
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .player-loading-backdrop {
@@ -11171,15 +11638,6 @@ button:focus-visible {
   }
 }
 
-@keyframes playerLoadingSpinnerRotate {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .player-controls-overlay {
   position: absolute;
   top: 0;
@@ -11321,6 +11779,7 @@ button:focus-visible {
 }
 
 .player-progress-track {
+  position: relative;
   width: 100%;
   height: 6px;
   border-radius: 3px;
@@ -11336,10 +11795,32 @@ button:focus-visible {
   background: rgba(255, 255, 255, 0.45);
 }
 
+.player-progress-buffered,
 .player-progress-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
   width: 0%;
   height: 100%;
   border-radius: 3px;
+}
+
+.player-progress-buffered {
+  z-index: 1;
+  background: var(--player-secondary);
+  opacity: 0;
+  transition:
+    width 250ms linear,
+    opacity 120ms ease;
+}
+
+.player-progress-buffered.is-visible {
+  opacity: 0.35;
+}
+
+.player-progress-fill {
+  z-index: 2;
   background: var(--player-secondary);
   transition: width 150ms linear;
 }
@@ -11813,36 +12294,102 @@ button:focus-visible {
 }
 
 .player-pause-overlay.is-still-watching .player-pause-overlay-content {
-  max-width: min(920px, calc(100vw - 112px));
+  left: auto;
+  top: auto;
+  right: var(--tv-safe-gutter);
+  bottom: clamp(32px, 3vh, 46px);
+  transform: none;
+  width: clamp(540px, 35vw, 680px);
+  max-width: calc(100vw - (2 * var(--tv-safe-gutter)));
+  box-sizing: border-box;
 }
 
 .player-still-watching-content {
-  gap: 18px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: clamp(12px, 0.8vw, 18px);
+  padding: clamp(12px, 0.8vw, 16px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: clamp(18px, 1.15vw, 22px);
+  background: rgba(25, 25, 25, 0.89);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.28);
+  text-shadow: none;
+}
+
+.player-still-watching-thumb {
+  width: clamp(132px, 8vw, 160px);
+  min-width: clamp(132px, 8vw, 160px);
+  height: clamp(75px, 4.5vw, 90px);
+  border-radius: clamp(11px, 0.7vw, 14px);
+  object-fit: cover;
+}
+
+.player-still-watching-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.player-still-watching-kicker {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: clamp(14px, 0.85vw, 17px);
+  font-weight: 500;
+}
+
+.player-still-watching-title {
+  margin-top: 3px;
+  color: #ffffff;
+  font-size: clamp(18px, 1.15vw, 23px);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-still-watching-status {
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: clamp(12px, 0.75vw, 15px);
+  white-space: nowrap;
 }
 
 .player-still-watching-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  margin-top: 6px;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .player-still-watching-btn {
-  min-height: 56px;
-  padding: 0 22px;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.08);
+  min-height: 42px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: transparent;
   color: #ffffff;
-  font-size: var(--tv-secondary-text);
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  font-size: clamp(13px, 0.8vw, 16px);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
-.player-still-watching-btn.is-primary {
-  background: #ffffff;
-  border-color: #ffffff;
-  color: #000000;
+.player-still-watching-btn.is-secondary {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.player-still-watching-btn.focused,
+.player-still-watching-btn:focus {
+  outline: none;
+  border-color: var(--secondary-color);
+  box-shadow: 0 0 0 3px var(--secondary-color);
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.player-still-watching-btn-icon {
+  font-size: 0.82em;
+  line-height: 1;
 }
 
 .no-flex-gap .player-pause-overlay-content > * + * {
@@ -12063,6 +12610,32 @@ button:focus-visible {
   }
 }
 
+.legacy-tizen .player-pause-overlay.is-still-watching .player-pause-overlay-content,
+.tizen-tv .player-pause-overlay.is-still-watching .player-pause-overlay-content {
+  left: auto;
+  top: auto;
+  right: 40px;
+  bottom: 32px;
+  transform: none;
+  width: 600px;
+  max-width: calc(100vw - 80px);
+  max-height: none;
+  display: flex;
+  overflow: visible;
+}
+
+.legacy-tizen .player-pause-overlay.is-still-watching .player-pause-overlay-content > *,
+.tizen-tv .player-pause-overlay.is-still-watching .player-pause-overlay-content > * {
+  margin-top: 0;
+}
+
+.legacy-tizen .player-still-watching-btn,
+.tizen-tv .player-still-watching-btn {
+  min-height: 42px;
+  padding: 0 13px;
+  border-radius: 999px;
+}
+
 .player-skip-intro {
   position: absolute;
   left: min(3.33vw, 64px);
@@ -12118,9 +12691,9 @@ button:focus-visible {
 .player-skip-intro-btn.focused,
 .player-skip-intro-btn:focus,
 .player-skip-intro:focus-within .player-skip-intro-btn {
-  background: var(--secondary-color) !important;
-  color: var(--on-secondary) !important;
-  box-shadow: none;
+  background: var(--player-focus-background) !important;
+  color: var(--player-text-primary) !important;
+  box-shadow: 0 0 0 4px var(--player-focus-ring);
 }
 
 .player-skip-intro-content {
@@ -12267,6 +12840,15 @@ button:focus-visible {
   color: #ffffff;
   font-size: clamp(18px, 1.2vw, 24px);
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-next-episode-status {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: clamp(12px, 0.75vw, 15px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -12787,6 +13369,17 @@ button:focus-visible {
   color: rgba(226, 236, 247, 0.74);
 }
 
+.player-dialog-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.player-dialog-loading .nuvio-loading-indicator {
+  width: 48px;
+  height: 48px;
+}
+
 .player-audio-support-message {
   margin-bottom: min(0.83vw, 16px);
   padding: min(0.63vw, 12px) min(0.83vw, 16px);
@@ -12930,6 +13523,11 @@ button:focus-visible {
   gap: 12px;
 }
 
+.player-source-card.no-side {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
 .player-source-card.focused {
   border-color: var(--player-focus-ring);
   background: var(--player-focus-background);
@@ -12942,6 +13540,21 @@ button:focus-visible {
 
 .player-source-main {
   min-width: 0;
+}
+
+.player-source-title-row {
+  display: flex;
+  align-items: center;
+}
+
+.player-source-title-row .player-source-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.player-source-title-row .player-source-playing {
+  flex: 0 0 auto;
+  margin-left: 8px;
 }
 
 .player-source-title {
@@ -13306,6 +13919,61 @@ button:focus-visible {
   padding: min(0.94vw, 18px) min(1.25vw, 24px); /* ATV 12dp/9dp */
 }
 
+.player-subtitle-language-rail .player-dialog-item-main {
+  display: flex;
+  align-items: center;
+  gap: min(0.52vw, 10px);
+  min-width: 0;
+}
+
+.player-subtitle-language-count,
+.player-subtitle-source-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--player-atv-text-secondary);
+  font-size: min(0.83vw, 16px);
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.player-subtitle-language-count {
+  min-width: min(1.67vw, 32px);
+  height: min(1.67vw, 32px);
+  padding: 0 min(0.42vw, 8px);
+}
+
+.player-subtitle-option-copy {
+  min-width: 0;
+  grid-column: 1 / 2;
+  grid-row: 1 / 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: min(0.31vw, 6px);
+}
+
+.player-subtitle-option-copy .player-dialog-item-main,
+.player-subtitle-option-copy .player-dialog-item-sub {
+  grid-column: auto;
+  grid-row: auto;
+  margin-top: 0;
+}
+
+.player-subtitle-source-chip {
+  min-height: min(1.46vw, 28px);
+  padding: min(0.21vw, 4px) min(0.52vw, 10px);
+}
+
+.player-subtitle-modal .player-dialog-item.selected .player-subtitle-language-count,
+.player-subtitle-modal .player-dialog-item.selected .player-subtitle-source-chip {
+  background: rgba(0, 0, 0, 0.14);
+  color: currentColor;
+}
+
 .player-subtitle-style-rail {
   gap: min(1.04vw, 20px); /* ATV 10dp -> 20px */
   padding-top: 0;
@@ -13381,7 +14049,9 @@ button:focus-visible {
 }
 
 .player-subtitle-modal .player-dialog-style-item {
-  grid-template-columns: var(--player-overlay-step-width) minmax(0, 1fr) var(--player-overlay-step-width);
+  grid-template-columns: var(--player-overlay-step-width) minmax(0, 1fr) var(
+      --player-overlay-step-width
+    );
 }
 
 .player-audio-modal .player-dialog-step {
@@ -14380,6 +15050,19 @@ button:focus-visible {
   color: var(--text-secondary);
 }
 
+.series-stream-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.series-stream-loading .nuvio-loading-indicator {
+  width: 96px;
+  height: 96px;
+}
+
 .movie-detail-shell .series-detail-vignette {
   background:
     linear-gradient(
@@ -14389,12 +15072,7 @@ button:focus-visible {
       rgba(6, 9, 14, 0.66) 72%,
       rgba(6, 9, 14, 0.5) 100%
     ),
-    linear-gradient(
-      180deg,
-      rgba(0, 0, 0, 0.4) 0%,
-      rgba(0, 0, 0, 0.18) 38%,
-      rgba(0, 0, 0, 0.9) 100%
-    );
+    linear-gradient(180deg, rgba(0, 0, 0, 0.4) 0%, rgba(0, 0, 0, 0.18) 38%, rgba(0, 0, 0, 0.9) 100%);
 }
 
 .movie-detail-content {
@@ -15032,12 +15710,7 @@ button:focus-visible {
       rgba(6, 9, 14, 0.66) 72%,
       rgba(6, 9, 14, 0.5) 100%
     ),
-    linear-gradient(
-      180deg,
-      rgba(0, 0, 0, 0.4) 0%,
-      rgba(0, 0, 0, 0.18) 38%,
-      rgba(0, 0, 0, 0.9) 100%
-    );
+    linear-gradient(180deg, rgba(0, 0, 0, 0.4) 0%, rgba(0, 0, 0, 0.18) 38%, rgba(0, 0, 0, 0.9) 100%);
   transition: opacity 800ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -15297,8 +15970,8 @@ button:focus-visible {
 }
 
 .series-primary-btn.focused {
-  background: #ffffff;
-  color: #000000;
+  background: var(--focus-bg);
+  color: var(--text-color);
   box-shadow: 0 0 0 4px var(--detail-focus-ring);
   transform: none;
 }
@@ -15582,6 +16255,20 @@ button:focus-visible {
     border-color 120ms ease,
     box-shadow 120ms ease,
     background-color 120ms ease;
+}
+
+.series-episode-image {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--detail-bg-card) center center / cover no-repeat;
+}
+
+.series-episode-image.is-blurred {
+  filter: blur(12px);
+  transform: scale(1.08);
 }
 
 .series-episode-card.focused {
@@ -16168,12 +16855,7 @@ button:focus-visible {
       rgba(6, 9, 14, 0.66) 72%,
       rgba(6, 9, 14, 0.5) 100%
     ),
-    linear-gradient(
-      180deg,
-      rgba(0, 0, 0, 0.4) 0%,
-      rgba(0, 0, 0, 0.2) 40%,
-      rgba(0, 0, 0, 0.82) 100%
-    );
+    linear-gradient(180deg, rgba(0, 0, 0, 0.4) 0%, rgba(0, 0, 0, 0.2) 40%, rgba(0, 0, 0, 0.82) 100%);
 }
 
 .stream-screen-panel {
@@ -16424,12 +17106,9 @@ button:focus-visible {
 }
 
 .stream-route-chip-spinner {
-  width: 12px;
-  height: 12px;
-  border-radius: 999px;
-  border: 1.5px solid currentColor;
-  border-top-color: transparent;
-  animation: streamRouteSpin 700ms linear infinite;
+  width: 42px;
+  height: 42px;
+  color: inherit;
 }
 
 .stream-route-panel-shell {
@@ -16562,6 +17241,10 @@ button:focus-visible {
   transition-delay: 0ms !important;
 }
 
+.performance-constrained .trakt-route-shell .settings-trakt-options-stack .settings-action-row {
+  transition: none !important;
+}
+
 .performance-constrained .player-loading-identity {
   animation:
     playerLoadingIdentityFade 700ms linear 400ms forwards,
@@ -16572,12 +17255,9 @@ button:focus-visible {
   animation: none !important;
 }
 
-.performance-constrained .player-loading-spinner-ring {
-  animation: playerLoadingSpinnerRotate 900ms linear infinite !important;
-}
-
-.performance-constrained .stream-route-chip-spinner {
-  animation: streamRouteSpin 700ms linear infinite !important;
+.performance-constrained .nuvio-loading-indicator-spoke {
+  animation-duration: 1000ms !important;
+  animation-iteration-count: infinite !important;
 }
 
 .performance-constrained .stream-route-skeleton-line {
@@ -16634,18 +17314,6 @@ button:focus-visible {
   transition-timing-function: cubic-bezier(0.22, 0.61, 0.36, 1) !important;
 }
 
-.performance-constrained .home-loading-spinner {
-  animation: homeLoadingSpin 820ms linear infinite !important;
-}
-
-.performance-constrained .library-loading-spinner {
-  animation: librarySpin 1332ms linear infinite !important;
-}
-
-.performance-constrained .library-loading-spinner-track {
-  animation: librarySpinnerDash 1332ms cubic-bezier(0.4, 0, 0.2, 1) infinite !important;
-}
-
 .performance-constrained .home-content-card.focused {
   transform: scale(1.005) !important;
 }
@@ -16684,6 +17352,13 @@ button:focus-visible {
 .performance-constrained .stream-route-panel-shell {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
+}
+
+.performance-constrained.modern-sidebar-blur-capable
+  .modern-sidebar-shell.blur-enabled.expanded:not(.collapsing)
+  .modern-sidebar-panel {
+  backdrop-filter: blur(26px) saturate(1) !important;
+  -webkit-backdrop-filter: blur(26px) saturate(1) !important;
 }
 
 .performance-constrained .series-detail-backdrop,
@@ -16964,9 +17639,9 @@ button:focus-visible {
 .legacy-webos .player-skip-intro-btn.focused,
 .legacy-webos .player-skip-intro-btn:focus,
 .legacy-webos .player-skip-intro:focus-within .player-skip-intro-btn {
-  background: var(--secondary-color) !important;
-  color: var(--on-secondary) !important;
-  box-shadow: none;
+  background: var(--player-focus-background) !important;
+  color: var(--player-text-primary) !important;
+  box-shadow: 0 0 0 4px var(--player-focus-ring);
 }
 
 .legacy-webos .player-next-episode-card {
@@ -16998,6 +17673,10 @@ button:focus-visible {
 
 .legacy-webos .player-next-episode-title {
   font-size: 22px;
+}
+
+.legacy-webos .player-next-episode-status {
+  font-size: 14px;
 }
 
 .legacy-webos .player-episode-panel {
@@ -17535,7 +18214,10 @@ button:focus-visible {
   height: var(--home-poster-height);
 }
 
-.no-aspect-ratio .home-screen-shell .home-collection-card.is-collection-landscape .home-poster-frame {
+.no-aspect-ratio
+  .home-screen-shell
+  .home-collection-card.is-collection-landscape
+  .home-poster-frame {
   height: var(--home-landscape-poster-height);
 }
 
@@ -17588,304 +18270,6 @@ button:focus-visible {
   background:
     linear-gradient(180deg, rgb(var(--bg-elevated-rgb) / 0.92), rgb(var(--bg-elevated-rgb) / 0.92)),
     var(--bg-elevated);
-}
-
-html.no-css-grid .qr-layout,
-html.no-css-grid .settings-workspace,
-html.no-css-grid .settings-trakt-panel,
-html.no-css-grid .cast-detail-hero-content,
-html.no-css-grid .stream-route-content,
-html.no-css-grid .addon-list-header,
-html.no-css-grid .parental-overlay-row {
-  display: flex;
-  flex-wrap: nowrap;
-}
-
-html.no-css-grid .qr-left-panel {
-  flex: 0 0 45%;
-  width: 45%;
-  margin-right: 36px;
-}
-
-html.no-css-grid .qr-card-panel {
-  flex: 1 1 0;
-  width: auto;
-}
-
-html.no-css-grid .settings-workspace {
-  align-items: stretch;
-}
-
-html.no-css-grid .settings-sidebar-frame {
-  flex: 0 0 440px;
-  width: 440px;
-  margin-right: 32px;
-}
-
-html.no-css-grid .settings-content-frame {
-  flex: 1 1 0;
-  width: auto;
-}
-
-html.no-css-grid .settings-trakt-hero {
-  flex: 0 0 45%;
-  width: 45%;
-  margin-right: 36px;
-}
-
-html.no-css-grid .settings-trakt-card {
-  flex: 1 1 0;
-  width: auto;
-}
-
-html.no-css-grid .settings-layout-grid,
-html.no-css-grid .settings-trakt-stats-row,
-html.no-css-grid .settings-trakt-grid-dialog .settings-dialog-list,
-html.no-css-grid .discover-grid,
-html.no-css-grid .library-grid,
-html.no-css-grid .seeall-grid,
-html.no-css-grid .series-episode-ratings-grid {
-  display: flex;
-  flex-wrap: wrap;
-}
-
-html.no-css-grid .settings-layout-grid > *,
-html.no-css-grid .settings-trakt-stats-row > *,
-html.no-css-grid .settings-trakt-grid-dialog .settings-dialog-list > *,
-html.no-css-grid .discover-grid > *,
-html.no-css-grid .library-grid > *,
-html.no-css-grid .seeall-grid > *,
-html.no-css-grid .series-episode-ratings-grid > * {
-  margin-right: 24px;
-  margin-bottom: 24px;
-}
-
-html.no-css-grid .settings-layout-card {
-  flex: 0 0 calc((100% - 48px) / 3);
-  width: calc((100% - 48px) / 3);
-}
-
-html.no-css-grid .settings-trakt-stat {
-  flex: 0 0 25%;
-  width: 25%;
-}
-
-html.no-css-grid .discover-card,
-html.no-css-grid .discover-action-card,
-html.no-css-grid .seeall-card {
-  flex: 0 0 248px;
-  width: 248px;
-}
-
-html.no-css-grid .library-grid-card {
-  flex: 0 0 var(--library-poster-width, 252px);
-  width: var(--library-poster-width, 252px);
-}
-
-html.no-css-grid .cast-detail-avatar {
-  flex: 0 0 220px;
-  margin-right: 20px;
-}
-
-html.no-css-grid .cast-detail-meta {
-  flex: 1 1 0;
-}
-
-.no-css-vars {
-  background: #0d0d0d;
-  color: #fff;
-  font-family: "Inter", "Segoe UI", Arial, sans-serif;
-}
-
-.no-css-vars body,
-.no-css-vars #app,
-.no-css-vars .screen,
-.no-css-vars .settings-shell,
-.no-css-vars .library-shell,
-.no-css-vars .home-main,
-.no-css-vars .seeall-shell {
-  background: #0d0d0d;
-  color: #fff;
-}
-
-.no-css-vars .home-shell {
-  background: #0d0d0d;
-  color: #fff;
-}
-
-.no-css-vars .home-sidebar {
-  width: 144px;
-  padding: 24px;
-  background: #0d0d0d;
-}
-
-.no-css-vars .home-sidebar.expanded {
-  width: 392px;
-  flex-basis: 392px;
-}
-
-.no-css-vars .home-sidebar[data-collapsible="true"]:not(.expanded) {
-  width: 0;
-  padding-left: 0;
-  padding-right: 0;
-}
-
-.no-css-vars .home-main {
-  margin-left: 144px;
-}
-
-.no-css-vars .home-nav-list {
-  gap: 20px;
-}
-
-.no-css-vars .home-nav-item {
-  width: 96px;
-  height: 104px;
-  border-radius: 64px;
-  color: #808080;
-  font-family: "Inter", "Segoe UI", Arial, sans-serif;
-}
-
-.no-css-vars .home-sidebar.content-expanded .home-nav-item {
-  width: 296px;
-  padding: 0 28px 0 26px;
-  color: #b3b3b3;
-}
-
-.no-css-vars .home-nav-item.selected,
-.no-css-vars .home-sidebar.content-expanded .home-nav-item.selected {
-  background: #f5f5f5;
-  color: #111;
-}
-
-.no-css-vars .home-nav-item.focused,
-.no-css-vars .home-sidebar.content-expanded .home-nav-item.selected.focused {
-  background: #303030;
-  color: #fff;
-}
-
-.no-css-vars .home-sidebar.content-expanded .home-nav-item.focused {
-  transform: scale(1.1);
-}
-
-.no-css-vars .home-nav-icon-wrap,
-.no-css-vars .home-nav-icon {
-  width: 44px;
-  height: 44px;
-}
-
-.no-css-vars .home-nav-label {
-  font-size: 40px;
-  line-height: 56px;
-}
-
-.no-css-vars .home-sidebar.content-expanded .home-nav-label {
-  width: 160px;
-}
-
-.no-css-vars .modern-sidebar-shell {
-  width: 368px;
-}
-
-.no-css-vars .modern-sidebar-shell.expanded:not(.opening):not(.collapsing) {
-  width: 524px;
-}
-
-.no-css-vars .modern-sidebar-panel {
-  top: 32px;
-  left: 28px;
-  width: 480px;
-  min-height: calc(100vh - 56px);
-  padding: 28px 24px;
-}
-
-.no-css-vars .modern-sidebar-nav-list {
-  gap: 12px;
-}
-
-.no-css-vars .modern-sidebar-profile,
-.no-css-vars .modern-sidebar-nav-item {
-  min-height: 108px;
-  width: 92%;
-  border-radius: 999px;
-  gap: 28px;
-}
-
-.no-css-vars .home-profile-name,
-.no-css-vars .modern-sidebar-profile-name,
-.no-css-vars .modern-sidebar-nav-label,
-.no-css-vars .modern-sidebar-pill-label {
-  font-size: 40px;
-  line-height: 56px;
-  letter-spacing: 0;
-}
-
-.no-css-vars .modern-sidebar-pill {
-  top: 32px;
-  left: 28px;
-}
-
-.no-css-vars .modern-sidebar-pill-chip {
-  min-height: 88px;
-  padding: 0 24px 0 10px;
-  gap: 18px;
-}
-
-.no-css-vars .settings-workspace {
-  width: calc(100vw - 208px);
-  height: calc(100vh - 96px);
-  margin: 48px 64px 48px 144px;
-  background: #1a1a1a;
-  border-color: #333;
-}
-
-.no-css-vars .settings-shell.has-collapsible-sidebar .settings-workspace,
-.no-css-vars .settings-shell.has-modern-sidebar .settings-workspace {
-  width: calc(100vw - 128px);
-  margin-left: 64px;
-}
-
-.no-css-vars .settings-nav-item,
-.no-css-vars .settings-action-row,
-.no-css-vars .settings-theme-card,
-.no-css-vars .settings-layout-card,
-.no-css-vars .library-action-button,
-.no-css-vars .qr-status,
-.no-css-vars .qr-action-btn,
-.no-css-vars .seeall-card-poster,
-.no-css-vars .discover-card-poster,
-.no-css-vars .library-grid-poster,
-.no-css-vars .stream-route-card {
-  background: #222;
-  color: #fff;
-  border-color: #333;
-}
-
-.no-css-vars .settings-nav-item.selected,
-.no-css-vars .settings-nav-item.focused,
-.no-css-vars .settings-action-row.focused,
-.no-css-vars .library-action-button.focused,
-.no-css-vars .qr-action-btn.focused {
-  background: #303030;
-  color: #fff;
-  border-color: #fff !important;
-}
-
-.no-css-vars .settings-layout-preview-placeholder {
-  background: #242424;
-}
-
-.no-css-vars .settings-layout-placeholder-line {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.no-css-vars .settings-layout-placeholder-panel {
-  background: #121212;
-}
-
-.no-css-vars .series-detail-shell {
-  color: #fff;
-  background: #0d0d0d;
 }
 
 .no-css-math .home-nav-label {
@@ -18152,30 +18536,6 @@ html.no-css-grid .cast-detail-meta {
   margin-right: var(--settings-layout-classic-gap);
 }
 
-.no-css-grid .settings-layout-preview-grid-canvas {
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  justify-content: space-between;
-  gap: 0;
-  row-gap: 12px;
-  column-gap: 0;
-  height: var(--settings-layout-grid-canvas-height);
-}
-
-.no-css-grid .settings-layout-preview-grid-cell {
-  flex: 0 0 var(--settings-layout-grid-card-width);
-  width: var(--settings-layout-grid-card-width);
-  height: var(--settings-layout-grid-card-height);
-  margin-bottom: var(--settings-layout-grid-gap);
-  margin-right: 0;
-}
-
-.no-css-math.no-css-grid .settings-layout-preview-grid-cell {
-  flex: 0 0 var(--settings-layout-grid-card-width);
-  width: var(--settings-layout-grid-card-width);
-}
-
 .no-css-math .settings-layout-preview {
   background-color: #0d0d0d;
 }
@@ -18184,23 +18544,6 @@ html.no-css-grid .cast-detail-meta {
 .no-css-math .settings-layout-preview-grid,
 .no-css-math .settings-layout-preview-classic {
   overflow: hidden;
-}
-
-.no-css-grid .profile-editor-avatar-grid {
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-}
-
-.no-css-grid .profile-avatar-tile {
-  flex: 0 0 160px;
-  width: 160px;
-  height: 160px;
-  margin: 0 24px 24px 0;
-}
-
-.no-css-grid .profile-avatar-tile:nth-child(4n) {
-  margin-right: 0;
 }
 
 /* Chromium 68 and older ignore flex gap. Keep these source-level fallbacks
@@ -18240,18 +18583,6 @@ html.no-css-grid .cast-detail-meta {
 
 .no-flex-gap .modern-sidebar-pill-chip > * + * {
   margin-left: var(--modern-sidebar-pill-chip-gap);
-}
-
-.no-css-vars.no-flex-gap .home-nav-list > * + * {
-  margin-top: 20px;
-}
-
-.no-css-vars.no-flex-gap .modern-sidebar-nav-list > * + * {
-  margin-top: 12px;
-}
-
-.no-css-vars.no-flex-gap .modern-sidebar-nav-item > * + * {
-  margin-left: 28px;
 }
 
 .no-flex-gap .search-sidebar > * + *,
@@ -18535,47 +18866,6 @@ html.no-css-grid .cast-detail-meta {
   margin-top: 32px;
 }
 
-.no-css-grid .search-header {
-  display: flex;
-  align-items: center;
-}
-
-.no-css-grid .search-header > * + * {
-  margin-left: 24px;
-}
-
-.no-css-grid .search-input-field {
-  flex: 1 1 auto;
-}
-
-.no-css-grid .discover-filters,
-.no-css-grid .settings-plugin-builder-row,
-.no-css-grid .settings-text-dialog-actions {
-  display: flex;
-}
-
-.no-css-grid .discover-filters > *,
-.no-css-grid .settings-text-dialog-actions > * {
-  flex: 1 1 0;
-}
-
-.no-css-grid .discover-filters > * + *,
-.no-css-grid .settings-text-dialog-actions > * + * {
-  margin-left: 16px;
-}
-
-.no-css-grid .settings-plugin-input {
-  flex: 1 1 auto;
-}
-
-.no-css-grid .settings-plugin-add {
-  flex: 0 0 180px;
-}
-
-.no-css-grid .settings-plugin-builder-row > * + * {
-  margin-left: 18px;
-}
-
 @supports not (font-size: clamp(1px, 2px, 3px)) {
   .home-screen-shell.home-layout-modern .home-hero,
   .home-screen-shell.home-layout-modern .home-modern-hero-card {
@@ -18793,9 +19083,9 @@ html.no-css-grid .cast-detail-meta {
   .player-skip-intro-btn.focused,
   .player-skip-intro-btn:focus,
   .player-skip-intro:focus-within .player-skip-intro-btn {
-    background: var(--secondary-color) !important;
-    color: var(--on-secondary) !important;
-    box-shadow: none;
+    background: var(--player-focus-background) !important;
+    color: var(--player-text-primary) !important;
+    box-shadow: 0 0 0 4px var(--player-focus-ring);
   }
 
   .player-next-episode-card {
@@ -18894,6 +19184,37 @@ html.no-css-grid .cast-detail-meta {
   background-color: transparent !important;
 }
 
+/* Keep poster focus feedback aligned with Android TV without restoring the
+   expensive home-wide animation set on constrained TV runtimes. */
+.performance-constrained .home-screen-shell.home-layout-classic .home-poster-card,
+.performance-constrained .home-screen-shell.home-layout-grid .home-poster-card {
+  transition: transform 160ms cubic-bezier(0.2, 0, 0, 1) !important;
+}
+
+.performance-constrained .home-screen-shell.home-layout-classic .home-poster-card.focused,
+.performance-constrained .home-screen-shell.home-layout-grid .home-poster-card.focused {
+  transform: translateZ(0) scale(1.02) !important;
+}
+
+/* Modern poster expansion only runs after focus settles, so its layout work
+   stays out of the D-pad scrolling path while preserving the Android motion. */
+.performance-constrained .home-screen-shell.home-layout-modern .home-poster-card {
+  transition:
+    flex-basis 180ms cubic-bezier(0.2, 0, 0, 1),
+    min-width 180ms cubic-bezier(0.2, 0, 0, 1),
+    max-width 180ms cubic-bezier(0.2, 0, 0, 1),
+    margin-top 180ms cubic-bezier(0.2, 0, 0, 1),
+    margin-bottom 180ms cubic-bezier(0.2, 0, 0, 1) !important;
+}
+
+.performance-constrained .home-screen-shell.home-layout-modern .home-poster-card .content-poster,
+.performance-constrained
+  .home-screen-shell.home-layout-modern
+  .home-poster-card
+  .home-poster-expanded-backdrop {
+  transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1) !important;
+}
+
 .webos-pointer-remote .focusable {
   cursor: pointer;
 }
@@ -18913,6 +19234,34 @@ html.no-css-grid .cast-detail-meta {
 
 .tizen-tv .home-screen-shell.home-layout-modern .home-modern-hero-media::after {
   background: linear-gradient(180deg, transparent 88%, rgba(0, 0, 0, 0.62) 100%);
+}
+
+.tizen-tv
+  .home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop
+  .home-modern-hero-media::before {
+  width: 65%;
+  right: auto;
+  background: linear-gradient(
+    90deg,
+    #0d0d0d 0%,
+    rgba(13, 13, 13, 0.9) 22%,
+    rgba(13, 13, 13, 0.8) 46%,
+    rgba(13, 13, 13, 0.42) 76%,
+    rgba(13, 13, 13, 0) 100%
+  );
+}
+
+.tizen-tv
+  .home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop
+  .home-modern-hero-media::after {
+  background: linear-gradient(
+    180deg,
+    rgba(13, 13, 13, 0) 0%,
+    rgba(13, 13, 13, 0) 64%,
+    rgba(13, 13, 13, 0.35) 74.8%,
+    rgba(13, 13, 13, 0.75) 85.6%,
+    #0d0d0d 100%
+  );
 }
 
 .legacy-tizen .home-screen-shell.home-layout-modern {
@@ -18948,7 +19297,7 @@ html.no-css-grid .cast-detail-meta {
 }
 
 .legacy-tizen .player-subtitle-overlay-grid {
-  height: auto;
+  height: 0;
   min-height: 0;
 }
 
@@ -19176,21 +19525,26 @@ html.no-css-grid .cast-detail-meta {
   margin: 6px 0 5px;
 }
 
+.legacy-webos .stream-route-card-badges-lazy {
+  height: 26px;
+  min-height: 26px;
+}
+
 .legacy-webos .stream-route-stream-badge {
-  min-height: 20px;
-  padding: 0 6px;
-  border-radius: 5px;
-  font-size: 12px;
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 15px;
 }
 
 .legacy-webos .stream-route-stream-badge.image {
-  min-width: 34px;
-  max-width: 90px;
+  min-width: 42px;
+  max-width: 116px;
 }
 
 .legacy-webos .stream-route-stream-badge.image img {
-  max-height: 16px;
-  max-width: 82px;
+  max-height: 21px;
+  max-width: 106px;
 }
 
 .legacy-webos .stream-route-card-line {
@@ -19311,8 +19665,7 @@ html.no-css-grid .cast-detail-meta {
 }
 
 .stream-route-card.skeleton {
-  display: block;
-  min-height: 160px;
+  pointer-events: none;
 }
 
 .stream-route-card-copy {
@@ -19347,6 +19700,13 @@ html.no-css-grid .cast-detail-meta {
   max-width: 100%;
 }
 
+.stream-route-card-badges-lazy {
+  flex-wrap: nowrap;
+  height: 30px;
+  min-height: 30px;
+  overflow: hidden;
+}
+
 .player-source-badges {
   margin: 0 0 7px;
 }
@@ -19356,16 +19716,16 @@ html.no-css-grid .cast-detail-meta {
 }
 
 .stream-route-stream-badge {
-  min-height: 22px;
-  padding: 0 7px;
-  border-radius: 6px;
+  min-height: 30px;
+  padding: 0 9px;
+  border-radius: 7px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: 17px;
   line-height: 1;
   font-weight: 500;
   white-space: nowrap;
@@ -19374,9 +19734,9 @@ html.no-css-grid .cast-detail-meta {
 }
 
 .stream-route-stream-badge.image {
-  padding: 2px 5px;
-  min-width: 38px;
-  max-width: 104px;
+  padding: 3px 7px;
+  min-width: 48px;
+  max-width: 132px;
   line-height: 0;
   overflow: hidden;
   background: transparent;
@@ -19384,18 +19744,18 @@ html.no-css-grid .cast-detail-meta {
 
 .stream-route-stream-badge.image img {
   display: block;
-  max-height: 18px;
-  max-width: 96px;
+  max-height: 24px;
+  max-width: 118px;
   object-fit: contain;
 }
 
 .stream-route-stream-badge.size {
-  min-height: 22px;
-  padding: 0 7px;
+  min-height: 30px;
+  padding: 0 9px;
   border-color: #0a0c0c;
   background: #0a0c0c;
   color: #ffffff;
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 500;
 }
 
@@ -19577,22 +19937,24 @@ html.no-css-grid .cast-detail-meta {
   );
   background-size: 220% 100%;
   animation: streamRouteSkeletonShimmer 2.2s ease-in-out infinite;
-  margin-bottom: 14px;
+  margin-top: 12px;
 }
 
-.stream-route-skeleton-line.wide {
+/* Widths/heights mirror the real card rows: heading, quality, then two lines. */
+.stream-route-skeleton-line:first-child {
   width: 34%;
   height: 22px;
+  margin-top: 0;
 }
 
-.stream-route-skeleton-line.short {
+.stream-route-skeleton-line:nth-child(2) {
   width: 12%;
   height: 18px;
+  margin-top: 14px;
 }
 
 .stream-route-skeleton-line:last-child {
   width: 56%;
-  margin-bottom: 0;
 }
 
 @keyframes streamRoutePanelEnter {
@@ -19620,15 +19982,6 @@ html.no-css-grid .cast-detail-meta {
   }
 }
 
-@keyframes streamRouteSpin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .cast-detail-shell {
   width: 100vw;
   height: 100vh;
@@ -19649,6 +20002,18 @@ html.no-css-grid .cast-detail-meta {
   text-align: center;
   font-size: 28px;
   color: var(--text-secondary);
+}
+
+.cast-detail-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.cast-detail-loading .nuvio-loading-indicator {
+  width: 96px;
+  height: 96px;
 }
 
 .cast-detail-hero {
@@ -19935,9 +20300,12 @@ html.no-css-grid .cast-detail-meta {
 .seeall-loading {
   width: 100%;
   padding: 18px 0 8px;
-  text-align: center;
   color: var(--text-secondary);
   font-size: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
 }
 
 .seeall-shell.discover-seeall-shell {
@@ -19962,8 +20330,12 @@ html.no-css-grid .cast-detail-meta {
   z-index: 10;
   margin: -24px -48px 24px;
   padding: 24px 48px 18px;
-  background:
-    linear-gradient(180deg, var(--bg-color) 0%, rgb(var(--bg-color-rgb) / 0.96) 72%, rgb(var(--bg-color-rgb) / 0) 100%);
+  background: linear-gradient(
+    180deg,
+    var(--bg-color) 0%,
+    rgb(var(--bg-color-rgb) / 0.96) 72%,
+    rgb(var(--bg-color-rgb) / 0) 100%
+  );
 }
 
 .folder-detail-eyebrow {
@@ -20126,7 +20498,7 @@ html.no-css-grid .cast-detail-meta {
 }
 
 .folder-row-loading {
-  text-align: left;
+  align-items: flex-start;
   padding-top: 0;
 }
 
@@ -20199,8 +20571,8 @@ html.no-css-grid .cast-detail-meta {
 }
 
 .series-primary-btn.focused {
-  background: #ffffff;
-  color: #000000;
+  background: var(--focus-bg);
+  color: var(--text-color);
   border-color: var(--detail-focus-ring);
   transform: none;
 }
@@ -20306,48 +20678,56 @@ html.no-css-grid .cast-detail-meta {
 }
 
 .series-episode-track {
-  gap: 40px;
-  padding: 36px var(--detail-episode-safe-x);
+  gap: 28px;
+  padding: 28px 64px;
 }
 
 .series-episode-card {
-  flex-basis: 800px;
-  width: 800px;
-  border-radius: 40px;
+  flex-basis: 560px;
+  width: 560px;
+  border-radius: 32px;
 }
 
 .series-episode-thumb {
-  height: 526px;
-  border-radius: 40px;
+  height: 358px;
+  border-radius: 32px;
 }
 
 .series-episode-copy {
-  padding: 40px 40px 48px;
+  padding: 28px 28px 32px;
   gap: 12px;
 }
 
 .series-episode-badge {
-  padding: 10px 20px;
-  border-radius: 16px;
+  padding: 6px 14px;
+  border-radius: 10px;
   font-size: 20px;
   line-height: 28px;
-  letter-spacing: 2px;
+  letter-spacing: 1.6px;
 }
 
 .series-episode-title {
-  min-height: 56px;
+  display: block;
+  min-height: 38px;
   font-size: 32px;
-  line-height: 56px;
+  line-height: 38px;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .series-episode-overview {
   font-size: 28px;
-  line-height: 44px;
+  line-height: 32px;
+  max-height: 96px;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
 }
 
 .series-episode-meta {
   gap: 24px;
-  min-height: 32px;
+  min-height: 28px;
   font-size: 20px;
   line-height: 28px;
 }
@@ -20357,8 +20737,8 @@ html.no-css-grid .cast-detail-meta {
 }
 
 .series-episode-runtime-icon {
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
 }
 
 .series-episode-meta .series-imdb-badge {
@@ -20366,39 +20746,282 @@ html.no-css-grid .cast-detail-meta {
 }
 
 .series-episode-meta .series-imdb-badge img {
-  width: 56px;
-  height: 28px;
+  width: 44px;
+  height: 22px;
 }
 
 .series-episode-progress {
-  margin-top: 4px;
+  position: absolute;
+  right: 28px;
+  bottom: 14px;
+  left: 28px;
+  width: auto;
   height: 8px;
+  margin-top: 0;
 }
 
 .series-episode-status {
-  top: 32px;
-  left: 32px;
-  width: 64px;
-  height: 64px;
+  top: 20px;
+  left: 20px;
+  width: 44px;
+  height: 44px;
 }
 
 .series-episode-status.complete {
-  font-size: 40px;
+  font-size: 28px;
 }
 
 .series-watched-badge-svg {
-  width: 40px;
-  height: 40px;
+  width: 28px;
+  height: 28px;
 }
 
 .series-episode-unavailable {
-  top: 32px;
-  right: 32px;
-  padding: 10px 20px;
-  border-radius: 16px;
+  top: 20px;
+  right: 20px;
+  padding: 6px 14px;
+  border-radius: 10px;
   font-size: 20px;
   line-height: 28px;
-  letter-spacing: 2px;
+  letter-spacing: 1.6px;
+}
+
+/* Mirror the responsive card tiers in NuvioTV EpisodesSection.kt. The Web
+   detail port uses a 2x Android dp-to-CSS-pixel mapping. */
+@media (min-width: 1520px) {
+  .series-episode-track {
+    gap: 32px;
+    padding: 32px 96px;
+  }
+
+  .series-episode-card {
+    flex-basis: 640px;
+    width: 640px;
+  }
+
+  .series-episode-thumb {
+    height: 414px;
+  }
+
+  .series-episode-copy {
+    padding: 32px 32px 40px;
+  }
+
+  .series-episode-badge {
+    padding: 8px 16px;
+    border-radius: 12px;
+    letter-spacing: 1.8px;
+  }
+
+  .series-episode-title {
+    min-height: 44px;
+    line-height: 44px;
+  }
+
+  .series-episode-overview {
+    line-height: 36px;
+    max-height: 108px;
+  }
+
+  .series-episode-runtime-icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  .series-episode-meta .series-imdb-badge img {
+    width: 48px;
+    height: 24px;
+  }
+
+  .series-episode-progress {
+    right: 32px;
+    bottom: 16px;
+    left: 32px;
+  }
+
+  .series-episode-status {
+    top: 24px;
+    left: 24px;
+    width: 48px;
+    height: 48px;
+  }
+
+  .series-episode-status.complete {
+    font-size: 32px;
+  }
+
+  .series-watched-badge-svg {
+    width: 32px;
+    height: 32px;
+  }
+
+  .series-episode-unavailable {
+    top: 24px;
+    right: 24px;
+    padding: 8px 16px;
+    border-radius: 12px;
+    letter-spacing: 1.8px;
+  }
+}
+
+@media (min-width: 2000px) {
+  .series-episode-track {
+    gap: 36px;
+    padding: 36px 104px;
+  }
+
+  .series-episode-card {
+    flex-basis: 720px;
+    width: 720px;
+    border-radius: 36px;
+  }
+
+  .series-episode-thumb {
+    height: 470px;
+    border-radius: 36px;
+  }
+
+  .series-episode-copy {
+    padding: 36px 36px 44px;
+  }
+
+  .series-episode-badge {
+    padding: 8px 18px;
+    border-radius: 14px;
+  }
+
+  .series-episode-title {
+    min-height: 50px;
+    line-height: 50px;
+  }
+
+  .series-episode-overview {
+    line-height: 40px;
+    max-height: 160px;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+  }
+
+  .series-episode-runtime-icon {
+    width: 30px;
+    height: 30px;
+  }
+
+  .series-episode-meta .series-imdb-badge img {
+    width: 52px;
+    height: 26px;
+  }
+
+  .series-episode-progress {
+    right: 36px;
+    bottom: 18px;
+    left: 36px;
+  }
+
+  .series-episode-status {
+    top: 28px;
+    left: 28px;
+    width: 56px;
+    height: 56px;
+  }
+
+  .series-episode-status.complete {
+    font-size: 36px;
+  }
+
+  .series-watched-badge-svg {
+    width: 36px;
+    height: 36px;
+  }
+
+  .series-episode-unavailable {
+    top: 28px;
+    right: 28px;
+    padding: 8px 18px;
+    border-radius: 14px;
+  }
+}
+
+@media (min-width: 2600px) {
+  .series-episode-track {
+    gap: 40px;
+    padding: 36px 112px;
+  }
+
+  .series-episode-card {
+    flex-basis: 800px;
+    width: 800px;
+    border-radius: 40px;
+  }
+
+  .series-episode-thumb {
+    height: 526px;
+    border-radius: 40px;
+  }
+
+  .series-episode-copy {
+    padding: 40px 40px 48px;
+  }
+
+  .series-episode-badge {
+    padding: 10px 20px;
+    border-radius: 16px;
+    letter-spacing: 2px;
+  }
+
+  .series-episode-title {
+    min-height: 56px;
+    line-height: 56px;
+  }
+
+  .series-episode-overview {
+    line-height: 44px;
+    max-height: 176px;
+  }
+
+  .series-episode-meta {
+    min-height: 32px;
+  }
+
+  .series-episode-runtime-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .series-episode-meta .series-imdb-badge img {
+    width: 56px;
+    height: 28px;
+  }
+
+  .series-episode-progress {
+    right: 40px;
+    bottom: 20px;
+    left: 40px;
+  }
+
+  .series-episode-status {
+    top: 32px;
+    left: 32px;
+    width: 64px;
+    height: 64px;
+  }
+
+  .series-episode-status.complete {
+    font-size: 40px;
+  }
+
+  .series-watched-badge-svg {
+    width: 40px;
+    height: 40px;
+  }
+
+  .series-episode-unavailable {
+    top: 32px;
+    right: 32px;
+    padding: 10px 20px;
+    border-radius: 16px;
+    letter-spacing: 2px;
+  }
 }
 
 .series-insight-tabs {
@@ -20711,4 +21334,135 @@ html.no-css-grid .cast-detail-meta {
   padding: 24px var(--detail-safe-x);
   color: var(--detail-text-secondary);
   font-size: 28px;
+}
+
+/* Final legacy-TV overrides. On older Chromium/WebKit, declarations such as
+   rgb(var(--color-rgb) / alpha) can become invalid only after var() is
+   resolved; that also discards earlier declarations from the same cascade. */
+.legacy-tizen .home-screen-shell.home-layout-modern .home-modern-hero-copy,
+.legacy-webos .home-screen-shell.home-layout-modern .home-modern-hero-copy {
+  top: 0;
+  bottom: 52vh;
+}
+
+.legacy-tizen .home-screen-shell.home-layout-modern .home-modern-hero-media::before,
+.legacy-webos .home-screen-shell.home-layout-modern .home-modern-hero-media::before {
+  width: 45%;
+  right: auto;
+  background: linear-gradient(
+    90deg,
+    #0d0d0d 0%,
+    rgba(13, 13, 13, 0.86) 22%,
+    rgba(13, 13, 13, 0.56) 46%,
+    rgba(13, 13, 13, 0.16) 76%,
+    rgba(13, 13, 13, 0) 100%
+  );
+}
+
+.legacy-tizen .home-screen-shell.home-layout-modern .home-modern-hero-media::after,
+.legacy-webos .home-screen-shell.home-layout-modern .home-modern-hero-media::after {
+  background: linear-gradient(
+    180deg,
+    rgba(13, 13, 13, 0) 0%,
+    rgba(13, 13, 13, 0) 82%,
+    rgba(13, 13, 13, 0.25) 89.2%,
+    rgba(13, 13, 13, 0.65) 95.5%,
+    #0d0d0d 100%
+  );
+}
+
+.legacy-tizen
+  .home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop
+  .home-modern-hero-media,
+.legacy-webos
+  .home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop
+  .home-modern-hero-media {
+  right: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.legacy-tizen
+  .home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop
+  .home-modern-hero-media::before,
+.legacy-webos
+  .home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop
+  .home-modern-hero-media::before {
+  width: 65%;
+  right: auto;
+  background: linear-gradient(
+    90deg,
+    #0d0d0d 0%,
+    rgba(13, 13, 13, 0.9) 22%,
+    rgba(13, 13, 13, 0.8) 46%,
+    rgba(13, 13, 13, 0.42) 76%,
+    rgba(13, 13, 13, 0) 100%
+  );
+}
+
+.legacy-tizen
+  .home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop
+  .home-modern-hero-media::after,
+.legacy-webos
+  .home-screen-shell.home-layout-modern.home-modern-fullscreen-backdrop
+  .home-modern-hero-media::after {
+  background: linear-gradient(
+    180deg,
+    rgba(13, 13, 13, 0) 0%,
+    rgba(13, 13, 13, 0) 64%,
+    rgba(13, 13, 13, 0.35) 74.8%,
+    rgba(13, 13, 13, 0.75) 85.6%,
+    #0d0d0d 100%
+  );
+}
+
+.legacy-tizen .stream-route-backdrop-dim,
+.legacy-webos .stream-route-backdrop-dim {
+  background: rgba(13, 13, 13, 0.24);
+}
+
+.legacy-tizen .stream-route-left-gradient,
+.legacy-webos .stream-route-left-gradient {
+  background: linear-gradient(
+    90deg,
+    rgba(13, 13, 13, 1) 0%,
+    rgba(13, 13, 13, 0.96) 15%,
+    rgba(13, 13, 13, 0.88) 31%,
+    rgba(13, 13, 13, 0.66) 48%,
+    rgba(13, 13, 13, 0.36) 68%,
+    rgba(13, 13, 13, 0) 100%
+  );
+}
+
+.legacy-tizen .stream-route-right-gradient,
+.legacy-webos .stream-route-right-gradient {
+  background: linear-gradient(
+    270deg,
+    rgba(13, 13, 13, 1) 0%,
+    rgba(13, 13, 13, 0.95) 14%,
+    rgba(13, 13, 13, 0.82) 31%,
+    rgba(13, 13, 13, 0.58) 48%,
+    rgba(13, 13, 13, 0.24) 72%,
+    rgba(13, 13, 13, 0) 100%
+  );
+}
+
+.legacy-tizen .stream-route-panel-shell,
+.legacy-webos .stream-route-panel-shell {
+  background: rgba(26, 26, 26, 0.82) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.legacy-tizen .stream-route-card,
+.legacy-webos .stream-route-card,
+.legacy-tizen .stream-route-card.focused,
+.legacy-webos .stream-route-card.focused {
+  background: #222222 !important;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.legacy-tizen .stream-route-card.focused,
+.legacy-webos .stream-route-card.focused {
+  border-color: var(--secondary-color);
 }

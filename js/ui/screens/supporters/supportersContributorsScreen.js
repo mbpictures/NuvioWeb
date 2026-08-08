@@ -2,13 +2,25 @@ import { ScreenUtils } from "../../navigation/screen.js";
 import { Router } from "../../navigation/router.js";
 import { Platform } from "../../../platform/index.js";
 import { I18n } from "../../../i18n/index.js";
-import { CONTRIBUTIONS_URL, DONATIONS_BASE_URL, DONATIONS_DONATE_URL } from "../../../config.js";
+import {
+  DONATIONS_BASE_URL,
+  DONATIONS_DONATE_URL,
+  SPONSOR_NAMES,
+  UNIQUE_CONTRIBUTIONS_BASE_URL
+} from "../../../config.js";
 import { QrCodeGenerator } from "../../../core/qr/qrCodeGenerator.js";
+import {
+  normalizeContributors,
+  normalizeSupporterDonations,
+  parseSponsorNames,
+  parseTimestamp
+} from "./supportersData.js";
 import {
   bindSettingsScrollIndicators,
   scrollSettingsContentItem,
   settingsScrollIndicatorMarkup
 } from "../settings/settingsScreen.js";
+import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
 
 const TABS = ["supporters", "sponsors", "contributors"];
 const DEFAULT_TAB = "contributors";
@@ -16,7 +28,9 @@ const DEFAULT_DONATE_URL = "https://ko-fi.com/tapframe";
 
 const CONTRIBUTOR_SUPPORT_LINKS = {
   skoruppa: { kofiUrl: "https://ko-fi.com/skoruppa" },
-  crisszollo: { kofiUrl: "https://ko-fi.com/crisszollo" }
+  crisszollo: { kofiUrl: "https://ko-fi.com/crisszollo" },
+  whitegiso: { kofiUrl: "https://ko-fi.com/whitegiso" },
+  edoedac0: { kofiUrl: "https://ko-fi.com/edoedac" }
 };
 
 function t(key, params = {}, fallback = key) {
@@ -38,10 +52,9 @@ function normalizeBaseUrl(value) {
     .replace(/\/+$/, "");
 }
 
-function normalizeContributionsUrl(value) {
-  const url = normalizeBaseUrl(value);
-  if (!url) return "";
-  return /\/api\/unique-contributions$/i.test(url) ? url : `${url}/api/unique-contributions`;
+function uniqueContributionsUrl(value) {
+  const baseUrl = normalizeBaseUrl(value);
+  return baseUrl ? `${baseUrl}/api/unique-contributions` : "";
 }
 
 async function requestJson(url, errorMessage) {
@@ -52,11 +65,6 @@ async function requestJson(url, errorMessage) {
     throw new Error(`${errorMessage}: ${response.status}`);
   }
   return await response.json();
-}
-
-function parseTimestamp(rawDate) {
-  const timestamp = Date.parse(String(rawDate || ""));
-  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
 }
 
 function formatDonationDate(rawDate) {
@@ -85,10 +93,7 @@ function initialsForName(name) {
 }
 
 function contributorLogin(contributor) {
-  const profile = String(contributor?.profileUrl || "").trim();
-  return String(
-    contributor?.githubLogin || profile.split("/").filter(Boolean).pop() || contributor?.name || ""
-  ).trim();
+  return String(contributor?.githubLogin || contributor?.name || "").trim();
 }
 
 function contributorRoleLabel(login) {
@@ -97,10 +102,6 @@ function contributorRoleLabel(login) {
       return t("contributor_role_translator", {}, "Translator");
     case "tapframe":
       return t("contributor_role_maintainer", {}, "Maintainer");
-    case "edoedac0":
-    case "edin":
-    case "whitegiso":
-      return t("contributor_role_app_maintainer", {}, "Maintainer of this app");
     default:
       return null;
   }
@@ -178,54 +179,21 @@ async function loadSupporters() {
     throw new Error(t("supporters_error_load", {}, "Unable to load supporters."));
   }
   const data = await requestJson(
-    `${baseUrl}/api/donations?limit=200`,
+    `${baseUrl}/api/donations?view=recent`,
     t("supporters_error_api_http", {}, "Donations API error")
   );
-  return (Array.isArray(data?.donations) ? data.donations : [])
-    .map((donation, index) => {
-      const name = String(donation?.name || "").trim();
-      const date = String(donation?.date || "").trim();
-      if (!name || !date) return null;
-      return {
-        id: `${name}|${date}#${index}`,
-        name,
-        date,
-        message: String(donation?.message || "").trim(),
-        sortTimestamp: parseTimestamp(date)
-      };
-    })
-    .filter(Boolean)
-    .sort((left, right) => right.sortTimestamp - left.sortTimestamp);
+  return normalizeSupporterDonations(data?.donations);
 }
 
 async function loadSponsors() {
-  const baseUrl = normalizeBaseUrl(DONATIONS_BASE_URL);
-  if (!baseUrl) {
+  if (!SPONSOR_NAMES) {
     throw new Error(t("sponsors_error_load", {}, "Unable to load sponsors."));
   }
-  const data = await requestJson(
-    `${baseUrl}/api/sponsors`,
-    t("sponsors_error_api_http", {}, "Sponsors API error")
-  );
-  return (Array.isArray(data?.sponsors) ? data.sponsors : [])
-    .map((sponsor, index) => {
-      const name = String(sponsor?.name || "").trim();
-      const createdAt = String(sponsor?.createdAt || "").trim();
-      if (!name || !createdAt) return null;
-      return {
-        id: String(sponsor?.id || `${name}|${index}`).trim(),
-        name,
-        channelUrl: String(sponsor?.channelUrl || "").trim(),
-        createdAt,
-        sortTimestamp: parseTimestamp(createdAt)
-      };
-    })
-    .filter(Boolean)
-    .sort((left, right) => right.sortTimestamp - left.sortTimestamp);
+  return parseSponsorNames(SPONSOR_NAMES);
 }
 
 async function loadContributors() {
-  const url = normalizeContributionsUrl(CONTRIBUTIONS_URL);
+  const url = uniqueContributionsUrl(UNIQUE_CONTRIBUTIONS_BASE_URL);
   if (!url) {
     throw new Error(
       t("contributors_error_api_not_configured", {}, "Contributors API is not configured.")
@@ -235,33 +203,7 @@ async function loadContributors() {
     url,
     t("contributors_error_api_http", {}, "Contributors API error")
   );
-  return (Array.isArray(data?.contributors) ? data.contributors : [])
-    .map((contributor, index) => {
-      const name = String(contributor?.name || "").trim();
-      const total = Number(contributor?.total || 0);
-      if (!name || total <= 0) return null;
-      const profileUrl = String(contributor?.profile || "").trim();
-      return {
-        id: profileUrl || `${name}|${index}`,
-        name,
-        githubLogin: profileUrl.split("/").filter(Boolean).pop() || null,
-        avatarUrl: String(contributor?.avatar || "").trim(),
-        profileUrl,
-        totalContributions: total,
-        tvContributions: Number(contributor?.tv || 0),
-        mobileContributions: Number(contributor?.mobile || 0),
-        webContributions: Number(contributor?.web || 0)
-      };
-    })
-    .filter(Boolean)
-    .sort(
-      (left, right) =>
-        right.totalContributions - left.totalContributions ||
-        right.tvContributions - left.tvContributions ||
-        right.mobileContributions - left.mobileContributions ||
-        right.webContributions - left.webContributions ||
-        left.name.localeCompare(right.name)
-    );
+  return normalizeContributors(data?.contributors);
 }
 
 export const SupportersContributorsScreen = {
@@ -306,6 +248,7 @@ export const SupportersContributorsScreen = {
     }
     await this.render();
     void this.loadTabIfNeeded(this.selectedTab);
+    void this.loadTabIfNeeded("supporters");
   },
 
   cleanup() {
@@ -369,7 +312,7 @@ export const SupportersContributorsScreen = {
             <img class="supporters-brand-logo" src="assets/brand/app_logo_wordmark.png" alt="Nuvio" />
             <div class="supporters-brand-heading-group">
               <h1 class="supporters-title">${escapeHtml(t("supporters_contributors_title", {}, "Supporters & Contributors"))}</h1>
-              <p class="supporters-subtitle">${escapeHtml(t("supporters_contributors_subtitle", {}, "The people backing Nuvio and the contributors building it across TV and mobile."))}</p>
+              <p class="supporters-subtitle">${escapeHtml(t("supporters_contributors_supporters_copy", {}, "The people helping keep Nuvio online and in active development."))}</p>
             </div>
             <p class="supporters-primary-copy">${escapeHtml(t("supporters_contributors_supporters_copy", {}, "Supporters and donators help keep the project moving, fund infrastructure, and make room for ambitious features."))}</p>
             <p class="supporters-secondary-copy">${escapeHtml(t("supporters_contributors_donate_copy", {}, "Nuvio will stay free and open source. If you want to support the project, you can help cover the time and infrastructure behind it."))}</p>
@@ -430,7 +373,12 @@ export const SupportersContributorsScreen = {
           : this.selectedTab === "sponsors"
             ? t("sponsors_loading", {}, "Loading sponsors...")
             : t("contributors_loading", {}, "Loading GitHub contributors...");
-      return `<div class="supporters-status">${escapeHtml(loading)}</div>`;
+      return `
+        <div class="supporters-status">
+          ${renderLoadingIndicator()}
+          <span>${escapeHtml(loading)}</span>
+        </div>
+      `;
     }
     if (tabState.error) {
       const title =
@@ -621,7 +569,7 @@ export const SupportersContributorsScreen = {
       body: `
         <div class="supporters-dialog-person-row">
           <span class="supporters-avatar supporters-avatar-image large">
-            ${contributor.avatarUrl ? `<img src="${escapeHtml(contributor.avatarUrl)}" alt="${escapeHtml(contributor.name)}" />` : ""}
+            ${contributor.avatarUrl ? `<img src="${escapeHtml(contributor.avatarUrl)}" alt="${escapeHtml(contributor.name)}" onerror="this.hidden=true;this.nextElementSibling.hidden=false;" />` : ""}
             <span${contributor.avatarUrl ? " hidden" : ""}>${escapeHtml(initialsForName(contributor.name))}</span>
           </span>
           <div>
@@ -630,7 +578,7 @@ export const SupportersContributorsScreen = {
             ${supportLink?.kofiUrl ? `<small>${escapeHtml(supportLink.kofiUrl)}</small>` : ""}
           </div>
         </div>
-        ${this.dialog.showSupportQr && supportLink?.kofiUrl ? `<canvas class="supporters-dialog-qr" data-qr-content="${escapeHtml(supportLink.kofiUrl)}" aria-label="${escapeHtml(t("cd_contributor_qr", {}, "Contributor QR code"))}"></canvas>` : ""}
+        ${this.dialog.showSupportQr && supportLink?.kofiUrl ? `<canvas class="supporters-dialog-qr" data-qr-content="${escapeHtml(supportLink.kofiUrl)}" aria-label="${escapeHtml(t("cd_contributor_qr", {}, "Contributor support QR code"))}"></canvas>` : ""}
       `,
       actions: `
         <button class="supporters-dialog-button primary focusable" data-focus-key="dialog:primary" data-action="openGithub"${contributor.profileUrl ? "" : ' disabled aria-disabled="true"'}>${escapeHtml(t("contributors_open_github", {}, "Open GitHub Profile"))}</button>
@@ -905,6 +853,9 @@ export const SupportersContributorsScreen = {
   },
 
   consumeBackRequest() {
+    if (!this.dialog && !this.showDonateQr) {
+      return false;
+    }
     void this.handleBack();
     return true;
   },

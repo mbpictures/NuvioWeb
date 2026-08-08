@@ -12,7 +12,8 @@ const PROVIDERS = {
   LETTERBOXD: { key: "letterboxd", apiValue: "letterboxd", settingsKey: "showLetterboxd" },
   TOMATOES: { key: "tomatoes", apiValue: "tomatoes", settingsKey: "showTomatoes" },
   AUDIENCE: { key: "audience", apiValue: "audience", settingsKey: "showAudience" },
-  METACRITIC: { key: "metacritic", apiValue: "metacritic", settingsKey: "showMetacritic" }
+  METACRITIC: { key: "metacritic", apiValue: "metacritic", settingsKey: "showMetacritic" },
+  MAL: { key: "mal", apiValue: "mal", settingsKey: "showMal" }
 };
 
 const cache = new Map();
@@ -22,13 +23,17 @@ function javaStringHash(value) {
   let hash = 0;
   const text = String(value || "");
   for (let index = 0; index < text.length; index += 1) {
-    hash = ((hash * 31) + text.charCodeAt(index)) | 0;
+    hash = (hash * 31 + text.charCodeAt(index)) | 0;
   }
   return hash;
 }
 
 function normalizeMediaType(rawType) {
-  switch (String(rawType || "").trim().toLowerCase()) {
+  switch (
+    String(rawType || "")
+      .trim()
+      .toLowerCase()
+  ) {
     case "movie":
     case "film":
       return "movie";
@@ -149,7 +154,12 @@ async function fetchRatings({ imdbId, mediaType, apiKey, providers }) {
   };
 }
 
-async function resolveImdbId(meta = {}, fallbackItemId = "", fallbackItemType = "", mediaType = "movie") {
+async function resolveImdbId(
+  meta = {},
+  fallbackItemId = "",
+  fallbackItemType = "",
+  mediaType = "movie"
+) {
   const directImdb = firstNonEmpty(
     extractImdbId(meta?.id),
     extractImdbId(fallbackItemId),
@@ -281,7 +291,10 @@ export const mdbListRepository = {
       return null;
     }
 
-    const providerHash = providers.map((provider) => provider.apiValue).sort().join(",");
+    const providerHash = providers
+      .map((provider) => provider.apiValue)
+      .sort()
+      .join(",");
     const cacheKey = `${mediaType}:${imdbId}:${providerHash}:${javaStringHash(apiKey)}`;
     return getCachedOrFetch(cacheKey, () =>
       fetchRatings({

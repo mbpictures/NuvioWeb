@@ -145,6 +145,7 @@
     <string name="cw_airs_date">Tayang %1$s</string>
     <string name="cw_airs_today">Tayang hari ini</string>
     <string name="cw_airs_tomorrow">Tayang besok</string>
+    <string name="cw_airs_in_days">Tayang dalam %1$d hari</string>
     <string name="cw_action_go_to_details">Lihat detail</string>
     <string name="cw_action_start_from_beginning">Mulai dari awal</string>
     <string name="cw_action_remove">Hapus</string>
@@ -1297,6 +1298,7 @@
     <string name="season_episode_format">M%1$d E%2$d</string>
     <string name="player_subtitle_delay">Penundaan Subtitle</string>
     <string name="player_error_title">Error Pemutaran</string>
+    <string name="player_error_details">Detail kesalahan pemutaran</string>
     <string name="player_go_back">Kembali</string>
     <string name="player_speed_title">Kecepatan Pemutaran</string>
     <string name="player_more_actions_title">Aksi Lainnya</string>
@@ -1636,6 +1638,9 @@
     <string name="layout_selection_subtitle">Pilih tata letak layar beranda Anda</string>
     <string name="layout_selection_continue">Lanjutkan</string>
     <string name="update_title">Pembaruan Aplikasi</string>
+    <string name="update_installer_required">Gunakan Nuvio WebTV Installer untuk memperbarui aplikasi di TV Anda.</string>
+    <string name="update_release_notes">Yang baru</string>
+    <string name="update_release_notes_unavailable">Deskripsi rilis tidak tersedia.</string>
     <string name="update_downloading">Mengunduh pembaruan</string>
     <string name="update_download">Unduh</string>
     <string name="update_downloading_ellipsis">Mengunduh…</string>
@@ -2255,4 +2260,21 @@
     <string name="player.audio.unsupported">Tidak didukung</string>
     <string name="player.audio.unsupportedCodec">Codec tidak didukung oleh perangkat ini</string>
     <string name="player.audio.noSupportedTracks">Tidak ada trek audio yang didukung</string>
+    <string name="settings_stream_addon_logo_title">Logo addon</string>
+    <string name="settings_stream_addon_logo_description">Tampilkan logo dan nama addon di samping sumber streaming.</string>
+    <string name="unsupported_device_title">TV tidak didukung</string>
+    <string name="unsupported_device_message">TV ini tidak memenuhi persyaratan minimum untuk versi Nuvio TV ini.</string>
+    <string name="unsupported_device_current_platform">Platform saat ini</string>
+    <string name="unsupported_device_current_firmware">Firmware saat ini</string>
+    <string name="unsupported_device_required_platform">Platform yang diperlukan</string>
+    <string name="unsupported_device_close">Tutup</string>
+    <string name="unsupported_device_unavailable">Tidak tersedia</string>
+    <string name="subtitle_position">Posisi Subtitle</string>
+    <string name="subtitle_position_subtitle">Pindahkan subtitle ke atas atau ke bawah di layar.</string>
+    <string name="subtitle_font_size_subtitle">Ukuran teks yang digunakan untuk subtitle saat pemutaran.</string>
+    <string name="subtitle_bold_subtitle">Tampilkan teks subtitle dalam huruf tebal.</string>
+    <string name="subtitle_outline_subtitle">Gambar garis tepi di sekeliling teks subtitle agar lebih mudah dibaca.</string>
+    <string name="subtitle_outline_color_subtitle">Warna garis tepi subtitle.</string>
+    <string name="subtitle_text_color_subtitle">Warna teks subtitle.</string>
+    <string name="player_error_web_headers_unsupported">Sumber ini tidak kompatibel dengan pemutar perangkat ini karena memerlukan header permintaan khusus. Coba sumber lain atau hubungi penyedia add-on.</string>
 </resources>

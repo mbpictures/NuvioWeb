@@ -1,20 +1,34 @@
 import { createProfileScopedStore } from "./profileScopedStore.js";
+import {
+  SUBTITLE_VERTICAL_OFFSET_CONTRACT,
+  SUBTITLE_VERTICAL_OFFSET_DEFAULT,
+  normalizeSubtitleVerticalOffset
+} from "../../core/player/subtitleVerticalOffset.js";
 
 const KEY = "playerSettings";
 
 const DEFAULTS = {
   autoplayNextEpisode: false,
   subtitlesEnabled: true,
-  subtitleLanguage: "off",
+  subtitleLanguage: "en",
   secondarySubtitleLanguage: "off",
   preferredAudioLanguage: "system",
-  trailerAutoplay: false,
+  secondaryPreferredAudioLanguage: "none",
+  trailerAutoplay: true,
+  trailerDelaySeconds: 7,
   skipIntroEnabled: true,
+  loadingOverlayEnabled: true,
+  showPlayerLoadingStatus: true,
+  pauseOverlayEnabled: true,
+  parentalGuideEnabled: true,
+  autoSkipSegmentTypes: [],
+  addonSubtitleStartupMode: "ALL_SUBTITLES",
   nextEpisodeThresholdMode: "PERCENTAGE",
   nextEpisodeThresholdPercent: 99,
   nextEpisodeThresholdMinutesBeforeEnd: 2,
   stillWatchingEnabled: false,
   stillWatchingEpisodeThreshold: 3,
+  osdClockEnabled: true,
   subtitleRenderMode: "native",
   subtitleStyle: {
     fontSize: 100,
@@ -22,46 +36,109 @@ const DEFAULTS = {
     bold: false,
     outlineEnabled: true,
     outlineColor: "#000000",
-    verticalOffset: 0,
-    preferredLanguage: "off",
+    backgroundColor: "#00000000",
+    verticalOffset: SUBTITLE_VERTICAL_OFFSET_DEFAULT,
+    verticalOffsetContract: SUBTITLE_VERTICAL_OFFSET_CONTRACT,
+    preferredLanguage: "en",
     secondaryPreferredLanguage: "off",
-    useForcedSubtitles: false
+    useForcedSubtitles: false,
+    showOnlyPreferredLanguages: false
   },
   audioAmplificationDb: 0,
   persistAudioAmplification: false,
+  // Legacy combined override from 0.3.14. Kept only so the device-wide,
+  // per-codec webOS compatibility store can migrate an existing preference.
+  forceDtsTrueHdAudio: false,
   // Auto stream selection (matches the Android TV app). When the mode is not
   // MANUAL, pressing play auto-selects a stream and plays it after a countdown.
   streamAutoPlayMode: "MANUAL",
   streamAutoPlaySource: "ALL_SOURCES",
+  streamAutoPlaySelectedAddons: [],
+  streamAutoPlaySelectedPlugins: [],
   streamAutoPlayRegex: "",
+  streamAutoPlayPreferBingeGroupForNextEpisode: true,
+  streamAutoPlayReuseBingeGroup: true,
+  streamReuseLastLinkEnabled: false,
+  streamReuseLastLinkCacheHours: 24,
   streamAutoPlayTimeoutSeconds: 3
 };
 
 const STREAM_AUTO_PLAY_MODES = ["MANUAL", "FIRST_STREAM", "REGEX_MATCH"];
 const STREAM_AUTO_PLAY_SOURCES = ["ALL_SOURCES", "INSTALLED_ADDONS_ONLY", "ENABLED_PLUGINS_ONLY"];
+const STREAM_AUTO_PLAY_TIMEOUT_UNLIMITED = 2147483647;
+const STREAM_AUTO_PLAY_TIMEOUT_VALUES = [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  15,
+  20,
+  25,
+  30,
+  STREAM_AUTO_PLAY_TIMEOUT_UNLIMITED
+];
 const NEXT_EPISODE_THRESHOLD_MODES = ["PERCENTAGE", "MINUTES_BEFORE_END"];
 
 function normalizeStreamAutoPlayMode(value) {
-  const normalized = String(value || "").trim().toUpperCase();
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase();
   return STREAM_AUTO_PLAY_MODES.includes(normalized) ? normalized : "MANUAL";
 }
 
 function normalizeStreamAutoPlaySource(value) {
-  const normalized = String(value || "").trim().toUpperCase();
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase();
   return STREAM_AUTO_PLAY_SOURCES.includes(normalized) ? normalized : "ALL_SOURCES";
 }
 
 function normalizeStreamAutoPlayTimeout(value) {
   const seconds = Math.trunc(Number(value));
-  if (!Number.isFinite(seconds) || seconds < 0) {
+  if (!Number.isFinite(seconds)) {
     return DEFAULTS.streamAutoPlayTimeoutSeconds;
   }
-  return Math.min(60, seconds);
+  if (seconds === 11 || seconds === STREAM_AUTO_PLAY_TIMEOUT_UNLIMITED) {
+    return STREAM_AUTO_PLAY_TIMEOUT_UNLIMITED;
+  }
+  return STREAM_AUTO_PLAY_TIMEOUT_VALUES.filter(
+    (entry) => entry !== STREAM_AUTO_PLAY_TIMEOUT_UNLIMITED
+  ).reduce(
+    (closest, entry) => (Math.abs(entry - seconds) < Math.abs(closest - seconds) ? entry : closest),
+    DEFAULTS.streamAutoPlayTimeoutSeconds
+  );
+}
+
+function normalizeStringList(value) {
+  return [
+    ...new Set(
+      (Array.isArray(value) ? value : []).map((entry) => String(entry || "").trim()).filter(Boolean)
+    )
+  ];
+}
+
+function normalizeReuseLastLinkCacheHours(value) {
+  const hours = Math.trunc(Number(value));
+  if (!Number.isFinite(hours)) {
+    return DEFAULTS.streamReuseLastLinkCacheHours;
+  }
+  return Math.min(168, Math.max(1, hours));
 }
 
 function normalizeNextEpisodeThresholdMode(value) {
-  const normalized = String(value || "").trim().toUpperCase();
-  return NEXT_EPISODE_THRESHOLD_MODES.includes(normalized) ? normalized : DEFAULTS.nextEpisodeThresholdMode;
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase();
+  return NEXT_EPISODE_THRESHOLD_MODES.includes(normalized)
+    ? normalized
+    : DEFAULTS.nextEpisodeThresholdMode;
 }
 
 function normalizeHalfStep(value, min, max, fallback) {
@@ -121,12 +198,24 @@ function normalizeSelectableSubtitleLanguageCode(language, fallback = "off") {
   }
 }
 
-function normalizePlayerSettings(settings = {}) {
+export function normalizePlayerSettings(settings = {}) {
   const { subtitleDelayMs: _ignoredSubtitleDelayMs, ...persistentSettings } = settings || {};
   const subtitleStyle = {
     ...DEFAULTS.subtitleStyle,
     ...(persistentSettings.subtitleStyle || {})
   };
+  const storedOffsetContract = String(
+    persistentSettings.subtitleStyle?.verticalOffsetContract || ""
+  );
+  const storedOffset = persistentSettings.subtitleStyle?.verticalOffset;
+  subtitleStyle.verticalOffset = normalizeSubtitleVerticalOffset(
+    storedOffsetContract === SUBTITLE_VERTICAL_OFFSET_CONTRACT
+      ? storedOffset
+      : Number(storedOffset) === 0
+        ? SUBTITLE_VERTICAL_OFFSET_DEFAULT
+        : storedOffset
+  );
+  subtitleStyle.verticalOffsetContract = SUBTITLE_VERTICAL_OFFSET_CONTRACT;
   let preferredLanguage = normalizeSelectableSubtitleLanguageCode(
     subtitleStyle.preferredLanguage ?? persistentSettings.subtitleLanguage,
     DEFAULTS.subtitleStyle.preferredLanguage
@@ -136,7 +225,9 @@ function normalizePlayerSettings(settings = {}) {
     subtitleStyle.secondaryPreferredLanguage ?? persistentSettings.secondarySubtitleLanguage,
     DEFAULTS.subtitleStyle.secondaryPreferredLanguage
   );
-  let useForcedSubtitles = Boolean(subtitleStyle.useForcedSubtitles ?? persistentSettings.useForcedSubtitles);
+  let useForcedSubtitles = Boolean(
+    subtitleStyle.useForcedSubtitles ?? persistentSettings.useForcedSubtitles
+  );
 
   if (preferredLanguage === "forced") {
     useForcedSubtitles = true;
@@ -156,10 +247,45 @@ function normalizePlayerSettings(settings = {}) {
   return {
     ...DEFAULTS,
     ...persistentSettings,
-    streamAutoPlayMode: normalizeStreamAutoPlayMode(persistentSettings.streamAutoPlayMode ?? DEFAULTS.streamAutoPlayMode),
-    streamAutoPlaySource: normalizeStreamAutoPlaySource(persistentSettings.streamAutoPlaySource ?? DEFAULTS.streamAutoPlaySource),
+    trailerAutoplay: persistentSettings.trailerAutoplay ?? DEFAULTS.trailerAutoplay,
+    trailerDelaySeconds: Math.min(15, Math.max(0, Math.trunc(Number(persistentSettings.trailerDelaySeconds ?? 7)) || 0)),
+    loadingOverlayEnabled: persistentSettings.loadingOverlayEnabled !== false,
+    showPlayerLoadingStatus: persistentSettings.showPlayerLoadingStatus !== false,
+    pauseOverlayEnabled: persistentSettings.pauseOverlayEnabled !== false,
+    parentalGuideEnabled: persistentSettings.parentalGuideEnabled !== false,
+    autoSkipSegmentTypes: [...new Set((Array.isArray(persistentSettings.autoSkipSegmentTypes) ? persistentSettings.autoSkipSegmentTypes : []).map((entry) => String(entry).toLowerCase()).filter((entry) => ["intro", "recap", "outro"].includes(entry)))],
+    addonSubtitleStartupMode: ["FAST_STARTUP", "PREFERRED_ONLY", "ALL_SUBTITLES"].includes(String(persistentSettings.addonSubtitleStartupMode || "").toUpperCase())
+      ? String(persistentSettings.addonSubtitleStartupMode).toUpperCase()
+      : "ALL_SUBTITLES",
+    streamAutoPlayMode: normalizeStreamAutoPlayMode(
+      persistentSettings.streamAutoPlayMode ?? DEFAULTS.streamAutoPlayMode
+    ),
+    streamAutoPlaySource: normalizeStreamAutoPlaySource(
+      persistentSettings.streamAutoPlaySource ?? DEFAULTS.streamAutoPlaySource
+    ),
+    streamAutoPlaySelectedAddons: normalizeStringList(
+      persistentSettings.streamAutoPlaySelectedAddons
+    ),
+    streamAutoPlaySelectedPlugins: normalizeStringList(
+      persistentSettings.streamAutoPlaySelectedPlugins
+    ),
     streamAutoPlayRegex: String(persistentSettings.streamAutoPlayRegex ?? "").slice(0, 500),
-    streamAutoPlayTimeoutSeconds: normalizeStreamAutoPlayTimeout(persistentSettings.streamAutoPlayTimeoutSeconds),
+    streamAutoPlayPreferBingeGroupForNextEpisode: Boolean(
+      persistentSettings.streamAutoPlayPreferBingeGroupForNextEpisode ??
+      DEFAULTS.streamAutoPlayPreferBingeGroupForNextEpisode
+    ),
+    streamAutoPlayReuseBingeGroup: Boolean(
+      persistentSettings.streamAutoPlayReuseBingeGroup ?? DEFAULTS.streamAutoPlayReuseBingeGroup
+    ),
+    streamReuseLastLinkEnabled: Boolean(
+      persistentSettings.streamReuseLastLinkEnabled ?? DEFAULTS.streamReuseLastLinkEnabled
+    ),
+    streamReuseLastLinkCacheHours: normalizeReuseLastLinkCacheHours(
+      persistentSettings.streamReuseLastLinkCacheHours
+    ),
+    streamAutoPlayTimeoutSeconds: normalizeStreamAutoPlayTimeout(
+      persistentSettings.streamAutoPlayTimeoutSeconds
+    ),
     nextEpisodeThresholdMode: normalizeNextEpisodeThresholdMode(
       persistentSettings.nextEpisodeThresholdMode ?? DEFAULTS.nextEpisodeThresholdMode
     ),
@@ -170,7 +296,8 @@ function normalizePlayerSettings(settings = {}) {
       DEFAULTS.nextEpisodeThresholdPercent
     ),
     nextEpisodeThresholdMinutesBeforeEnd: normalizeHalfStep(
-      persistentSettings.nextEpisodeThresholdMinutesBeforeEnd ?? DEFAULTS.nextEpisodeThresholdMinutesBeforeEnd,
+      persistentSettings.nextEpisodeThresholdMinutesBeforeEnd ??
+        DEFAULTS.nextEpisodeThresholdMinutesBeforeEnd,
       0,
       3.5,
       DEFAULTS.nextEpisodeThresholdMinutesBeforeEnd
@@ -179,14 +306,29 @@ function normalizePlayerSettings(settings = {}) {
     stillWatchingEpisodeThreshold: normalizeStillWatchingThreshold(
       settings.stillWatchingEpisodeThreshold ?? DEFAULTS.stillWatchingEpisodeThreshold
     ),
+    osdClockEnabled: Boolean(
+      persistentSettings.osdClockEnabled ?? DEFAULTS.osdClockEnabled
+    ),
     subtitlesEnabled,
+    secondaryPreferredAudioLanguage: (() => {
+      const normalized = String(
+        persistentSettings.secondaryPreferredAudioLanguage ??
+          DEFAULTS.secondaryPreferredAudioLanguage
+      )
+        .trim()
+        .toLowerCase();
+      return !normalized || ["default", "device", "forced", "off"].includes(normalized)
+        ? "none"
+        : normalized;
+    })(),
     subtitleLanguage: preferredLanguage,
     secondarySubtitleLanguage: secondaryPreferredLanguage,
     subtitleStyle: {
       ...subtitleStyle,
       preferredLanguage,
       secondaryPreferredLanguage,
-      useForcedSubtitles
+      useForcedSubtitles,
+      showOnlyPreferredLanguages: Boolean(subtitleStyle.showOnlyPreferredLanguages)
     }
   };
 }
@@ -208,6 +350,10 @@ const store = createProfileScopedStore({
 });
 
 export const PlayerSettingsStore = {
+  getDefaults() {
+    return normalizePlayerSettings({});
+  },
+
   getForProfile(profileId) {
     return store.getForProfile(profileId);
   },

@@ -109,6 +109,7 @@
     <string name="cw_airs_date">Prikazuje se %1$s</string>
     <string name="cw_airs_today">Prikazuje se danas</string>
     <string name="cw_airs_tomorrow">Prikazuje se sutra</string>
+    <string name="cw_airs_in_days">Prikazuje se za %1$d dana</string>
     <string name="cw_action_go_to_details">Idi na detalje</string>
     <string name="cw_action_start_from_beginning">Počni ispočetka</string>
     <string name="cw_action_remove">Ukloni</string>
@@ -692,6 +693,7 @@
     <string name="trakt_hide_unaired">Sakrij neemitovane epizode</string>
     <string name="trakt_all_history">Cijela historija</string>
     <string name="trakt_days_format">%1$d dana</string>
+    <string name="trakt_status_cw_window_updated">Prozor za Nastavi gledati je ažuriran</string>
     <string name="debug_title">Debug</string>
     <string name="debug_subtitle">Alati za programere i opcije (samo za debug buildove)</string>
     <string name="debug_section_popup">Testiranje Popupova / Dijaloga</string>
@@ -869,6 +871,7 @@
     <string name="player_via">preko %1$s</string>
     <string name="player_subtitle_delay">Odgoda Titlova</string>
     <string name="player_error_title">Greška Reprodukcije</string>
+    <string name="player_error_details">Detalji greške reprodukcije</string>
     <string name="player_go_back">Nazad</string>
     <string name="player_speed_title">Brzina Reprodukcije</string>
     <string name="player_more_actions_title">Više Opcija</string>
@@ -1145,6 +1148,9 @@
     <string name="layout_selection_subtitle">Odaberi raspored početnog ekrana</string>
     <string name="layout_selection_continue">Nastavi</string>
     <string name="update_title">Ažuriranje Aplikacije</string>
+    <string name="update_installer_required">Koristite Nuvio WebTV Installer za ažuriranje aplikacije na TV-u.</string>
+    <string name="update_release_notes">Šta je novo</string>
+    <string name="update_release_notes_unavailable">Opis izdanja nije dostupan.</string>
     <string name="update_downloading">Preuzimanje ažuriranja</string>
     <string name="update_download">Preuzmi</string>
     <string name="update_downloading_ellipsis">Preuzimanje…</string>
@@ -1370,4 +1376,31 @@
     <string name="player.audio.unsupported">Nije podržano</string>
     <string name="player.audio.unsupportedCodec">Ovaj uređaj ne podržava kodek</string>
     <string name="player.audio.noSupportedTracks">Nema dostupnih podržanih audio zapisa</string>
+    <string name="settings_stream_addon_logo_title">Logotip dodatka</string>
+    <string name="settings_stream_addon_logo_description">Prikaži logotip i naziv dodatka pored izvora streama.</string>
+    <string name="autoplay_reuse_binge_group">Ponovo koristi Binge grupu</string>
+    <string name="autoplay_reuse_binge_group_sub">Zapamti i ponovo koristi zadnju Binge grupu između sesija (Nastavi gledati, Detalji itd.).</string>
+    <string name="unsupported_device_title">TV nije podržan</string>
+    <string name="unsupported_device_message">Ovaj TV ne ispunjava minimalne zahtjeve za ovu verziju aplikacije Nuvio TV.</string>
+    <string name="unsupported_device_current_platform">Trenutna platforma</string>
+    <string name="unsupported_device_current_firmware">Trenutni firmver</string>
+    <string name="unsupported_device_required_platform">Potrebna platforma</string>
+    <string name="unsupported_device_close">Zatvori</string>
+    <string name="unsupported_device_unavailable">Nedostupno</string>
+    <string name="still_watching_title">Gledate li još uvijek?</string>
+    <string name="still_watching_continue">Reproduciraj</string>
+    <string name="still_watching_exit">Izađi</string>
+    <string name="still_watching_countdown">Zaustavljanje za %1$d</string>
+    <string name="still_watching_setting_title">Gledate li još uvijek?</string>
+    <string name="still_watching_setting_sub">Prikaži upit nakon uzastopno automatski reproduciranih epizoda.</string>
+    <string name="still_watching_threshold_title">Prag epizoda</string>
+    <string name="still_watching_threshold_sub">Broj automatski reproduciranih epizoda prije prikazivanja upita.</string>
+    <string name="subtitle_position">Pozicija titlova</string>
+    <string name="subtitle_position_subtitle">Pomjeri titlove gore ili dolje na ekranu.</string>
+    <string name="subtitle_font_size_subtitle">Veličina teksta koja se koristi za titlove tokom reprodukcije.</string>
+    <string name="subtitle_bold_subtitle">Prikaži tekst titlova podebljano.</string>
+    <string name="subtitle_outline_subtitle">Nacrtaj obris oko teksta titlova radi bolje čitljivosti.</string>
+    <string name="subtitle_outline_color_subtitle">Boja obrisa titlova.</string>
+    <string name="subtitle_text_color_subtitle">Boja teksta titlova.</string>
+    <string name="player_error_web_headers_unsupported">Ovaj izvor nije kompatibilan s plejerom ovog uređaja jer zahtijeva posebna zaglavlja zahtjeva. Pokušajte s drugim izvorom ili kontaktirajte pružatelja dodatka.</string>
 </resources>

@@ -1,4 +1,6 @@
-﻿export class AccountSettingsContent {
+﻿import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
+
+export class AccountSettingsContent {
   constructor(container) {
     this.container = container;
     this.focusIndex = 0;
@@ -8,7 +10,12 @@
     const { authState, syncOverview, isSyncOverviewLoading } = uiState;
 
     if (authState === "loading") {
-      this.container.innerHTML = `<p class="text-secondary">Loading...</p>`;
+      this.container.innerHTML = `
+        <div class="account-settings-loading text-secondary">
+          ${renderLoadingIndicator()}
+          <span>Loading...</span>
+        </div>
+      `;
       return;
     }
 
@@ -79,7 +86,10 @@
   renderSyncLoading() {
     return `
       <div class="sync-card">
-        <p class="text-secondary">Loading sync overview...</p>
+        <div class="account-settings-loading text-secondary">
+          ${renderLoadingIndicator()}
+          <span>Loading sync overview...</span>
+        </div>
       </div>
     `;
   }

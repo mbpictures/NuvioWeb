@@ -1,24 +1,16 @@
+/* global __NUVIO_APP_VERSION__ */
+
 import "./core/diagnostics/consoleDebugBuffer.js";
-import "./runtime/polyfills.js";
-import "core-js/stable/url";
-import "core-js/stable/url-search-params";
-import "intersection-observer";
-import "whatwg-fetch";
 import { detailWatchedEnrichmentService } from "./data/repository/detailWatchedEnrichmentService.js";
 import { Router } from "./ui/navigation/router.js";
 import { FocusEngine } from "./ui/navigation/focusEngine.js";
 import { PlayerController } from "./core/player/playerController.js";
 import { AuthManager } from "./core/auth/authManager.js";
 import { AuthState } from "./core/auth/authState.js";
+import { DeviceSessionRegistration } from "./core/auth/deviceSessionRegistration.js";
 import { ProfileManager } from "./core/profile/profileManager.js";
 import { ProfileSyncService } from "./core/profile/profileSyncService.js";
-import { ProfileSettingsSyncService } from "./core/profile/profileSettingsSyncService.js";
-import { TraktCredentialSyncService } from "./core/profile/traktCredentialSyncService.js";
 import { StartupSyncService } from "./core/profile/startupSyncService.js";
-import { CollectionSyncService } from "./core/profile/collectionSyncService.js";
-import { HomeCatalogSettingsSyncService } from "./core/profile/homeCatalogSettingsSyncService.js";
-import { WatchedItemsSyncService } from "./core/profile/watchedItemsSyncService.js";
-import { WatchProgressSyncService } from "./core/profile/watchProgressSyncService.js";
 import { ThemeManager } from "./ui/theme/themeManager.js";
 import { renderAppShell } from "./bootstrap/renderAppShell.js";
 import { renderAddonRemotePage } from "./bootstrap/renderAddonRemotePage.js";
@@ -27,6 +19,8 @@ import { warmStreamingLibs } from "./runtime/loadStreamingLibs.js";
 import { Platform } from "./platform/index.js";
 import { LocalStore } from "./core/storage/localStore.js";
 import { I18n } from "./i18n/index.js";
+import { getLatestAppUpdate } from "./core/update/appUpdateService.js";
+import { showAppUpdatePrompt } from "./ui/components/appUpdatePrompt.js";
 
 (function applyLegacyPatches() {
   const originalGetElementById = document.getElementById;
@@ -44,6 +38,44 @@ const GUEST_QR_BYPASS_KEY = "skipAuthQrGate";
 const SIGNED_OUT_ALLOWED_ROUTES = new Set(["trakt"]);
 let hasSelectedProfileThisSession = false;
 let appShellRendered = false;
+let updateCheckStarted = false;
+
+const APP_VERSION = typeof __NUVIO_APP_VERSION__ !== "undefined" ? __NUVIO_APP_VERSION__ : "0.0.0";
+
+function markBootStage(stage) {
+  const guard = globalThis.NuvioBootGuard;
+  if (guard && typeof guard.stage === "function") {
+    guard.stage(stage);
+  }
+}
+
+async function waitForInitialRoute(timeoutMs = 15000) {
+  const startedAt = Date.now();
+  while (!Router.getCurrent() && Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return Boolean(Router.getCurrent());
+}
+
+async function checkForAppUpdateOnStartup() {
+  if (updateCheckStarted) {
+    return;
+  }
+  updateCheckStarted = true;
+
+  try {
+    const update = await getLatestAppUpdate({ currentVersion: APP_VERSION });
+    if (!update) {
+      return;
+    }
+    if (!(await waitForInitialRoute())) {
+      return;
+    }
+    showAppUpdatePrompt(update);
+  } catch (error) {
+    console.warn("App update check failed", error);
+  }
+}
 
 function isSignedOutRouteAllowed() {
   return SIGNED_OUT_ALLOWED_ROUTES.has(Router.getCurrent());
@@ -61,6 +93,15 @@ function formatErrorMessage(error) {
 
 function renderFatalError(error) {
   const message = formatErrorMessage(error);
+  const guard = globalThis.NuvioBootGuard;
+  if (guard && typeof guard.fail === "function" && guard.isActive?.()) {
+    guard.fail(
+      "Something went wrong while the application was starting.",
+      message,
+      "BOOT-APPLICATION"
+    );
+    return;
+  }
   document.body.innerHTML = `
     <div style="min-height:100vh;background:#0f1115;color:#f4f7fb;padding:48px;font-family:Arial,sans-serif;">
       <div style="max-width:960px;margin:0 auto;">
@@ -80,67 +121,11 @@ function isLowEndDevice() {
   return lowCpu || lowMem;
 }
 
-function supportsFlexGap() {
-  if (typeof document === "undefined" || !document.body) {
-    return true;
-  }
-
-  const flex = document.createElement("div");
-  flex.style.display = "flex";
-  flex.style.flexDirection = "column";
-  flex.style.rowGap = "1px";
-  flex.style.position = "absolute";
-  flex.style.top = "-9999px";
-  flex.style.left = "-9999px";
-  flex.appendChild(document.createElement("div"));
-  flex.appendChild(document.createElement("div"));
-  document.body.appendChild(flex);
-  const supported = flex.scrollHeight === 1;
-  document.body.removeChild(flex);
-  return supported;
-}
-
-function supportsAspectRatio() {
-  const css = globalThis.CSS;
-  if (!css || typeof css.supports !== "function") {
-    return false;
-  }
-  return css.supports("aspect-ratio", "1 / 1");
-}
-
-function supportsCssGrid() {
-  const css = globalThis.CSS;
-  if (!css || typeof css.supports !== "function") {
-    return false;
-  }
-  return css.supports("display", "grid");
-}
-
-function supportsCssVars() {
-  const css = globalThis.CSS;
-  if (!css || typeof css.supports !== "function") {
-    return false;
-  }
-  return css.supports("--nuvio-probe", "0");
-}
-
-function supportsCssMath() {
-  const css = globalThis.CSS;
-  if (!css || typeof css.supports !== "function") {
-    return false;
-  }
-  return css.supports("font-size", "clamp(1px, 2px, 3px)");
-}
-
-function supportsBackdropFilter() {
-  const css = globalThis.CSS;
-  if (!css || typeof css.supports !== "function") {
-    return false;
-  }
-  return (
-    css.supports("backdrop-filter", "blur(1px)") ||
-    css.supports("-webkit-backdrop-filter", "blur(1px)")
-  );
+function getChromiumMajorVersion() {
+  const userAgent = String(globalThis.navigator?.userAgent || "");
+  const match = userAgent.match(/(?:chrome|chromium)\/(\d{2,3})/i);
+  const version = Number(match?.[1] || 0);
+  return Number.isFinite(version) ? version : 0;
 }
 
 function applyPerformanceMode() {
@@ -150,32 +135,26 @@ function applyPerformanceMode() {
   const legacyWebOs = Platform.isWebOS() && (webOsMajorVersion === 0 || webOsMajorVersion <= 6);
   const legacyWebOs38 = Platform.isWebOS() && webOsMajorVersion > 0 && webOsMajorVersion <= 3;
   const legacyTizen = Platform.isTizen();
-  const flexGapUnsupported = !supportsFlexGap();
-  const aspectRatioUnsupported = !supportsAspectRatio();
-  const cssGridUnsupported = !supportsCssGrid();
-  const cssVarsUnsupported = !supportsCssVars();
-  const cssMathUnsupported = !supportsCssMath();
-  const backdropFilterUnsupported = !supportsBackdropFilter();
+  const rootClasses = document.documentElement.classList;
+  const modernWebOs = Platform.isWebOS() && getChromiumMajorVersion() >= 120;
+  const modernSidebarBlurCapable =
+    !rootClasses.contains("no-backdrop-filter") && ((!constrained && !legacyTizen) || modernWebOs);
   document.documentElement.classList.toggle("performance-constrained", constrained);
   document.body.classList.toggle("performance-constrained", constrained);
+  document.documentElement.classList.toggle(
+    "modern-sidebar-blur-capable",
+    modernSidebarBlurCapable
+  );
+  document.body.classList.toggle("modern-sidebar-blur-capable", modernSidebarBlurCapable);
   document.documentElement.classList.toggle("legacy-webos", legacyWebOs);
   document.body.classList.toggle("legacy-webos", legacyWebOs);
   document.documentElement.classList.toggle("legacy-webos38", legacyWebOs38);
   document.body.classList.toggle("legacy-webos38", legacyWebOs38);
   document.documentElement.classList.toggle("legacy-tizen", legacyTizen);
   document.body.classList.toggle("legacy-tizen", legacyTizen);
-  document.documentElement.classList.toggle("no-flex-gap", flexGapUnsupported);
-  document.body.classList.toggle("no-flex-gap", flexGapUnsupported);
-  document.documentElement.classList.toggle("no-aspect-ratio", aspectRatioUnsupported);
-  document.body.classList.toggle("no-aspect-ratio", aspectRatioUnsupported);
-  document.documentElement.classList.toggle("no-css-grid", cssGridUnsupported);
-  document.body.classList.toggle("no-css-grid", cssGridUnsupported);
-  document.documentElement.classList.toggle("no-css-vars", cssVarsUnsupported);
-  document.body.classList.toggle("no-css-vars", cssVarsUnsupported);
-  document.documentElement.classList.toggle("no-css-math", cssMathUnsupported);
-  document.body.classList.toggle("no-css-math", cssMathUnsupported);
-  document.documentElement.classList.toggle("no-backdrop-filter", backdropFilterUnsupported);
-  document.body.classList.toggle("no-backdrop-filter", backdropFilterUnsupported);
+  ["no-flex-gap", "no-aspect-ratio", "no-css-math", "no-backdrop-filter"].forEach((className) => {
+    document.body.classList.toggle(className, rootClasses.contains(className));
+  });
 }
 
 function isAddonRemoteMode() {
@@ -187,16 +166,18 @@ function isAddonRemoteMode() {
 }
 
 async function shouldShowProfileSelection() {
-  await ProfileSyncService.pull();
+  const [, pinStates] = await Promise.all([
+    ProfileSyncService.pull(),
+    ProfileSyncService.pullProfileLockStates()
+  ]);
   const profiles = await ProfileManager.getProfiles();
   const activeProfileId = ProfileManager.getActiveProfileId();
-  const pinStates = await ProfileSyncService.pullProfileLockStates();
   const activeProfileHasPin = Boolean(
     pinStates?.[String(activeProfileId)] || pinStates?.[Number(activeProfileId)]
   );
 
   if (hasSelectedProfileThisSession) {
-    return false;
+    return { show: false, pinStates };
   }
 
   // Remember last profile: when enabled and the last used profile has no PIN,
@@ -207,10 +188,10 @@ async function shouldShowProfileSelection() {
     ProfileManager.hasEverSelectedProfile() &&
     !activeProfileHasPin
   ) {
-    return false;
+    return { show: false, pinStates };
   }
 
-  return profiles.length > 1 || activeProfileHasPin;
+  return { show: profiles.length > 1 || activeProfileHasPin, pinStates };
 }
 
 async function enterWithLastProfile({ restoreWebOsRoute = false } = {}) {
@@ -225,38 +206,37 @@ async function enterWithLastProfile({ restoreWebOsRoute = false } = {}) {
     await ProfileManager.setActiveProfile(activeProfile.id);
     StartupSyncService.enableProfileScopedSync();
     detailWatchedEnrichmentService.invalidateAllCache();
-    const didApplyProfileSettings = await ProfileSettingsSyncService.pull(activeProfile.id);
-    await TraktCredentialSyncService.pullFromRemote(activeProfile.id);
-    await CollectionSyncService.pull(activeProfile.id);
-    await HomeCatalogSettingsSyncService.pull(activeProfile.id);
-    await WatchedItemsSyncService.pull();
-    await WatchProgressSyncService.pull();
-    if (didApplyProfileSettings) {
-      await I18n.init();
-      ThemeManager.apply();
-      I18n.apply();
-    }
+    await I18n.init();
+    ThemeManager.apply();
+    I18n.apply();
     void preloadStreamBadgeImages().catch((error) => {
       console.warn("Stream badge image prerender failed", error);
     });
   }
-  const resumeRoute = restoreWebOsRoute && typeof Router.consumeWebOsResumeRoute === "function"
-    ? Router.consumeWebOsResumeRoute()
-    : null;
+  const resumeRoute =
+    restoreWebOsRoute && typeof Router.consumeWebOsResumeRoute === "function"
+      ? Router.consumeWebOsResumeRoute()
+      : null;
   if (resumeRoute?.route) {
     await Router.navigate(resumeRoute.route, resumeRoute.params || {}, {
       replaceHistory: true,
       skipStackPush: true
     });
-    return;
+  } else {
+    await Router.navigate("home");
   }
-  await Router.navigate("home");
+  void StartupSyncService.requestSyncNow().catch((error) => {
+    console.warn("Profile background sync failed", error);
+  });
 }
 
 async function routeAfterAuthentication() {
-  const showProfileSelection = await shouldShowProfileSelection();
-  if (showProfileSelection) {
-    Router.navigate("profileSelection");
+  const profileRoute = await shouldShowProfileSelection();
+  if (profileRoute.show) {
+    await Router.navigate("profileSelection", {
+      skipInitialProfileSync: true,
+      profilePinEnabled: profileRoute.pinStates
+    });
     return;
   }
 
@@ -315,6 +295,7 @@ function setupWebOsAppLifecycle() {
     if (recovering || !appShellRendered) {
       return;
     }
+    void DeviceSessionRegistration.requestForegroundRegistration();
     const current = Router.getCurrent();
     if (!current) {
       return;
@@ -324,7 +305,16 @@ function setupWebOsAppLifecycle() {
       if (document.body) {
         document.body.style.removeProperty("display");
       }
-      if (typeof Router.persistWebOsResumeRoute === "function") {
+      if (current === "debugConsole") {
+        await Router.navigate(
+          "home",
+          {},
+          {
+            replaceHistory: true,
+            skipStackPush: true
+          }
+        );
+      } else if (typeof Router.persistWebOsResumeRoute === "function") {
         Router.persistWebOsResumeRoute(current, Router.currentParams || {});
       }
       // With handlesRelaunch=true, webOS expects the app to explicitly request
@@ -385,12 +375,16 @@ function setupWebOsAppLifecycle() {
 }
 
 async function bootstrapApp() {
+  markBootStage("Rendering application shell");
   renderAppShell();
   appShellRendered = true;
+  markBootStage("Initializing TV platform");
   Platform.init();
   applyPerformanceMode();
+  markBootStage("Loading language resources");
   await I18n.init();
 
+  markBootStage("Initializing navigation");
   Router.init();
   PlayerController.init();
 
@@ -400,7 +394,10 @@ async function bootstrapApp() {
   ThemeManager.apply();
   I18n.apply();
   warmStreamingLibs({ delayMs: 1400 });
+  void checkForAppUpdateOnStartup();
 
+  markBootStage("Restoring session");
+  DeviceSessionRegistration.start();
   AuthManager.subscribe((state) => {
     if (state === AuthState.LOADING) {
       StartupSyncService.stop();
@@ -425,7 +422,11 @@ async function bootstrapApp() {
             console.warn("Failed to enter with last profile", error);
             ProfileManager.clearActiveProfile();
             if (Router.getCurrent() !== "profileSelection") {
-              Router.navigate("profileSelection", {}, { replaceHistory: true, skipStackPush: true });
+              Router.navigate(
+                "profileSelection",
+                {},
+                { replaceHistory: true, skipStackPush: true }
+              );
             }
           });
           return;
@@ -450,8 +451,9 @@ async function bootstrapApp() {
     }
 
     if (state === AuthState.AUTHENTICATED) {
+      markBootStage("Loading profiles");
       LocalStore.remove(GUEST_QR_BYPASS_KEY);
-      StartupSyncService.start();
+      StartupSyncService.start({ runInitialPull: false });
       routeAfterAuthentication().catch((error) => {
         console.warn("Failed to resolve authenticated route", error);
         Router.navigate("profileSelection");
@@ -459,6 +461,7 @@ async function bootstrapApp() {
     }
   });
 
+  markBootStage("Checking authentication");
   await AuthManager.bootstrap();
 }
 
