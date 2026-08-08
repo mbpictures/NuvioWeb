@@ -3234,8 +3234,16 @@ export const SettingsScreen = {
           ${this.renderActionRow({
             focusKey: "appearance:settingsUiStyle",
             title: t("appearance_settings_style", {}, "Settings style"),
-            subtitle: t("appearance_settings_style_subtitle", {}, "Choose the layout used by Settings"),
-            value: t(`settings_style_${String(model.theme.settingsUiStyle || "CLASSIC").toLowerCase()}`, {}, String(model.theme.settingsUiStyle || "CLASSIC"))
+            subtitle: t(
+              "appearance_settings_style_subtitle",
+              {},
+              "Choose the layout used by Settings"
+            ),
+            value: t(
+              `settings_style_${String(model.theme.settingsUiStyle || "CLASSIC").toLowerCase()}`,
+              {},
+              String(model.theme.settingsUiStyle || "CLASSIC")
+            )
           })}
           ${this.renderActionRow({
             focusKey: "appearance:font",
@@ -3297,7 +3305,12 @@ export const SettingsScreen = {
     });
     this.actionMap.set("layout:heroCatalogs", () => {
       const catalogSettings = model.homeCatalog || HomeCatalogStore.get();
-      const options = (catalogSettings.order || []).filter((key) => !catalogSettings.disabled?.includes(key)).map((key) => ({ id: key, label: catalogSettings.customTitles?.[key] || key.split("::").pop() || key }));
+      const options = (catalogSettings.order || [])
+        .filter((key) => !catalogSettings.disabled?.includes(key))
+        .map((key) => ({
+          id: key,
+          label: catalogSettings.customTitles?.[key] || key.split("::").pop() || key
+        }));
       this.openMultiChoiceDialog({
         title: t("layout_hero_catalog", {}, "Hero catalogs"),
         options,
@@ -3320,29 +3333,88 @@ export const SettingsScreen = {
         onSelect: (option) => LayoutPreferences.set({ discoverLocation: option.id })
       });
     });
-    this.actionMap.set("layout:classicFocusGradient", () => LayoutPreferences.set({ classicFocusGradientEnabled: !LayoutPreferences.get().classicFocusGradientEnabled }));
-    this.actionMap.set("layout:showFullReleaseDate", () => LayoutPreferences.set({ showFullReleaseDate: !LayoutPreferences.get().showFullReleaseDate }));
-    this.actionMap.set("layout:detail:preferExternalMeta", () => LayoutPreferences.set({ preferExternalMetaAddonDetail: !LayoutPreferences.get().preferExternalMetaAddonDetail }));
-    this.actionMap.set("layout:continueWatchingCardStyle", () => this.openOptionDialog({
-      title: t("layout_cw_card_style", {}, "Continue Watching card style"),
-      options: ["card", "wide", "poster"].map((id) => ({ id, labelKey: `layout_cw_card_style_${id}` })),
-      selectedId: model.layout.continueWatchingCardStyle || "card",
-      returnFocusKey: "layout:continueWatchingCardStyle",
-      onSelect: (option) => LayoutPreferences.set({ continueWatchingCardStyle: option.id })
-    }));
-    const openNumberSetting = (focusKey, titleKey, field, values, fallback) => this.actionMap.set(focusKey, () => this.openOptionDialog({
-      title: t(titleKey, {}, titleKey), options: values.map((value) => ({ id: String(value), label: String(value) })),
-      selectedId: String(model.layout[field] ?? fallback), returnFocusKey: focusKey,
-      onSelect: (option) => LayoutPreferences.set({ [field]: Number(option.id) })
-    }));
-    openNumberSetting("layout:posterWidth", "layout_card_width", "posterCardWidthDp", [96,108,116,126,136,146,156,168], 126);
-    openNumberSetting("layout:posterRadius", "layout_card_radius", "posterCardCornerRadiusDp", [0,4,8,12,16,20,24], 12);
-    openNumberSetting("layout:cardDepthEdge", "settings_card_depth_edge_value", "cardDepthEdgeStrength", [0,10,20,28,40,60,80,100], 28);
-    openNumberSetting("layout:cardDepthSheen", "settings_card_depth_sheen_value", "cardDepthSheenStrength", [0,10,20,40,60,80,100], 10);
-    openNumberSetting("layout:cardDepthCoverage", "settings_card_depth_coverage_value", "cardDepthEdgeCoverage", [0,25,50,75,100], 0);
-    ["Enabled","PostersEnabled","ContinueWatchingEnabled","EpisodeCardsEnabled","CastEnabled","TrailersEnabled"].forEach((suffix) => {
+    this.actionMap.set("layout:classicFocusGradient", () =>
+      LayoutPreferences.set({
+        classicFocusGradientEnabled: !LayoutPreferences.get().classicFocusGradientEnabled
+      })
+    );
+    this.actionMap.set("layout:showFullReleaseDate", () =>
+      LayoutPreferences.set({ showFullReleaseDate: !LayoutPreferences.get().showFullReleaseDate })
+    );
+    this.actionMap.set("layout:detail:preferExternalMeta", () =>
+      LayoutPreferences.set({
+        preferExternalMetaAddonDetail: !LayoutPreferences.get().preferExternalMetaAddonDetail
+      })
+    );
+    this.actionMap.set("layout:continueWatchingCardStyle", () =>
+      this.openOptionDialog({
+        title: t("layout_cw_card_style", {}, "Continue Watching card style"),
+        options: ["card", "wide", "poster"].map((id) => ({
+          id,
+          labelKey: `layout_cw_card_style_${id}`
+        })),
+        selectedId: model.layout.continueWatchingCardStyle || "card",
+        returnFocusKey: "layout:continueWatchingCardStyle",
+        onSelect: (option) => LayoutPreferences.set({ continueWatchingCardStyle: option.id })
+      })
+    );
+    const openNumberSetting = (focusKey, titleKey, field, values, fallback) =>
+      this.actionMap.set(focusKey, () =>
+        this.openOptionDialog({
+          title: t(titleKey, {}, titleKey),
+          options: values.map((value) => ({ id: String(value), label: String(value) })),
+          selectedId: String(model.layout[field] ?? fallback),
+          returnFocusKey: focusKey,
+          onSelect: (option) => LayoutPreferences.set({ [field]: Number(option.id) })
+        })
+      );
+    openNumberSetting(
+      "layout:posterWidth",
+      "layout_card_width",
+      "posterCardWidthDp",
+      [96, 108, 116, 126, 136, 146, 156, 168],
+      126
+    );
+    openNumberSetting(
+      "layout:posterRadius",
+      "layout_card_radius",
+      "posterCardCornerRadiusDp",
+      [0, 4, 8, 12, 16, 20, 24],
+      12
+    );
+    openNumberSetting(
+      "layout:cardDepthEdge",
+      "settings_card_depth_edge_value",
+      "cardDepthEdgeStrength",
+      [0, 10, 20, 28, 40, 60, 80, 100],
+      28
+    );
+    openNumberSetting(
+      "layout:cardDepthSheen",
+      "settings_card_depth_sheen_value",
+      "cardDepthSheenStrength",
+      [0, 10, 20, 40, 60, 80, 100],
+      10
+    );
+    openNumberSetting(
+      "layout:cardDepthCoverage",
+      "settings_card_depth_coverage_value",
+      "cardDepthEdgeCoverage",
+      [0, 25, 50, 75, 100],
+      0
+    );
+    [
+      "Enabled",
+      "PostersEnabled",
+      "ContinueWatchingEnabled",
+      "EpisodeCardsEnabled",
+      "CastEnabled",
+      "TrailersEnabled"
+    ].forEach((suffix) => {
       const field = `cardDepth${suffix}`;
-      this.actionMap.set(`layout:${field}`, () => LayoutPreferences.set({ [field]: !LayoutPreferences.get()[field] }));
+      this.actionMap.set(`layout:${field}`, () =>
+        LayoutPreferences.set({ [field]: !LayoutPreferences.get()[field] })
+      );
     });
     this.actionMap.set("layout:hideUnreleased", () => {
       LayoutPreferences.set({
@@ -3561,7 +3633,12 @@ export const SettingsScreen = {
           focusKey: "layout:searchDiscover",
           title: t("layout_discover_location_action", {}, "Discover location"),
           subtitle: t("settings.layout.searchDiscover.subtitle"),
-          value: model.layout.discoverLocation === "in_sidebar" ? t("layout_discover_location_in_sidebar") : model.layout.discoverLocation === "off" ? t("common.off", {}, "Off") : t("layout_discover_location_in_search")
+          value:
+            model.layout.discoverLocation === "in_sidebar"
+              ? t("layout_discover_location_in_sidebar")
+              : model.layout.discoverLocation === "off"
+                ? t("common.off", {}, "Off")
+                : t("layout_discover_location_in_search")
         })}
         ${!isModernLayout ? this.renderToggleRow({ focusKey: "layout:classicFocusGradient", title: t("layout_classic_focus_gradient"), subtitle: t("layout_classic_focus_gradient_sub"), checked: Boolean(model.layout.classicFocusGradientEnabled) }) : ""}
         ${
@@ -3762,12 +3839,30 @@ export const SettingsScreen = {
         ${this.renderActionRow({ focusKey: "layout:posterWidth", title: t("layout_card_width", {}, "Card width"), subtitle: t("layout_section_card_style_desc", {}, "Adjust poster card width"), value: String(model.layout.posterCardWidthDp) })}
         ${this.renderActionRow({ focusKey: "layout:posterRadius", title: t("layout_card_radius", {}, "Card corner radius"), subtitle: t("layout_section_card_style_desc", {}, "Adjust poster card corner radius"), value: String(model.layout.posterCardCornerRadiusDp) })}
         ${this.renderToggleRow({ focusKey: "layout:cardDepthEnabled", title: t("settings_card_depth_enabled", {}, "Enable depth effect"), subtitle: t("settings_card_depth_description", {}, "Add edge light and sheen to image cards"), checked: Boolean(model.layout.cardDepthEnabled) })}
-        ${model.layout.cardDepthEnabled ? `
+        ${
+          model.layout.cardDepthEnabled
+            ? `
           ${this.renderActionRow({ focusKey: "layout:cardDepthEdge", title: t("settings_card_depth_edge_value", {}, "Edge glow"), value: `${model.layout.cardDepthEdgeStrength}%` })}
           ${this.renderActionRow({ focusKey: "layout:cardDepthSheen", title: t("settings_card_depth_sheen_value", {}, "Sheen"), value: `${model.layout.cardDepthSheenStrength}%` })}
           ${this.renderActionRow({ focusKey: "layout:cardDepthCoverage", title: t("settings_card_depth_coverage_value", {}, "Edge coverage"), value: `${model.layout.cardDepthEdgeCoverage}%` })}
-          ${[["PostersEnabled","settings_card_depth_surface_posters"],["ContinueWatchingEnabled","settings_card_depth_surface_continue_watching"],["EpisodeCardsEnabled","settings_card_depth_surface_episodes"],["CastEnabled","settings_card_depth_surface_cast"],["TrailersEnabled","settings_card_depth_surface_trailers"]].map(([suffix,key]) => this.renderToggleRow({ focusKey: `layout:cardDepth${suffix}`, title: t(key, {}, key), checked: model.layout[`cardDepth${suffix}`] !== false })).join("")}
-        ` : ""}
+          ${[
+            ["PostersEnabled", "settings_card_depth_surface_posters"],
+            ["ContinueWatchingEnabled", "settings_card_depth_surface_continue_watching"],
+            ["EpisodeCardsEnabled", "settings_card_depth_surface_episodes"],
+            ["CastEnabled", "settings_card_depth_surface_cast"],
+            ["TrailersEnabled", "settings_card_depth_surface_trailers"]
+          ]
+            .map(([suffix, key]) =>
+              this.renderToggleRow({
+                focusKey: `layout:cardDepth${suffix}`,
+                title: t(key, {}, key),
+                checked: model.layout[`cardDepth${suffix}`] !== false
+              })
+            )
+            .join("")}
+        `
+            : ""
+        }
       </div>`;
 
     return `
@@ -5160,25 +5255,39 @@ export const SettingsScreen = {
     this.actionMap.set("playback:trailer", () => {
       PlayerSettingsStore.set({ trailerAutoplay: !PlayerSettingsStore.get().trailerAutoplay });
     });
-    this.actionMap.set("playback:trailerDelay", () => this.openOptionDialog({
-      title: t("audio_trailer_delay", {}, "Trailer delay"),
-      options: Array.from({ length: 16 }, (_, value) => ({ id: String(value), label: `${value}s` })),
-      selectedId: String(model.player.trailerDelaySeconds ?? 7),
-      returnFocusKey: "playback:trailerDelay",
-      onSelect: (option) => PlayerSettingsStore.set({ trailerDelaySeconds: Number(option.id) })
-    }));
+    this.actionMap.set("playback:trailerDelay", () =>
+      this.openOptionDialog({
+        title: t("audio_trailer_delay", {}, "Trailer delay"),
+        options: Array.from({ length: 16 }, (_, value) => ({
+          id: String(value),
+          label: `${value}s`
+        })),
+        selectedId: String(model.player.trailerDelaySeconds ?? 7),
+        returnFocusKey: "playback:trailerDelay",
+        onSelect: (option) => PlayerSettingsStore.set({ trailerDelaySeconds: Number(option.id) })
+      })
+    );
     this.actionMap.set("playback:skipIntro", () => {
       PlayerSettingsStore.set({ skipIntroEnabled: !PlayerSettingsStore.get().skipIntroEnabled });
     });
-    const togglePlayerSetting = (focusKey, field) => this.actionMap.set(focusKey, () => PlayerSettingsStore.set({ [field]: !PlayerSettingsStore.get()[field] }));
+    const togglePlayerSetting = (focusKey, field) =>
+      this.actionMap.set(focusKey, () =>
+        PlayerSettingsStore.set({ [field]: !PlayerSettingsStore.get()[field] })
+      );
     togglePlayerSetting("playback:loadingOverlay", "loadingOverlayEnabled");
     togglePlayerSetting("playback:loadingStatus", "showPlayerLoadingStatus");
     togglePlayerSetting("playback:pauseOverlay", "pauseOverlayEnabled");
     togglePlayerSetting("playback:parentalGuide", "parentalGuideEnabled");
-    ["intro", "recap", "outro"].forEach((type) => this.actionMap.set(`playback:autoSkip:${type}`, () => {
-      const current = PlayerSettingsStore.get().autoSkipSegmentTypes || [];
-      PlayerSettingsStore.set({ autoSkipSegmentTypes: current.includes(type) ? current.filter((entry) => entry !== type) : [...current, type] });
-    }));
+    ["intro", "recap", "outro"].forEach((type) =>
+      this.actionMap.set(`playback:autoSkip:${type}`, () => {
+        const current = PlayerSettingsStore.get().autoSkipSegmentTypes || [];
+        PlayerSettingsStore.set({
+          autoSkipSegmentTypes: current.includes(type)
+            ? current.filter((entry) => entry !== type)
+            : [...current, type]
+        });
+      })
+    );
     this.actionMap.set("playback:osdClock", () => {
       PlayerSettingsStore.set({
         osdClockEnabled: !PlayerSettingsStore.get().osdClockEnabled
@@ -5411,16 +5520,29 @@ export const SettingsScreen = {
         returnFocusKey: "playback:secondarySubtitleLanguage",
         dialogClassName: "settings-language-dialog",
         optionRenderer: "subtitle-language",
-        onSelect: (option) => PlayerSettingsStore.set({ secondarySubtitleLanguage: option.id, subtitleStyle: { ...currentSettings.subtitleStyle, secondaryPreferredLanguage: option.id } })
+        onSelect: (option) =>
+          PlayerSettingsStore.set({
+            secondarySubtitleLanguage: option.id,
+            subtitleStyle: {
+              ...currentSettings.subtitleStyle,
+              secondaryPreferredLanguage: option.id
+            }
+          })
       });
     });
-    this.actionMap.set("playback:subtitleStartupMode", () => this.openOptionDialog({
-      title: t("sub_startup_mode_title", {}, "Subtitle startup mode"),
-      options: [{ id: "FAST_STARTUP", labelKey: "sub_startup_mode_fast" }, { id: "PREFERRED_ONLY", labelKey: "sub_startup_mode_preferred" }, { id: "ALL_SUBTITLES", labelKey: "sub_startup_mode_all" }],
-      selectedId: model.player.addonSubtitleStartupMode || "ALL_SUBTITLES",
-      returnFocusKey: "playback:subtitleStartupMode",
-      onSelect: (option) => PlayerSettingsStore.set({ addonSubtitleStartupMode: option.id })
-    }));
+    this.actionMap.set("playback:subtitleStartupMode", () =>
+      this.openOptionDialog({
+        title: t("sub_startup_mode_title", {}, "Subtitle startup mode"),
+        options: [
+          { id: "FAST_STARTUP", labelKey: "sub_startup_mode_fast" },
+          { id: "PREFERRED_ONLY", labelKey: "sub_startup_mode_preferred" },
+          { id: "ALL_SUBTITLES", labelKey: "sub_startup_mode_all" }
+        ],
+        selectedId: model.player.addonSubtitleStartupMode || "ALL_SUBTITLES",
+        returnFocusKey: "playback:subtitleStartupMode",
+        onSelect: (option) => PlayerSettingsStore.set({ addonSubtitleStartupMode: option.id })
+      })
+    );
     this.actionMap.set("playback:renderMode", () => {
       this.openOptionDialog({
         title: t("settings.dialogs.subtitleRenderMode"),
@@ -5483,13 +5605,20 @@ export const SettingsScreen = {
         }
       });
     });
-    this.actionMap.set("playback:subtitleBackgroundColor", () => this.openOptionDialog({
-      title: t("sub_bg_color", {}, "Subtitle background color"),
-      options: [{ id: "#00000000", labelKey: "common_off" }, { id: "#00000080", label: "50%" }, { id: "#000000CC", label: "80%" }, { id: "#000000", label: "100%" }],
-      selectedId: PlayerSettingsStore.get().subtitleStyle?.backgroundColor || "#00000000",
-      returnFocusKey: "playback:subtitleBackgroundColor",
-      onSelect: (option) => updateSubtitleStyle({ backgroundColor: option.id })
-    }));
+    this.actionMap.set("playback:subtitleBackgroundColor", () =>
+      this.openOptionDialog({
+        title: t("sub_bg_color", {}, "Subtitle background color"),
+        options: [
+          { id: "#00000000", labelKey: "common_off" },
+          { id: "#00000080", label: "50%" },
+          { id: "#000000CC", label: "80%" },
+          { id: "#000000", label: "100%" }
+        ],
+        selectedId: PlayerSettingsStore.get().subtitleStyle?.backgroundColor || "#00000000",
+        returnFocusKey: "playback:subtitleBackgroundColor",
+        onSelect: (option) => updateSubtitleStyle({ backgroundColor: option.id })
+      })
+    );
     this.actionMap.set("playback:subtitleOutline", () => {
       updateSubtitleStyle({
         outlineEnabled: !PlayerSettingsStore.get().subtitleStyle?.outlineEnabled
@@ -6563,7 +6692,9 @@ export const SettingsScreen = {
 
     const shell = this.container.querySelector(".settings-shell");
     if (shell) {
-      shell.dataset.settingsStyle = String(this.model.theme.settingsUiStyle || "CLASSIC").toLowerCase();
+      shell.dataset.settingsStyle = String(
+        this.model.theme.settingsUiStyle || "CLASSIC"
+      ).toLowerCase();
       shell.classList.toggle("settings-route-enter", Boolean(this.settingsRouteEnterPending));
       if (this.settingsRouteEnterPending) {
         void shell.offsetWidth;

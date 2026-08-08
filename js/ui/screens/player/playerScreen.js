@@ -3104,7 +3104,9 @@ export const PlayerScreen = {
     }
     this.activeSkipInterval = active;
     if (previousKey !== nextKey) {
-      const intervalType = String(active?.type || "").trim().toLowerCase();
+      const intervalType = String(active?.type || "")
+        .trim()
+        .toLowerCase();
       const autoSkipType = ["outro", "ed", "mixed-ed"].includes(intervalType)
         ? "outro"
         : intervalType === "recap"
@@ -7682,7 +7684,10 @@ export const PlayerScreen = {
       PlayerController.setAvPlayExternalSubtitleDelay?.(this.subtitleDelayMs);
     }
     uiRoot.style.setProperty("--player-subtitle-color", String(style.textColor || "#FFFFFF"));
-    uiRoot.style.setProperty("--player-subtitle-background", String(style.backgroundColor || "#00000000"));
+    uiRoot.style.setProperty(
+      "--player-subtitle-background",
+      String(style.backgroundColor || "#00000000")
+    );
     uiRoot.style.setProperty("--player-subtitle-outline-color", outlineColor);
     uiRoot.style.setProperty("--player-subtitle-font-size", `${subtitleFontSize}%`);
     uiRoot.style.setProperty("--player-html-subtitle-font-size", htmlSubtitleFontSize);
@@ -7693,7 +7698,10 @@ export const PlayerScreen = {
       `${(verticalOffset.value * -2).toFixed(2)}vh`
     );
     video.style.setProperty("--player-subtitle-color", String(style.textColor || "#FFFFFF"));
-    video.style.setProperty("--player-subtitle-background", String(style.backgroundColor || "#00000000"));
+    video.style.setProperty(
+      "--player-subtitle-background",
+      String(style.backgroundColor || "#00000000")
+    );
     video.style.setProperty("--player-subtitle-outline-color", outlineColor);
     video.style.setProperty("--player-subtitle-font-size", `${subtitleFontSize}%`);
     video.style.setProperty("--player-subtitle-font-weight", subtitleFontWeight);

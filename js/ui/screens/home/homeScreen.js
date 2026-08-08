@@ -4691,12 +4691,15 @@ export const HomeScreen = {
       normalizedAction === "confirmDestructiveSimklRemoval"
     ) {
       try {
-        await libraryRepository.applyMembershipChanges(this.posterListPicker.item, {
-          desiredMembership: this.posterListPicker.membership || {}
-        }, {
-          destructiveRemovalConfirmed:
-            normalizedAction === "confirmDestructiveSimklRemoval"
-        });
+        await libraryRepository.applyMembershipChanges(
+          this.posterListPicker.item,
+          {
+            desiredMembership: this.posterListPicker.membership || {}
+          },
+          {
+            destructiveRemovalConfirmed: normalizedAction === "confirmDestructiveSimklRemoval"
+          }
+        );
         this.posterListPicker = null;
         this.destroyHomeHoldDialog();
         this.restorePosterHoldMenuFocus();
@@ -8845,16 +8848,19 @@ export const HomeScreen = {
     const depthClass = this.layoutPrefs?.cardDepthEnabled
       ? ` home-card-depth${this.layoutPrefs.cardDepthPostersEnabled !== false ? " depth-posters" : ""}${this.layoutPrefs.cardDepthContinueWatchingEnabled !== false ? " depth-continue-watching" : ""}`
       : "";
-    const classicGradientClass = this.layoutMode === "classic" && this.layoutPrefs?.classicFocusGradientEnabled
-      ? " home-classic-focus-gradient"
-      : "";
+    const classicGradientClass =
+      this.layoutMode === "classic" && this.layoutPrefs?.classicFocusGradientEnabled
+        ? " home-classic-focus-gradient"
+        : "";
     const layoutClass = `home-layout-${this.layoutMode}${modernLandscapeLayoutClass}${modernHeroFullScreenBackdropClass}${modernSidebarLayoutClass}${depthClass}${classicGradientClass}`;
     const sizingStyle = [
       this.layoutMode === "modern" ? buildModernHomeSizingStyle(this.layoutPrefs) : "",
       `--card-depth-edge:${Number(this.layoutPrefs?.cardDepthEdgeStrength ?? 28) / 100}`,
       `--card-depth-sheen:${Number(this.layoutPrefs?.cardDepthSheenStrength ?? 10) / 100}`,
       `--card-depth-coverage:${Number(this.layoutPrefs?.cardDepthEdgeCoverage ?? 0)}%`
-    ].filter(Boolean).join(";");
+    ]
+      .filter(Boolean)
+      .join(";");
     const showPosterLabels = this.layoutPrefs?.posterLabelsEnabled !== false;
     const showCatalogAddonName = this.layoutPrefs?.catalogAddonNameEnabled !== false;
     const showCatalogTypeSuffix = this.layoutPrefs?.catalogTypeSuffixEnabled !== false;
