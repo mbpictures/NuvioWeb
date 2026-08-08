@@ -7422,7 +7422,7 @@ export const PlayerScreen = {
               data-action="${control.action}"
               title="${escapeHtml(control.title || "")}">
         ${control.icon
-          ? ((control.primary || control.useMask)
+          ? ((control.primary || control.useMask) && window.__NUVIO_PLATFORM__ !== "vega"
             ? `<span class="player-control-icon player-control-icon-mask" style="-webkit-mask-image:url('${escapeHtml(control.icon)}');mask-image:url('${escapeHtml(control.icon)}');" aria-hidden="true"></span>`
             : `<img class="player-control-icon" src="${control.icon}" alt="" aria-hidden="true" />`)
           : `<span class="player-control-label">${escapeHtml(control.label || "")}</span>`}
