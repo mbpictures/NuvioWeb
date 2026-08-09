@@ -11133,6 +11133,9 @@ export const PlayerScreen = {
       if (Environment.isTizen() || Environment.isWebOS()) {
         return playbackEngine.endsWith("avplay") ? 60000 : 45000;
       }
+      if (Environment.isVega()) {
+        return 60000;
+      }
       return 18000;
     }
     if (Environment.isTizen()) {
