@@ -2777,6 +2777,17 @@ export const PlayerController = {
       pushCandidate(candidates, avplayEngine);
     }
     pushCandidate(candidates, "native-file");
+    if (!isTizenRuntime) {
+      // URLs with no recognizable extension (e.g. debrid API endpoints) may
+      // return HLS or DASH manifests. If native-file rejects the source, try
+      // the adaptive streaming engines before giving up.
+      if (canUseHlsJs) {
+        pushCandidate(candidates, "hls.js");
+      }
+      if (canUseDashJs) {
+        pushCandidate(candidates, "dash.js");
+      }
+    }
     if (!isTizenRuntime && canUseAvPlay) {
       pushCandidate(candidates, avplayEngine);
     }
@@ -3200,6 +3211,25 @@ export const PlayerController = {
           stableBufferTime: isWebOs ? 8 : 12
         }
       });
+      // If the browser's MSE layer doesn't support HEVC, register a filter so
+      // dash.js skips hvc1/hev1 representations and falls back to H.264.
+      // This matters on Fire TV WebView (Chromium) where HEVC hardware decoding
+      // is available in native apps but not exposed through MediaSource.
+      const mse = globalThis.MediaSource;
+      const hevcMseSupported = Boolean(
+        mse?.isTypeSupported?.('video/mp4; codecs="hvc1.1.2.L93.B0"') ||
+        mse?.isTypeSupported?.('video/mp4; codecs="hev1.1.2.L93.B0"')
+      );
+      if (!hevcMseSupported) {
+        try {
+          player.registerCustomCapabilitiesFilter?.((representation) => {
+            const codec = String(representation?.codec || "").toLowerCase();
+            return !/hvc1|hev1/.test(codec);
+          });
+        } catch (_) {
+          // Ignore if this dash.js build doesn't expose the filter API.
+        }
+      }
       player.initialize(this.video, url, true);
       const dashEvents = dashJsEngine.getEvents();
       const emitTracksChanged = () => {
