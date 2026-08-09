@@ -7300,6 +7300,12 @@ button:focus-visible {
   border-color: rgba(var(--focus-color-rgb), 0.18);
 }
 
+.trakt-route-shell .settings-tracking-panel .settings-trakt-card {
+  height: auto;
+  max-height: none;
+  flex-shrink: 0;
+}
+
 .settings-row-leading-image {
   width: 32px;
   height: 32px;
