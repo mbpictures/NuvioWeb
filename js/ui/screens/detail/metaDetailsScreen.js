@@ -6740,7 +6740,7 @@ export const MetaDetailsScreen = {
             src="${youtubeFrameUrl}"
             title="Trailer"
             allow="autoplay; encrypted-media; picture-in-picture"
-            referrerpolicy="origin-when-cross-origin"
+            referrerpolicy="strict-origin-when-cross-origin"
             allowfullscreen
             scrolling="no"
             tabindex="-1"
