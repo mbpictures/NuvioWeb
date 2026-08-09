@@ -2714,6 +2714,9 @@ export const PlayerController = {
       if (preferTvNative && canUseAvPlay) {
         pushCandidate(candidates, avplayEngine);
       }
+      if (Platform.isVega() && canUseHlsJs) {
+        pushCandidate(candidates, "hls.js");
+      }
       if (canPlayNativeHls) {
         pushCandidate(candidates, "native-hls");
       }
