@@ -4251,6 +4251,132 @@ export const PlayerScreen = {
     });
   },
 
+  // Vega does not select audio tracks on the element. Chromium there exposes no
+  // AudioTrackList and has no AC-3/E-AC-3/DTS decoder, so the chosen track is
+  // demuxed and decoded in WebAssembly and played through Web Audio against the
+  // same clock (js/core/player/vegaAudio/). The element still renders the
+  // picture, and still plays the container's default track itself when that
+  // track uses a codec it supports.
+  getVegaDefaultEmbeddedAudioTrack() {
+    const tracks = this.embeddedAudioTracks || [];
+    return tracks.find((track) => Boolean(track?.raw?.default)) || tracks[0] || null;
+  },
+
+  // "element": the element plays this one itself, leave it alone. "sidecar":
+  // decode it ourselves. "unavailable": the element will not play it and there
+  // is no decoder for it, so selecting it would silently do nothing.
+  resolveVegaAudioTrackPlan(track) {
+    if (!track) {
+      return "unavailable";
+    }
+    const defaultTrack = this.getVegaDefaultEmbeddedAudioTrack();
+    const isDefaultTrack = Boolean(
+      defaultTrack && Number(track.embeddedTrackIndex) === Number(defaultTrack.embeddedTrackIndex)
+    );
+    // Only the first track is reachable on the element, and it is always the
+    // better decoder for the codecs it supports.
+    if (
+      isDefaultTrack &&
+      typeof PlayerController.isNativeVegaAudioCodec === "function" &&
+      PlayerController.isNativeVegaAudioCodec(track.codec)
+    ) {
+      return "element";
+    }
+    if (
+      typeof PlayerController.canDecodeVegaAudioCodec === "function" &&
+      PlayerController.canDecodeVegaAudioCodec(track.codec)
+    ) {
+      return "sidecar";
+    }
+    return isDefaultTrack ? "element" : "unavailable";
+  },
+
+  // `retry` marks a start the user asked for, which reopens a track that
+  // already failed once on this source; automatic starts leave those alone.
+  startVegaEmbeddedAudioTrack(track, { retry = false } = {}) {
+    const streamIndex = Number(track?.sourceTrackId);
+    if (!Number.isFinite(streamIndex) || streamIndex < 0) {
+      return;
+    }
+    if (
+      typeof PlayerController.getVegaEmbeddedAudioStreamIndex === "function" &&
+      PlayerController.getVegaEmbeddedAudioStreamIndex() === streamIndex
+    ) {
+      return;
+    }
+    Promise.resolve(PlayerController.setVegaEmbeddedAudioTrack(streamIndex, track.codec, { retry }))
+      .then((started) => {
+        // null means a newer pick replaced this one while it was starting -
+        // opening a track takes seconds here, so that is routine, not a
+        // failure to tell the user about.
+        if (started === false) {
+          this.showAspectToast(
+            t("player_audio_track_failed", {}, "Audio track could not be played")
+          );
+        }
+      })
+      .catch((error) => {
+        console.warn(`Vega audio track failed: ${String(error?.message || error)}`);
+      });
+  },
+
+  // Called once the container's tracks are known: starts decoding whichever
+  // track is going to be the audible one, so a Dolby stream is not silent until
+  // the user opens the audio menu.
+  syncVegaEmbeddedAudioTrack() {
+    if (!Environment.isVega() || !(this.embeddedAudioTracks || []).length) {
+      return;
+    }
+    const selectedTrack =
+      this.selectedEmbeddedAudioTrackIndex >= 0
+        ? this.getEmbeddedAudioTrackByEmbeddedIndex(this.selectedEmbeddedAudioTrackIndex)
+        : null;
+    const targetTrack = selectedTrack || this.getVegaDefaultEmbeddedAudioTrack();
+    if (!targetTrack || this.resolveVegaAudioTrackPlan(targetTrack) !== "sidecar") {
+      return;
+    }
+    if (this.selectedEmbeddedAudioTrackIndex < 0) {
+      // Show the track that is actually producing sound as the selected one.
+      this.selectedEmbeddedAudioTrackIndex = Number(targetTrack.embeddedTrackIndex);
+      this.selectedAudioTrackIndex = Number(targetTrack.embeddedTrackIndex);
+      this.invalidateTrackDialogCaches();
+      this.refreshTrackDialogs();
+    }
+    this.startVegaEmbeddedAudioTrack(targetTrack);
+  },
+
+  applyVegaEmbeddedAudioTrack(selectedEntry, embeddedTrack, { rememberSelection = false } = {}) {
+    const plan = this.resolveVegaAudioTrackPlan(embeddedTrack);
+    if (plan === "unavailable") {
+      // Startup runs through preferred language and then a fallback, so a toast
+      // here would fire for a choice the user never made.
+      if (!this.startupAudioPreferenceApplying) {
+        this.showAspectToast(
+          t("player_audio_track_unsupported", {}, "This audio track is not supported")
+        );
+      }
+      this.invalidateTrackDialogCaches();
+      this.renderAudioDialog();
+      return;
+    }
+
+    this.selectedEmbeddedAudioTrackIndex = selectedEntry.embeddedAudioTrackIndex;
+    this.selectedAudioTrackIndex = selectedEntry.embeddedAudioTrackIndex;
+    if (rememberSelection) {
+      this.rememberAudioTrackSelection(this.getAudioTrackPreference(selectedEntry));
+    }
+    this.invalidateTrackDialogCaches();
+    this.renderControlButtons();
+    this.renderAudioDialog();
+
+    if (plan === "element") {
+      // The element is already playing this one; stop decoding the other track.
+      void PlayerController.stopVegaEmbeddedAudioTrack();
+      return;
+    }
+    this.startVegaEmbeddedAudioTrack(embeddedTrack, { retry: true });
+  },
+
   getUnavailableTrackMessage(kind = "audio") {
     const usingAvPlay =
       typeof PlayerController.isUsingAvPlay === "function"
@@ -11657,6 +11783,7 @@ export const PlayerScreen = {
         ? selectedEmbeddedAudioTrack
         : -1;
       this.refreshTrackDialogs();
+      this.syncVegaEmbeddedAudioTrack();
     })()
       .catch((error) => {
         console.warn("Embedded subtitle discovery failed", error);
@@ -15812,6 +15939,10 @@ export const PlayerScreen = {
       const embeddedTrack = this.getEmbeddedAudioTrackByEmbeddedIndex(
         selectedEntry.embeddedAudioTrackIndex
       );
+      if (Environment.isVega()) {
+        this.applyVegaEmbeddedAudioTrack(selectedEntry, embeddedTrack, { rememberSelection });
+        return;
+      }
       let applied = false;
       if (
         Environment.isTizen() &&

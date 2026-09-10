@@ -110,6 +110,13 @@ export default function App() {
         return;
       }
 
+      // The WebView has no reachable devtools, so the page pushes diagnostics
+      // here to land in `vega device start-log-stream`.
+      if (message.type === "log") {
+        console.log("Nuvio web:", JSON.stringify(message.payload));
+        return;
+      }
+
       if (message.type === "fetch") {
         performProxiedFetch(message.payload).then(replyToWeb);
       }

@@ -1,0 +1,5 @@
+--enable-decoder=ac3
+--enable-decoder=eac3
+--enable-decoder=dca
+--enable-parser=ac3
+--enable-parser=dca

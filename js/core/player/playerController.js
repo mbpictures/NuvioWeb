@@ -13,6 +13,12 @@ import {
 } from "../../platform/webos/webosAudioCapabilities.js";
 import { WebOsLunaService } from "../../platform/webos/webosLunaService.js";
 import { WebOSPlayerExtensions } from "../../platform/webos/webosPlayerExtensions.js";
+import { reportVegaWebAudioCapabilities } from "../../platform/vega/vegaWebAudioProbe.js";
+import {
+  canDecodeAudioCodec,
+  isNativeAudioCodec,
+  vegaAudioSidecar
+} from "./vegaAudio/vegaAudioSidecar.js";
 import { loadStreamingLibs } from "../../runtime/loadStreamingLibs.js";
 
 const MIN_PROGRESS_SYNC_DURATION_MS = 1000;
@@ -620,6 +626,9 @@ export const PlayerController = {
       ) {
         this.video.volume = 1;
       }
+      // The Vega audio track plays through Web Audio, outside the element, so
+      // muting the element does not gate it.
+      vegaAudioSidecar.setVolume(gated ? 0 : 1);
     } catch (_) {
       // Ignore unsupported volume/mute operations.
     }
@@ -3637,6 +3646,53 @@ export const PlayerController = {
     return true;
   },
 
+  // Vega has no AudioTrackList and no Dolby decoders, so an audio track there is
+  // not selected on the element - it is decoded in WebAssembly and played
+  // through Web Audio alongside the picture. See vegaAudio/vegaAudioSidecar.js.
+  canDecodeVegaAudioCodec(codec) {
+    return Platform.isVega() && canDecodeAudioCodec(codec);
+  },
+
+  isNativeVegaAudioCodec(codec) {
+    return Platform.isVega() && isNativeAudioCodec(codec);
+  },
+
+  /**
+   * Resolves true when the track is playing, false when it could not start,
+   * and null when a newer selection replaced this one - which the caller must
+   * not report as a failure.
+   */
+  setVegaEmbeddedAudioTrack(streamIndex, codec, { retry = false } = {}) {
+    if (!Platform.isVega() || !this.video) {
+      return Promise.resolve(false);
+    }
+    const url = String(this.currentPlaybackUrl || this.video.currentSrc || "").trim();
+    if (!url) {
+      return Promise.resolve(false);
+    }
+    return vegaAudioSidecar.engage({ video: this.video, url, streamIndex, codec, retry });
+  },
+
+  stopVegaEmbeddedAudioTrack() {
+    // The track mutes the element while it owns the audio; restore whatever
+    // mute state the startup gate wants once it is gone.
+    return Promise.resolve(vegaAudioSidecar.disengage()).then(() => {
+      this.applyStartupAudioGateToVideo();
+    });
+  },
+
+  isVegaEmbeddedAudioTrackActive() {
+    return vegaAudioSidecar.isActive();
+  },
+
+  getVegaEmbeddedAudioStreamIndex() {
+    return vegaAudioSidecar.getActiveStreamIndex();
+  },
+
+  getVegaEmbeddedAudioStats() {
+    return vegaAudioSidecar.getStats();
+  },
+
   setWebOsEmbeddedAudioTrack(trackIndex, selectedTrackIndex = trackIndex) {
     if (!Platform.isWebOS() || !this.video || !this.isUsingNativePlayback()) {
       return false;
@@ -4001,6 +4057,9 @@ export const PlayerController = {
     this.video.muted = false;
     this.video.defaultMuted = false;
     this.video.volume = 1;
+    if (Platform.isVega()) {
+      reportVegaWebAudioCapabilities(this.video);
+    }
     this.refreshWebOsDeviceInfo();
     if (!this.viewportSyncHandler) {
       this.viewportSyncHandler = () => {
@@ -4189,6 +4248,7 @@ export const PlayerController = {
 
     this.teardownAdaptiveInstances();
     this.teardownAvPlay();
+    void vegaAudioSidecar.disengage();
     Array.from(this.video.querySelectorAll("source")).forEach((node) => node.remove());
     this.video.pause();
     this.video.removeAttribute("src");
@@ -4435,6 +4495,9 @@ export const PlayerController = {
     }
     this.teardownAdaptiveInstances();
     this.teardownAvPlay();
+    // Playback is over, so the libav worker goes with it; between tracks it is
+    // deliberately kept alive because starting it costs seconds.
+    void vegaAudioSidecar.disengage({ release: true });
     this.resetNativeMediaState();
     try {
       this.video.removeAttribute("src");

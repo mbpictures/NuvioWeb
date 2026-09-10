@@ -61,13 +61,13 @@ The Vega SDK is officially macOS/Ubuntu only, but it runs in WSL2 with three fix
 
 1. **Add your user to the `kvm` group** — `sudo usermod -aG kvm $USER`, then `wsl --shutdown`.
    Without it QEMU cannot open `/dev/kvm`, the emulator dies instantly, and `vega virtual-device
-   start` reports only `Deadline reached (60s) but virtual device unresponsive`. Check with
+start` reports only `Deadline reached (60s) but virtual device unresponsive`. Check with
    `.../vmtools/agent/emulator-check accel`.
 2. **Install `libpulse0`** — the bundled QEMU binary is dynamically linked against
    `libpulse.so.0`, which a bare Ubuntu WSL rootfs lacks. It exits 127 before running.
 3. **Build from a WSL-native path, not `/mnt/...`** — building on a Windows drive mount
    produces a `.vpkg` whose zstd archive is corrupt (`vpt` then fails with ``failed to parse
-   `build-info.json` ``). `scripts/package-vega.mjs` refuses to build from `/mnt` for this reason.
+`build-info.json` ``). `scripts/package-vega.mjs` refuses to build from `/mnt` for this reason.
 
 The practical flow: run `npm run package:vega -- --stage-only` (or just `npm run build` +
 `node scripts/package-vega.mjs --stage-only`) on Windows, copy `vega/` to `~/nuvio-vega`,
@@ -102,15 +102,15 @@ carries no reliable Vega marker:
 The web app runs at a `file://` origin, so its origin is `null`. Probed against a real Chromium
 at `file://`, using each API's actual request path:
 
-| Endpoint                             | Result                                              |
-| ------------------------------------ | --------------------------------------------------- |
-| TMDB, TMDB images, Cinemeta, mdblist | readable (`Access-Control-Allow-Origin: *`)          |
-| Trakt (custom headers → preflight)   | readable                                             |
-| Supabase REST + RPC preflight        | readable; preflight allows `null` and `apikey`       |
-| jsDelivr (`fetch` and `<script>`)    | readable                                             |
-| `localStorage`                       | works                                                |
-| introdb                              | **blocked** — pins `ACAO: https://introdb.app`       |
-| IMDb ratings API                     | **blocked** — sends no `Access-Control-*` at all     |
+| Endpoint                             | Result                                           |
+| ------------------------------------ | ------------------------------------------------ |
+| TMDB, TMDB images, Cinemeta, mdblist | readable (`Access-Control-Allow-Origin: *`)      |
+| Trakt (custom headers → preflight)   | readable                                         |
+| Supabase REST + RPC preflight        | readable; preflight allows `null` and `apikey`   |
+| jsDelivr (`fetch` and `<script>`)    | readable                                         |
+| `localStorage`                       | works                                            |
+| introdb                              | **blocked** — pins `ACAO: https://introdb.app`   |
+| IMDb ratings API                     | **blocked** — sends no `Access-Control-*` at all |
 
 The two blocked APIs are proxied through the host bridge, so they work on Vega.
 Everything else is reached directly. Credentialed requests against an `ACAO: *` server are

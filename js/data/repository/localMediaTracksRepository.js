@@ -1,3 +1,4 @@
+import { readContainerTracksAsMediaTracks } from "../../core/player/containerTracks/libavContainerReader.js";
 import { Platform } from "../../platform/index.js";
 import {
   isWebOsCompanionServiceAvailable,
@@ -155,6 +156,30 @@ export const localMediaTracksRepository = {
           tracksCache.set(targetUrl, {
             tracks: [],
             expiresAt: Date.now() + WEBOS_EMPTY_TRACK_CACHE_TTL_MS
+          });
+          return [];
+        }
+      }
+
+      // Vega has no local media service. libav.js (WebAssembly ffmpeg) demuxes
+      // the container in the page instead, over a single range request, which
+      // is the only way to see a multi-language stream's tracks there —
+      // Chromium exposes no AudioTrackList on this platform.
+      if (Platform.isVega()) {
+        try {
+          const tracks = await readContainerTracksAsMediaTracks(targetUrl);
+          tracksCache.set(targetUrl, {
+            tracks,
+            expiresAt:
+              Date.now() +
+              (tracks.length > 0 ? TRACK_CACHE_TTL_MS : Math.min(TRACK_CACHE_TTL_MS, 5000))
+          });
+          return tracks;
+        } catch (error) {
+          console.warn("Vega container track probe failed", error);
+          tracksCache.set(targetUrl, {
+            tracks: [],
+            expiresAt: Date.now() + Math.min(TRACK_CACHE_TTL_MS, 5000)
           });
           return [];
         }

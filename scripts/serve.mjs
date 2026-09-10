@@ -197,7 +197,15 @@ const server = http.createServer(async (request, response) => {
         "Cache-Control": "no-store",
         "Content-Type": "application/javascript; charset=utf-8"
       });
-      response.end(buildRuntimeEnvScript(env));
+      // Dev only, and only from this server - the packaged nuvio.env.js the
+      // build writes never carries it. Forces Platform.detectPlatformName(),
+      // which lets a desktop browser exercise a TV platform's code paths
+      // against a real Web Audio output. Run as NUVIO_PLATFORM=vega npm run serve.
+      const platformOverride = String(process.env.NUVIO_PLATFORM || "").trim();
+      const overrideScript = platformOverride
+        ? `globalThis.__NUVIO_PLATFORM__ = ${JSON.stringify(platformOverride)};\n`
+        : "";
+      response.end(overrideScript + buildRuntimeEnvScript(env));
       return;
     }
 

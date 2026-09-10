@@ -11,3 +11,7 @@ services/**/runtime
 .claude
 .opencode
 .orchestration
+
+# Vendored third-party builds (libav.js WebAssembly) and Vega build output.
+vendor
+vega/buildinfo.json

@@ -536,6 +536,34 @@ async function runBuild() {
       path.join(distDir, "assets", "libs", "libbitsub.LICENSE")
     );
 
+    // libav.js (ffmpeg in WebAssembly) demuxes containers so the audio-track
+    // list can be read on platforms whose browser exposes no AudioTrackList.
+    // Loaded at runtime from assets rather than bundled: the loader resolves
+    // its own .wasm relative to LibAV.base, and the payload is ~2MB.
+    // The custom `nuvio-dolby` variant, not a published one: no shipped variant
+    // contains the AC-3/E-AC-3 decoders. Built from vendor/libav/README.md.
+    const libavVariant = "libav-6.10.9.0-nuvio-dolby";
+    const libavDist = path.join(rootDir, "vendor", "libav");
+    const libavOut = path.join(distDir, "assets", "libs", "libav");
+    await Promise.all(
+      [`${libavVariant}.js`, `${libavVariant}.wasm.js`, `${libavVariant}.wasm.wasm`].map((file) =>
+        cp(path.join(libavDist, file), path.join(libavOut, file))
+      )
+    );
+    await cp(path.join(libavDist, "README.md"), path.join(libavOut, "libav.README.md"));
+
+    // The Vega build runs from file://, where Chromium refuses fetch() and XHR
+    // of local files — so emscripten cannot load its own .wasm ("Aborted(both
+    // async and sync fetching of the wasm failed)"). Script tags *are* allowed
+    // from file://, so the binary is emitted as a base64 payload in a script the
+    // reader loads, then handed to libav as a blob URL via its `wasmurl` option.
+    const libavWasm = await readFile(path.join(libavDist, `${libavVariant}.wasm.wasm`));
+    await writeFile(
+      path.join(libavOut, `${libavVariant}.wasm.base64.js`),
+      `globalThis.__LIBAV_WASM_BASE64__=${JSON.stringify(libavWasm.toString("base64"))};\n`,
+      "utf8"
+    );
+
     if (!copiedAppInfoSource) {
       console.warn("WARNING: skipping appinfo.json because it is not present in the repo root.");
     }
