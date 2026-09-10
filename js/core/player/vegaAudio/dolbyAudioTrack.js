@@ -1,3 +1,10 @@
+import {
+  VEGA_AUDIO_DEBUG_TONE,
+  describeAudioContext,
+  playVegaDebugTone,
+  vegaAudioLog,
+  vegaAudioWarn
+} from "../../../platform/vega/vegaAudioDiagnostics.js";
 import { createDolbyAudioDecoder } from "./dolbyAudioDecoder.js";
 
 // Plays a container's audio track through Web Audio, in sync with the <video>
@@ -282,7 +289,9 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
         lastError = String(error?.message || error);
         // The device log flattens an Error argument to "[object Object]", so
         // the message has to be in the string.
-        console.warn(`Vega audio pump failed (${decodeErrors}/${MAX_DECODE_ERRORS}): ${lastError}`);
+        vegaAudioWarn(
+          `Vega audio pump failed (${decodeErrors}/${MAX_DECODE_ERRORS}): ${lastError}`
+        );
         if (decodeErrors >= MAX_DECODE_ERRORS) {
           // Repeated failures mean the source is not readable a second time -
           // a host that caps concurrent connections, or a container the
@@ -336,19 +345,15 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
     const info = await decoder.open();
     const openMs = Date.now() - startedAt;
 
-    // Matching the context rate to the stream avoids resampling entirely; most
-    // Dolby content is 48kHz but the container decides. Not every output
-    // accepts an arbitrary rate, and one that refuses must not cost the track:
-    // Web Audio resamples the buffers instead.
+    // Deliberately the platform's default rate, not the stream's. The rate was
+    // passed in explicitly for a while; the physical Fire TV then rendered
+    // nothing through the context while reporting it "running" (third hardware
+    // run, 2026-09-10) - the shape of an output stream that could not be opened
+    // at the requested rate and was replaced by a silent stand-in whose clock
+    // still ticks. Web Audio resamples the scheduled buffers to the context
+    // rate, so nothing is lost by taking the default.
     const AudioContextImpl = globalThis.AudioContext || globalThis.webkitAudioContext;
-    try {
-      context = new AudioContextImpl(info.sampleRate ? { sampleRate: info.sampleRate } : undefined);
-    } catch (error) {
-      console.warn(
-        `Vega audio context rejected ${info.sampleRate}Hz: ${String(error?.message || error)}`
-      );
-      context = new AudioContextImpl();
-    }
+    context = new AudioContextImpl();
     gain = context.createGain();
     gain.connect(context.destination);
 
@@ -395,6 +400,23 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
       video.muted = true;
     } catch (_) {
       // Not fatal.
+    }
+
+    vegaAudioLog("Vega audio context", {
+      streamRate: info.sampleRate,
+      ...describeAudioContext(context)
+    });
+    if (VEGA_AUDIO_DEBUG_TONE) {
+      // Through the same gain node the decoded audio will use, once the element
+      // is muted: audible means this context reaches the speakers.
+      const played = await playVegaDebugTone(context, gain, { frequency: 880, durationMs: 250 });
+      vegaAudioLog("Vega sidecar tone", { played, ...describeAudioContext(context) });
+      if (stopped) {
+        await context.close().catch(() => {});
+        context = null;
+        starting = false;
+        return null;
+      }
     }
 
     // The first decode happens on the pump, which anchors once it has a chunk.
@@ -459,6 +481,9 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
     const mediaTime = Number(video?.currentTime) || 0;
     return {
       contextState: context?.state || "none",
+      // Two stats lines with the same contextTime while mediaTime moved on
+      // mean the output clock stalled after the start-up check passed.
+      contextTime: Number((Number(context?.currentTime) || 0).toFixed(2)),
       mediaTime: Number(mediaTime.toFixed(2)),
       leadSeconds: Number((nextMediaTime - mediaTime).toFixed(2)),
       // Non-zero proves real samples are reaching the output.

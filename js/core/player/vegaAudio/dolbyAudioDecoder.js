@@ -1,3 +1,4 @@
+import { vegaAudioLog } from "../../../platform/vega/vegaAudioDiagnostics.js";
 import {
   acquireDecodeLibav,
   attachRangeDevice,
@@ -185,7 +186,7 @@ export function createDolbyAudioDecoder({ url, streamIndex, rangeFetch, signal }
       };
 
       enterStage("open");
-      console.log("Vega audio decoder open", { ...info, ...timings });
+      vegaAudioLog("Vega audio decoder open", { ...info, ...timings });
       return info;
     } catch (error) {
       timings[stage] = Date.now() - stageStartedAt;

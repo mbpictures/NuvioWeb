@@ -23,6 +23,7 @@ import {
 import { WebOsLunaService } from "../../platform/webos/webosLunaService.js";
 import { subscribeWebOsCompanionService } from "../../platform/webos/webosCompanionService.js";
 import { WebOSPlayerExtensions } from "../../platform/webos/webosPlayerExtensions.js";
+import { armVegaStartupAudioTone } from "../../platform/vega/vegaAudioDiagnostics.js";
 import { reportVegaWebAudioCapabilities } from "../../platform/vega/vegaWebAudioProbe.js";
 import {
   canDecodeAudioCodec,
@@ -5435,6 +5436,7 @@ export const PlayerController = {
     this.video.volume = 1;
     if (Platform.isVega()) {
       reportVegaWebAudioCapabilities(this.video);
+      armVegaStartupAudioTone();
       // The element's mute state is derived from the startup gate and from
       // whether the sidecar owns the audio; recompute it whenever the latter
       // changes, including a track that fails on its own mid-playback.

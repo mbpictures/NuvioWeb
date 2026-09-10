@@ -1,3 +1,4 @@
+import { vegaAudioLog, vegaAudioWarn } from "../../../platform/vega/vegaAudioDiagnostics.js";
 import { createDolbyAudioTrack } from "./dolbyAudioTrack.js";
 
 // Owns the lifetime of the WebAssembly audio track that plays alongside the
@@ -107,7 +108,7 @@ export const vegaAudioSidecar = {
     try {
       this.onStateChange?.();
     } catch (error) {
-      console.warn(`Vega audio sidecar listener failed: ${describeError(error)}`);
+      vegaAudioWarn(`Vega audio sidecar listener failed: ${describeError(error)}`);
     }
   },
 
@@ -118,7 +119,7 @@ export const vegaAudioSidecar = {
         this.stopStatsLogging();
         return;
       }
-      console.log("Vega audio sidecar", this.getStats());
+      vegaAudioLog("Vega audio sidecar stats", this.getStats());
     }, STATS_LOG_INTERVAL_MS);
   },
 
@@ -226,7 +227,7 @@ export const vegaAudioSidecar = {
         }
         this.lastError = error;
         this.failedKey = key;
-        console.warn(`Vega audio sidecar gave up: ${describeError(error)}`);
+        vegaAudioWarn(`Vega audio sidecar gave up: ${describeError(error)}`);
         // Not disengage(): that would also cancel a pick the user has queued
         // behind this track, which should still get its turn.
         void this.stopActiveTrack().then(() => this.notifyStateChange());
@@ -251,7 +252,7 @@ export const vegaAudioSidecar = {
       this.codec = normalizeCodecName(codec);
       this.lastError = null;
       this.failedKey = "";
-      console.log("Vega audio sidecar started", {
+      vegaAudioLog("Vega audio sidecar started", {
         streamIndex,
         codec: this.codec,
         channels: info?.channels,
@@ -269,7 +270,7 @@ export const vegaAudioSidecar = {
       // pipeline, and the message says which of the two failure modes it was.
       this.lastError = error;
       this.failedKey = key;
-      console.warn(`Vega audio sidecar failed to start: ${describeError(error)}`);
+      vegaAudioWarn(`Vega audio sidecar failed to start: ${describeError(error)}`);
       try {
         await track.stop();
       } catch (_) {
@@ -316,7 +317,7 @@ export const vegaAudioSidecar = {
     try {
       await track.stop({ release });
     } catch (error) {
-      console.warn(`Vega audio sidecar teardown failed: ${describeError(error)}`);
+      vegaAudioWarn(`Vega audio sidecar teardown failed: ${describeError(error)}`);
     }
   },
 

@@ -13,6 +13,8 @@
 // through libav's block-reader device — a 10GB remote file costs a few hundred
 // KB here, not a download.
 
+import { vegaAudioLog, vegaAudioWarn } from "../../../platform/vega/vegaAudioDiagnostics.js";
+
 const LIBAV_VARIANT = "libav-6.10.9.0-nuvio-dolby";
 const LIBAV_BASE = "assets/libs/libav";
 // Enough for the demuxer to find the index and stream headers on a normal file.
@@ -171,10 +173,10 @@ export async function instantiateLibav({ worker = false } = {}) {
           )
         )
       ]);
-      console.log("libav worker ready", { ms: Date.now() - startedAt });
+      vegaAudioLog("libav worker ready", { ms: Date.now() - startedAt });
       return instance;
     } catch (error) {
-      console.warn(
+      vegaAudioWarn(
         `libav worker unavailable after ${Date.now() - startedAt}ms; running on ` +
           `the main thread: ${String(error?.message || error)}`
       );
