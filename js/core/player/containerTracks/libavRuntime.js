@@ -19,7 +19,10 @@ const LIBAV_BASE = "assets/libs/libav";
 // Matroska keeps its cues at the end as often as the start, so the reader must
 // be able to seek; this is only the per-request chunk size.
 const BLOCK_SIZE = 256 * 1024;
-const PROBE_TIMEOUT_MS = 20000;
+// A track read that has not finished by then is on a host that is not
+// answering range requests; the startup audio pass waits on it, so it has to
+// end rather than hang playback.
+export const PROBE_TIMEOUT_MS = 20000;
 // Workers ARE available from file://, just not by pointing `new Worker()` at a
 // file:// script — that fails with "cannot be accessed from origin 'null'".
 // A blob: worker is allowed, and a blob worker may then importScripts() a

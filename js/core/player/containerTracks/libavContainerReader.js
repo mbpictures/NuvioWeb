@@ -1,4 +1,4 @@
-import { attachRangeDevice, instantiateLibav } from "./libavRuntime.js";
+import { PROBE_TIMEOUT_MS, attachRangeDevice, instantiateLibav } from "./libavRuntime.js";
 
 // Reads a media container's track list without downloading it.
 //
@@ -23,14 +23,47 @@ function normalizeTrack(stream, metadata, codecName) {
 
 /**
  * Enumerates the audio and subtitle tracks of a remote container.
- * Resolves to `{ audioTracks, subtitleTracks, durationSeconds }`, or throws.
+ * Resolves to `{ audioTracks, subtitleTracks }`, or throws - including after
+ * `timeoutMs`, which also aborts the range requests still in flight.
  */
-export async function readContainerTracks(url, { rangeFetch, signal } = {}) {
+export async function readContainerTracks(
+  url,
+  { rangeFetch, signal, timeoutMs = PROBE_TIMEOUT_MS } = {}
+) {
   const targetUrl = String(url || "").trim();
   if (!targetUrl) {
     throw new Error("No container URL");
   }
 
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const abort = () => controller?.abort();
+  if (signal?.aborted) {
+    abort();
+  } else {
+    signal?.addEventListener?.("abort", abort);
+  }
+  let timer = 0;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => {
+        abort();
+        reject(new Error(`Container probe timed out after ${timeoutMs}ms`));
+      },
+      Math.max(1, Number(timeoutMs) || PROBE_TIMEOUT_MS)
+    );
+  });
+  try {
+    return await Promise.race([
+      demuxContainerTracks(targetUrl, { rangeFetch, signal: controller?.signal || signal }),
+      timeout
+    ]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.("abort", abort);
+  }
+}
+
+async function demuxContainerTracks(targetUrl, { rangeFetch, signal } = {}) {
   const libav = await instantiateLibav();
   let device = null;
   let formatContext = 0;

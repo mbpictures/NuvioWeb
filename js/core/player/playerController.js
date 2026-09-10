@@ -1115,7 +1115,13 @@ export const PlayerController = {
     }
     try {
       const gated = Boolean(this.startupAudioGateActive || this.startupPresentationAudioMuted);
-      this.video.muted = gated;
+      // On Vega the chosen audio track can be decoded outside the element and
+      // played through Web Audio. While that track owns the audio the element
+      // stays muted - it only ever plays the container's first track, which
+      // would otherwise be heard alongside the chosen one every time the
+      // startup gate is released or playback is restarted.
+      const sidecarOwnsAudio = vegaAudioSidecar.ownsElementAudio();
+      this.video.muted = gated || sidecarOwnsAudio;
       this.video.defaultMuted = gated;
       if (
         !gated &&
@@ -5429,6 +5435,10 @@ export const PlayerController = {
     this.video.volume = 1;
     if (Platform.isVega()) {
       reportVegaWebAudioCapabilities(this.video);
+      // The element's mute state is derived from the startup gate and from
+      // whether the sidecar owns the audio; recompute it whenever the latter
+      // changes, including a track that fails on its own mid-playback.
+      vegaAudioSidecar.onStateChange = () => this.applyStartupAudioGateToVideo();
     }
     this.refreshWebOsDeviceInfo();
     if (!this.viewportSyncHandler) {

@@ -89,6 +89,27 @@ export const vegaAudioSidecar = {
   // A track that failed once fails the same way every time on this source, so
   // remember it rather than re-opening the container on every retry.
   failedKey: "",
+  // Set by the player controller: called whenever ownership of the element's
+  // audio changes hands (a track started, stopped, or failed), so the element's
+  // mute state can be recomputed by the one place that owns it.
+  onStateChange: null,
+  // A disengage({ release: true }) that lands while a start is still opening
+  // its container: the start is cancelled once it resolves, and must release
+  // the shared libav instance the way the disengage asked for.
+  releasePending: false,
+  // The start that is queued or opening right now, so that asking for the same
+  // track again joins it instead of cancelling it and opening the container a
+  // second time - the startup pass and the track sync both ask for the same
+  // track within a few milliseconds of each other.
+  pendingStart: null,
+
+  notifyStateChange() {
+    try {
+      this.onStateChange?.();
+    } catch (error) {
+      console.warn(`Vega audio sidecar listener failed: ${describeError(error)}`);
+    }
+  },
 
   startStatsLogging() {
     this.stopStatsLogging();
@@ -110,6 +131,16 @@ export const vegaAudioSidecar = {
 
   isActive() {
     return Boolean(this.track);
+  },
+
+  /**
+   * True while the element must stay muted: a decoded track is playing, or one
+   * is being opened. The element only ever plays the container's first track,
+   * so letting it sound while another track is on its way means hearing the
+   * wrong language for the seconds the open takes.
+   */
+  ownsElementAudio() {
+    return Boolean(this.track) || this.starting;
   },
 
   getActiveStreamIndex() {
@@ -147,16 +178,21 @@ export const vegaAudioSidecar = {
     if (retry) {
       this.failedKey = "";
     }
+    if (this.pendingStart?.key === key) {
+      return this.pendingStart.promise;
+    }
 
     const token = (this.startToken += 1);
     // Serialised: two starts overlapping would fight over the shared libav
     // instance and over which one owns the element's audio.
-    this.startChain = Promise.resolve(this.startChain)
+    const promise = Promise.resolve(this.startChain)
       .catch(() => {})
       .then(() =>
         this.startTrack(token, { video, url: targetUrl, streamIndex: targetIndex, codec, key })
       );
-    return this.startChain;
+    this.startChain = promise;
+    this.pendingStart = { key, token, promise };
+    return promise;
   },
 
   async startTrack(token, { video, url, streamIndex, codec, key }) {
@@ -170,7 +206,12 @@ export const vegaAudioSidecar = {
     }
 
     this.starting = true;
-    await this.disengage();
+    this.releasePending = false;
+    // Stop first, then notify: stopping restores the element's earlier mute
+    // state, and the recompute has to run after that so the element stays
+    // silent while the next track opens.
+    await this.stopActiveTrack();
+    this.notifyStateChange();
 
     const track = createDolbyAudioTrack({
       video,
@@ -186,11 +227,24 @@ export const vegaAudioSidecar = {
         this.lastError = error;
         this.failedKey = key;
         console.warn(`Vega audio sidecar gave up: ${describeError(error)}`);
-        void this.disengage();
+        // Not disengage(): that would also cancel a pick the user has queued
+        // behind this track, which should still get its turn.
+        void this.stopActiveTrack().then(() => this.notifyStateChange());
       }
     });
     try {
       const info = await track.start();
+      // Disengaged or replaced while the container was opening. Without this
+      // the track would take the element's audio for a pick nobody wants any
+      // more - or after playback has already been torn down.
+      if (token !== this.startToken) {
+        try {
+          await track.stop({ release: this.releasePending });
+        } catch (_) {
+          // Best effort; it never played.
+        }
+        return null;
+      }
       this.track = track;
       this.url = url;
       this.streamIndex = streamIndex;
@@ -225,7 +279,11 @@ export const vegaAudioSidecar = {
       // chain, so this failure is not the one to report.
       return token === this.startToken ? false : null;
     } finally {
+      if (this.pendingStart?.token === token) {
+        this.pendingStart = null;
+      }
       this.starting = false;
+      this.notifyStateChange();
     }
   },
 
@@ -236,6 +294,16 @@ export const vegaAudioSidecar = {
    *   playback is over, not between tracks.
    */
   async disengage({ release = false } = {}) {
+    // Also cancels a start that is still opening its container: it checks the
+    // token once the open completes and stands down.
+    this.startToken += 1;
+    this.pendingStart = null;
+    this.releasePending = release;
+    await this.stopActiveTrack({ release });
+    this.notifyStateChange();
+  },
+
+  async stopActiveTrack({ release = false } = {}) {
     this.stopStatsLogging();
     const track = this.track;
     this.track = null;

@@ -15583,8 +15583,14 @@ export const PlayerScreen = {
         typeof PlayerController.getSelectedWebOsEmbeddedSubtitleTrackIndex === "function"
           ? PlayerController.getSelectedWebOsEmbeddedSubtitleTrackIndex()
           : -1;
-      const selectedEmbeddedAudioTrack =
-        typeof PlayerController.getSelectedWebOsEmbeddedAudioTrackIndex === "function"
+      // Vega selects nothing on the element: the chosen track lives in the
+      // audio sidecar and is mirrored by selectedEmbeddedAudioTrackIndex. A
+      // re-probe of the same source (loadedmetadata warms the track data
+      // again) must keep it, or syncVegaEmbeddedAudioTrack falls back to the
+      // container's default track and undoes the preferred language.
+      const selectedEmbeddedAudioTrack = Environment.isVega()
+        ? this.selectedEmbeddedAudioTrackIndex
+        : typeof PlayerController.getSelectedWebOsEmbeddedAudioTrackIndex === "function"
           ? PlayerController.getSelectedWebOsEmbeddedAudioTrackIndex()
           : -1;
       this.selectedEmbeddedSubtitleTrackIndex = Number.isFinite(selectedEmbeddedSubtitleTrack)
