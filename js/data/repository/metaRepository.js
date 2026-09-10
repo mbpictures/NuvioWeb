@@ -2,10 +2,22 @@ import { safeApiCall } from "../../core/network/safeApiCall.js";
 import { addonRepository } from "./addonRepository.js";
 import { MetaApi } from "../remote/api/metaApi.js";
 
+const INSTALLED_ADDONS_WAIT_MS = 750;
+
 function normalizeDisplayText(value) {
   return String(value ?? "")
     .replace(/\\'/g, "'")
     .replace(/\\"/g, '"');
+}
+
+function firstNonBlank(...values) {
+  for (const value of values) {
+    const normalized = String(value ?? "").trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
 }
 
 class MetaRepository {
@@ -16,19 +28,38 @@ class MetaRepository {
   }
 
   async getMeta(addonBaseUrl, type, id) {
-    const normalizedType = String(type || "").trim();
+    const requestedType = String(type || "").trim();
     const normalizedId = String(id || "").trim();
-    const cacheKey = `${addonRepository.canonicalizeUrl(addonBaseUrl)}:${normalizedType}:${normalizedId}`;
+    const inferredType = this.inferCanonicalType(requestedType, normalizedId);
+    const addonKey = addonRepository.canonicalizeUrl(addonBaseUrl);
+    const probeTypes = [requestedType, inferredType].filter(
+      (candidate, index, values) =>
+        candidate &&
+        values.findIndex((value) => value.toLowerCase() === candidate.toLowerCase()) === index
+    );
+    for (const probeType of probeTypes) {
+      const probeKey = `${addonKey}:${probeType}:${normalizedId}`;
+      if (this.metaCache.has(probeKey)) {
+        return { status: "success", data: this.metaCache.get(probeKey) };
+      }
+    }
+
+    const effectiveType = await this.resolveDirectMetaType(
+      addonBaseUrl,
+      requestedType,
+      inferredType,
+      normalizedId
+    );
+    const cacheKey = `${addonKey}:${effectiveType}:${normalizedId}`;
     if (this.metaCache.has(cacheKey)) {
       return { status: "success", data: this.metaCache.get(cacheKey) };
     }
-
     if (this.inFlightMeta.has(cacheKey)) {
       return this.inFlightMeta.get(cacheKey);
     }
 
     const request = (async () => {
-      const url = this.buildMetaUrl(addonBaseUrl, normalizedType, normalizedId);
+      const url = this.buildMetaUrl(addonBaseUrl, effectiveType, normalizedId);
       const result = await safeApiCall(() => MetaApi.getMeta(url));
       if (result.status !== "success") {
         return result;
@@ -39,7 +70,11 @@ class MetaRepository {
         return { status: "error", message: "Meta not found", code: 404 };
       }
 
-      this.metaCache.set(cacheKey, meta);
+      [effectiveType, requestedType, inferredType].forEach((cacheType) => {
+        if (cacheType) {
+          this.metaCache.set(`${addonKey}:${cacheType}:${normalizedId}`, meta);
+        }
+      });
       return { status: "success", data: meta };
     })();
 
@@ -51,10 +86,10 @@ class MetaRepository {
     }
   }
 
-  async getMetaFromAllAddons(type, id) {
+  async getMetaFromAllAddons(type, id, sourceAddonBaseUrl = null) {
     const requestedType = String(type || "").trim();
     const inferredType = this.inferCanonicalType(requestedType, id);
-    const cacheKey = `all:${requestedType}:${inferredType}:${String(id || "").trim()}`;
+    const cacheKey = `all:${inferredType.toLowerCase()}:${String(id || "").trim()}`;
     if (this.metaCache.has(cacheKey)) {
       return { status: "success", data: this.metaCache.get(cacheKey) };
     }
@@ -65,6 +100,9 @@ class MetaRepository {
 
     const request = (async () => {
       const addons = await addonRepository.getInstalledAddons();
+      const normalizedSourceUrl = sourceAddonBaseUrl
+        ? addonRepository.canonicalizeUrl(sourceAddonBaseUrl)
+        : "";
       const candidates = [];
       const seenCandidates = new Set();
       const addCandidate = (addon, candidateType) => {
@@ -103,7 +141,7 @@ class MetaRepository {
           "meta",
           requestedType,
           id,
-          { allowIdTypeFallback: true, caseInsensitive: true }
+          { caseInsensitive: true }
         );
         if (ownerType) {
           addCandidate(addon, ownerType);
@@ -138,6 +176,18 @@ class MetaRepository {
       }
 
       for (const { addon, type: candidateType } of candidates) {
+        // Android treats the catalog/source addon as sufficient for a
+        // recommendation candidate: it uses the candidate preview metadata
+        // instead of issuing a second detail request to that same addon.
+        if (
+          normalizedSourceUrl &&
+          addonRepository.canonicalizeUrl(addon.baseUrl) === normalizedSourceUrl
+        ) {
+          return {
+            status: "source-sufficient",
+            message: "Source addon metadata is sufficient"
+          };
+        }
         const result = await this.getMeta(addon.baseUrl, candidateType, id);
         if (result.status === "success") {
           this.metaCache.set(cacheKey, result.data);
@@ -156,6 +206,35 @@ class MetaRepository {
     }
   }
 
+  getCachedMeta(type, id) {
+    const requestedType = String(type || "").trim();
+    const normalizedId = String(id || "").trim();
+    if (!normalizedId) {
+      return null;
+    }
+    const inferredType = this.inferCanonicalType(requestedType, normalizedId);
+    const allKey = `all:${inferredType.toLowerCase()}:${normalizedId}`;
+    if (this.metaCache.has(allKey)) {
+      return this.metaCache.get(allKey);
+    }
+
+    const candidateTypes = [requestedType, inferredType]
+      .filter(Boolean)
+      .filter(
+        (candidate, index, values) =>
+          values.findIndex((value) => value.toLowerCase() === candidate.toLowerCase()) === index
+      );
+    for (const candidateType of candidateTypes) {
+      const suffix = `:${candidateType}:${normalizedId}`;
+      for (const [cacheKey, meta] of this.metaCache.entries()) {
+        if (cacheKey.endsWith(suffix)) {
+          return meta;
+        }
+      }
+    }
+    return null;
+  }
+
   buildMetaUrl(baseUrl, type, id) {
     const cleanBaseUrl = addonRepository.canonicalizeUrl(baseUrl);
     const queryStart = cleanBaseUrl.indexOf("?");
@@ -165,17 +244,56 @@ class MetaRepository {
     return `${basePath}/meta/${this.encode(type)}/${this.encode(id)}.json${baseQuery}`;
   }
 
+  async resolveDirectMetaType(addonBaseUrl, requestedType, inferredType, id) {
+    const candidates = [requestedType, inferredType].filter(
+      (candidate, index, values) =>
+        candidate &&
+        values.findIndex((value) => value.toLowerCase() === candidate.toLowerCase()) === index
+    );
+    if (!candidates.length) {
+      return requestedType;
+    }
+    try {
+      const addons = await addonRepository.getInstalledAddons({
+        timeoutMs: INSTALLED_ADDONS_WAIT_MS
+      });
+      const target = addonRepository.canonicalizeUrl(addonBaseUrl);
+      const addon = addons.find(
+        (entry) => addonRepository.canonicalizeUrl(entry?.baseUrl) === target
+      );
+      if (!addon) {
+        return requestedType;
+      }
+      for (const candidate of candidates) {
+        const supported = addonRepository.resolveResourceRequestType(addon, "meta", candidate, id, {
+          caseInsensitive: true
+        });
+        if (supported) {
+          return supported;
+        }
+      }
+    } catch (_) {
+      // A manifest lookup must not prevent the direct requested-type fallback.
+    }
+    return requestedType;
+  }
+
   inferCanonicalType(type, id) {
     const normalizedType = String(type || "").trim();
     const lowerType = normalizedType.toLowerCase();
-    const known = new Set(["movie", "series", "channel", "tv", "anime"]);
+    // `tv` is Nuvio's internal synonym for episodic content. Metadata addons
+    // advertise that resource as `series`; live TV remains `channel`.
+    if (lowerType === "tv") {
+      return "series";
+    }
+    const known = new Set(["movie", "series", "channel", "anime"]);
     if (known.has(lowerType)) {
       return normalizedType;
     }
     const normalizedId = String(id || "").toLowerCase();
     if (normalizedId.includes(":movie:")) return "movie";
     if (normalizedId.includes(":series:")) return "series";
-    if (normalizedId.includes(":tv:")) return "tv";
+    if (normalizedId.includes(":tv:")) return "series";
     if (normalizedId.includes(":anime:")) return "anime";
     return normalizedType;
   }
@@ -185,9 +303,21 @@ class MetaRepository {
   }
 
   mapMeta(meta) {
-    if (!meta) {
+    if (
+      !meta ||
+      typeof meta !== "object" ||
+      Array.isArray(meta) ||
+      Object.keys(meta).length === 0
+    ) {
       return null;
     }
+
+    const appExtras =
+      meta.app_extras && typeof meta.app_extras === "object" && !Array.isArray(meta.app_extras)
+        ? meta.app_extras
+        : meta.appExtras && typeof meta.appExtras === "object" && !Array.isArray(meta.appExtras)
+          ? meta.appExtras
+          : {};
 
     return {
       ...meta,
@@ -202,7 +332,14 @@ class MetaRepository {
         ? meta.genres.map((genre) => normalizeDisplayText(genre))
         : [],
       videos: Array.isArray(meta.videos) ? meta.videos : [],
-      releaseInfo: normalizeDisplayText(meta.releaseInfo || "")
+      releaseInfo: normalizeDisplayText(meta.releaseInfo || ""),
+      ageRating: firstNonBlank(
+        appExtras.certificationLocal,
+        appExtras.certification_local,
+        appExtras.certification,
+        meta.ageRating,
+        meta.age_rating
+      )
     };
   }
 

@@ -1,4 +1,5 @@
 // js/core/qr/qrCodeGenerator.js
+/* global qrcode */
 
 export const QrCodeGenerator = {
   generate(canvas, content, size = 512) {

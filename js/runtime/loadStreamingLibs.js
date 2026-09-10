@@ -1,5 +1,6 @@
 const STREAMING_LIBS = [
   {
+    id: "hls",
     sources: [
       "assets/libs/hls.min.js",
       "https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"
@@ -7,6 +8,7 @@ const STREAMING_LIBS = [
     isLoaded: () => Boolean(globalThis.Hls)
   },
   {
+    id: "dash",
     sources: [
       "assets/libs/dash.all.min.js",
       "https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js"
@@ -15,7 +17,6 @@ const STREAMING_LIBS = [
   }
 ];
 
-let streamingLibsPromise = null;
 let streamingLibsWarmupScheduled = false;
 
 function loadScript(src) {
@@ -47,29 +48,33 @@ async function loadStreamingLibrary(entry) {
   throw lastError || new Error("Streaming library failed to initialize");
 }
 
-export async function loadStreamingLibs() {
-  if (STREAMING_LIBS.every((entry) => entry.isLoaded())) {
-    return;
+function ensureStreamingLibrary(entry) {
+  if (entry.isLoaded()) {
+    return Promise.resolve();
   }
-  if (streamingLibsPromise) {
-    return streamingLibsPromise;
+  if (entry.loadingPromise) {
+    return entry.loadingPromise;
   }
-  streamingLibsPromise = (async () => {
-    for (const entry of STREAMING_LIBS) {
-      if (entry.isLoaded()) {
-        continue;
-      }
-      try {
-        await loadStreamingLibrary(entry);
-      } catch (error) {
-        console.warn("Streaming library failed to load", entry.sources, error);
-      }
+  const loadingPromise = loadStreamingLibrary(entry).finally(() => {
+    if (entry.loadingPromise === loadingPromise) {
+      entry.loadingPromise = null;
     }
-  })();
-  try {
-    await streamingLibsPromise;
-  } finally {
-    streamingLibsPromise = null;
+  });
+  entry.loadingPromise = loadingPromise;
+  return loadingPromise;
+}
+
+export async function loadStreamingLibs({ hls = true, dash = true } = {}) {
+  const requiredLibraryIds = new Set([...(hls ? ["hls"] : []), ...(dash ? ["dash"] : [])]);
+  for (const entry of STREAMING_LIBS) {
+    if (!requiredLibraryIds.has(entry.id) || entry.isLoaded()) {
+      continue;
+    }
+    try {
+      await ensureStreamingLibrary(entry);
+    } catch (error) {
+      console.warn("Streaming library failed to load", entry.sources, error);
+    }
   }
 }
 

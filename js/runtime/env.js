@@ -9,14 +9,22 @@
       typeof existing.NUVIO_SUPABASE_ANON_KEY === "undefined"
         ? ""
         : existing.NUVIO_SUPABASE_ANON_KEY,
+    NUVIO_SUPABASE_FALLBACK_URL:
+      typeof existing.NUVIO_SUPABASE_FALLBACK_URL === "undefined"
+        ? ""
+        : existing.NUVIO_SUPABASE_FALLBACK_URL,
     TV_LOGIN_WEB_BASE_URL:
-      typeof existing.TV_LOGIN_WEB_BASE_URL === "undefined" ? "" : existing.TV_LOGIN_WEB_BASE_URL,
+      typeof existing.TV_LOGIN_WEB_BASE_URL === "undefined"
+        ? "https://nuvio.tv/tv-login"
+        : existing.TV_LOGIN_WEB_BASE_URL,
+    DEVICE_LOGIN_WEB_BASE_URL:
+      typeof existing.DEVICE_LOGIN_WEB_BASE_URL === "undefined"
+        ? "https://nuvio.tv/link"
+        : existing.DEVICE_LOGIN_WEB_BASE_URL,
     YOUTUBE_PROXY_URL:
       typeof existing.YOUTUBE_PROXY_URL === "undefined"
         ? "youtube-proxy.html"
         : existing.YOUTUBE_PROXY_URL,
-    PARENTAL_GUIDE_API_URL:
-      typeof existing.PARENTAL_GUIDE_API_URL === "undefined" ? "" : existing.PARENTAL_GUIDE_API_URL,
     INTRODB_API_URL:
       typeof existing.INTRODB_API_URL === "undefined"
         ? "https://api.introdb.app/"
@@ -35,10 +43,14 @@
       typeof existing.UNIQUE_CONTRIBUTIONS_BASE_URL === "undefined"
         ? ""
         : existing.UNIQUE_CONTRIBUTIONS_BASE_URL,
-    DONATIONS_BASE_URL:
-      typeof existing.DONATIONS_BASE_URL === "undefined" ? "" : existing.DONATIONS_BASE_URL,
-    DONATIONS_DONATE_URL:
-      typeof existing.DONATIONS_DONATE_URL === "undefined" ? "" : existing.DONATIONS_DONATE_URL,
+    SUPPORTERS_API_BASE_URL:
+      typeof existing.SUPPORTERS_API_BASE_URL === "undefined"
+        ? "https://nuvio.tv/"
+        : existing.SUPPORTERS_API_BASE_URL,
+    SUPPORT_URL:
+      typeof existing.SUPPORT_URL === "undefined"
+        ? "https://nuvio.tv/support"
+        : existing.SUPPORT_URL,
     SPONSOR_NAMES:
       typeof existing.SPONSOR_NAMES === "undefined" || !String(existing.SPONSOR_NAMES).trim()
         ? "ragmehos."
@@ -48,23 +60,13 @@
       typeof existing.TRAKT_CLIENT_ID === "undefined" ? "" : existing.TRAKT_CLIENT_ID,
     TRAKT_CLIENT_SECRET:
       typeof existing.TRAKT_CLIENT_SECRET === "undefined" ? "" : existing.TRAKT_CLIENT_SECRET,
-    TRAKT_API_URL:
-      typeof existing.TRAKT_API_URL === "undefined"
-        ? "https://api.trakt.tv"
-        : existing.TRAKT_API_URL,
-    TRAKT_REDIRECT_URI:
-      typeof existing.TRAKT_REDIRECT_URI === "undefined"
-        ? "urn:ietf:wg:oauth:2.0:oob"
-        : existing.TRAKT_REDIRECT_URI,
     SIMKL_CLIENT_ID:
       typeof existing.SIMKL_CLIENT_ID === "undefined" ? "" : existing.SIMKL_CLIENT_ID,
-    SIMKL_API_URL:
-      typeof existing.SIMKL_API_URL === "undefined"
-        ? "https://api.simkl.com"
-        : existing.SIMKL_API_URL,
     SIMKL_APP_NAME:
       typeof existing.SIMKL_APP_NAME === "undefined" || !String(existing.SIMKL_APP_NAME).trim()
         ? "nuvio"
-        : existing.SIMKL_APP_NAME
+        : existing.SIMKL_APP_NAME,
+    PREMIUMIZE_CLIENT_ID:
+      typeof existing.PREMIUMIZE_CLIENT_ID === "undefined" ? "" : existing.PREMIUMIZE_CLIENT_ID
   };
 })();

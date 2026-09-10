@@ -51,9 +51,8 @@ jobs:
       - name: Write release local properties
         env:
           NUVIO_LOCAL_PROPERTIES: ${{ secrets.NUVIO_LOCAL_PROPERTIES }}
-          WEBOS_LOCAL_PROPERTIES: ${{ secrets.WEBOS_LOCAL_PROPERTIES }}
         run: |
-          LOCAL_PROPERTIES="${NUVIO_LOCAL_PROPERTIES:-$WEBOS_LOCAL_PROPERTIES}"
+          LOCAL_PROPERTIES="$NUVIO_LOCAL_PROPERTIES"
           if [ -z "${LOCAL_PROPERTIES//[[:space:]]/}" ]; then
             echo "::error::NUVIO_LOCAL_PROPERTIES secret is required to build release artifacts with runtime env."
             exit 1
@@ -137,7 +136,7 @@ jobs:
           PACKAGE_SIZE: ${{ steps.live_webos_asset.outputs.package_size }}
           PACKAGE_VERSION: ${{ needs.build-webos-release.outputs.package_version }}
         run: |
-          RELEASE_TAG="$RELEASE_TAG" PACKAGE_SHA256="$PACKAGE_SHA256" PACKAGE_SIZE="$PACKAGE_SIZE" PACKAGE_VERSION="$PACKAGE_VERSION" node -e "const fs=require('fs');const file='webosbrew/apps.json';const data=JSON.parse(fs.readFileSync(file,'utf8'));const pkg=data.packages[0];pkg.manifest.version=process.env.PACKAGE_VERSION;pkg.manifest.ipkUrl='https://github.com/NuvioMedia/NuvioWeb/releases/download/'+process.env.RELEASE_TAG+'/NuvioTV-webOS-'+process.env.RELEASE_TAG+'.ipk';pkg.manifest.ipkHash.sha256=process.env.PACKAGE_SHA256;pkg.manifest.ipkSize=Number(process.env.PACKAGE_SIZE);fs.writeFileSync(file, JSON.stringify(data, null, 2)+'\n');"
+          RELEASE_TAG="$RELEASE_TAG" PACKAGE_SHA256="$PACKAGE_SHA256" PACKAGE_SIZE="$PACKAGE_SIZE" PACKAGE_VERSION="$PACKAGE_VERSION" node -e "const fs=require('fs');const file='webosbrew/apps.json';const data=JSON.parse(fs.readFileSync(file,'utf8'));const pkg=data.packages[0];pkg.manifest.version=process.env.PACKAGE_VERSION;pkg.manifest.ipkUrl='https://github.com/NuvioMedia/NuvioTVSmart/releases/download/'+process.env.RELEASE_TAG+'/NuvioTV-webOS-'+process.env.RELEASE_TAG+'.ipk';pkg.manifest.ipkHash.sha256=process.env.PACKAGE_SHA256;pkg.manifest.ipkSize=Number(process.env.PACKAGE_SIZE);fs.writeFileSync(file, JSON.stringify(data, null, 2)+'\n');"
 
       - name: Commit webOS metadata update
         if: ${{ vars.WEBOS_REPO != '' }}
@@ -175,10 +174,8 @@ jobs:
       - name: Write release local properties
         env:
           NUVIO_LOCAL_PROPERTIES: ${{ secrets.NUVIO_LOCAL_PROPERTIES }}
-          TIZEN_LOCAL_PROPERTIES: ${{ secrets.TIZEN_LOCAL_PROPERTIES }}
-          WEBOS_LOCAL_PROPERTIES: ${{ secrets.WEBOS_LOCAL_PROPERTIES }}
         run: |
-          LOCAL_PROPERTIES="${NUVIO_LOCAL_PROPERTIES:-${TIZEN_LOCAL_PROPERTIES:-$WEBOS_LOCAL_PROPERTIES}}"
+          LOCAL_PROPERTIES="$NUVIO_LOCAL_PROPERTIES"
           if [ -z "${LOCAL_PROPERTIES//[[:space:]]/}" ]; then
             echo "::error::NUVIO_LOCAL_PROPERTIES secret is required to build release artifacts with runtime env."
             exit 1
@@ -187,9 +184,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Package local Tizen WGT
+      # The GitHub release WGT is the installer input, not the Seller Office
+      # package. The Nuvio TV Installer signs it locally with the certificate
+      # associated with the target TV DUID before vd_appinstall.
+      - name: Package unsigned Tizen WGT for Nuvio TV Installer
         env:
           NUVIO_REQUIRE_LOCAL_PROPERTIES: "1"
+          TIZEN_INCLUDE_ENGINEFS_SERVICE: "1"
         run: npm run package:tizen
 
       - name: Normalize Tizen package metadata
@@ -230,7 +231,7 @@ jobs:
       - name: Check out installer repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.INSTALLER_REPO || 'NuvioMedia/NuvioWebTVInstaller' }}
+          repository: ${{ vars.INSTALLER_REPO || 'NuvioMedia/NuvioTVSmart-Installer' }}
           token: ${{ secrets.REPO_DISPATCH_TOKEN || github.token }}
 
       - name: Set up Node.js
@@ -256,7 +257,7 @@ jobs:
             Write-Error "Expected Windows installer .exe was not created"
             exit 1
           }
-          $targetFile = "Nuvio-WebTV-Installer-Windows-$env:TAG_NAME.exe"
+          $targetFile = "NuvioTVSmart-Installer-Windows-$env:TAG_NAME.exe"
           Move-Item -Force -Path $asset.FullName -Destination $targetFile
           "installer_name=$targetFile" >> $env:GITHUB_OUTPUT
 
@@ -270,7 +271,21 @@ jobs:
         run: gh release upload "$env:TAG_NAME" "$env:INSTALLER_NAME" --repo "$env:SOURCE_REPO" --clobber
 
   build-mac-installer-release:
-    runs-on: macos-latest
+    # Build each architecture natively so Electron and bundled .node modules
+    # are produced for the same CPU architecture.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x64
+            asset_arch: x64
+            binary_arch: x86_64
+          - runner: macos-latest
+            arch: arm64
+            asset_arch: arm64
+            binary_arch: arm64
+    runs-on: ${{ matrix.runner }}
     needs:
       - resolve-release-payload
       - build-webos-release
@@ -281,7 +296,7 @@ jobs:
       - name: Check out installer repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.INSTALLER_REPO || 'NuvioMedia/NuvioWebTVInstaller' }}
+          repository: ${{ vars.INSTALLER_REPO || 'NuvioMedia/NuvioTVSmart-Installer' }}
           token: ${{ secrets.REPO_DISPATCH_TOKEN || github.token }}
 
       - name: Set up Node.js
@@ -293,20 +308,43 @@ jobs:
       - name: Install installer dependencies
         run: npm ci
 
-      - name: Build macOS installer
-        run: npm run dist:mac
+      - name: Build macOS installer (${{ matrix.asset_arch }})
+        run: npm run dist:mac -- --${{ matrix.arch }}
 
-      - name: Package macOS app
+      - name: Verify and package macOS installer (${{ matrix.asset_arch }})
         id: installer
         env:
           TAG_NAME: ${{ needs.resolve-release-payload.outputs.tag }}
+          EXPECTED_ARCH: ${{ matrix.binary_arch }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
         run: |
           APP_PATH="$(find dist -type d -name '*.app' -print | head -n 1)"
           if [ -z "$APP_PATH" ]; then
             echo "Expected macOS .app was not created" >&2
             exit 1
           fi
-          TARGET_FILE="Nuvio-WebTV-Installer-macOS-${TAG_NAME}.zip"
+
+          MAIN_BINARY="$(find "$APP_PATH/Contents/MacOS" -type f -print | head -n 1)"
+          if [ -z "$MAIN_BINARY" ]; then
+            echo "Expected macOS executable was not created" >&2
+            exit 1
+          fi
+
+          MAIN_ARCHES="$(lipo -archs "$MAIN_BINARY")"
+          if [[ " $MAIN_ARCHES " != *" $EXPECTED_ARCH "* ]]; then
+            echo "Unexpected macOS executable architecture: $MAIN_ARCHES (expected $EXPECTED_ARCH)" >&2
+            exit 1
+          fi
+
+          while IFS= read -r -d '' NATIVE_MODULE; do
+            MODULE_ARCHES="$(lipo -archs "$NATIVE_MODULE" 2>/dev/null || true)"
+            if [[ " $MODULE_ARCHES " != *" $EXPECTED_ARCH "* ]]; then
+              echo "Native module is incompatible with $EXPECTED_ARCH: $NATIVE_MODULE ($MODULE_ARCHES)" >&2
+              exit 1
+            fi
+          done < <(find "$APP_PATH" -type f -name '*.node' -print0)
+
+          TARGET_FILE="NuvioTVSmart-Installer-macOS-${ASSET_ARCH}-${TAG_NAME}.zip"
           ditto -c -k --keepParent "$APP_PATH" "$TARGET_FILE"
           echo "installer_name=$TARGET_FILE" >> "$GITHUB_OUTPUT"
 
@@ -330,7 +368,7 @@ jobs:
       - name: Check out installer repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.INSTALLER_REPO || 'NuvioMedia/NuvioWebTVInstaller' }}
+          repository: ${{ vars.INSTALLER_REPO || 'NuvioMedia/NuvioTVSmart-Installer' }}
           token: ${{ secrets.REPO_DISPATCH_TOKEN || github.token }}
 
       - name: Set up Node.js
@@ -355,7 +393,7 @@ jobs:
             echo "Expected Linux AppImage was not created" >&2
             exit 1
           fi
-          TARGET_FILE="Nuvio-WebTV-Installer-Linux-${TAG_NAME}.AppImage"
+          TARGET_FILE="NuvioTVSmart-Installer-Linux-${TAG_NAME}.AppImage"
           mv "$APPIMAGE_PATH" "$TARGET_FILE"
           chmod +x "$TARGET_FILE"
           echo "installer_name=$TARGET_FILE" >> "$GITHUB_OUTPUT"

@@ -289,6 +289,7 @@ function compileStreamBadgeFilters(rules = {}) {
     .filter((importItem) => importItem.isActive)
     .flatMap((importItem) =>
       importItem.filters
+        .filter((filter) => filter.isEnabled !== false)
         .map((filter) => {
           try {
             const pattern = String(filter.pattern || "").trim();
@@ -412,7 +413,7 @@ export function getStreamBadgePreviewSections(importItem = {}) {
   return sections;
 }
 
-export function formatStreamBadgeImportSummary(importItem = {}, index = 0) {
+export function formatStreamBadgeImportSummary(importItem = {}, _index = 0) {
   const enabledFilterCount = Array.isArray(importItem.filters)
     ? importItem.filters.filter((filter) => filter?.isEnabled !== false).length
     : 0;

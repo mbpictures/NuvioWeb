@@ -4,11 +4,23 @@ import {
   SUBTITLE_VERTICAL_OFFSET_DEFAULT,
   normalizeSubtitleVerticalOffset
 } from "../../core/player/subtitleVerticalOffset.js";
+import {
+  SUBTITLE_TEXT_OPACITY_DEFAULT,
+  normalizeSubtitleTextOpacity
+} from "../../core/player/subtitleTextOpacity.js";
 
 const KEY = "playerSettings";
 
+export const MIN_POST_PLAY_MOVIE_THRESHOLD_PERCENT = 80;
+export const MAX_POST_PLAY_MOVIE_THRESHOLD_PERCENT = 100;
+export const DEFAULT_POST_PLAY_MOVIE_THRESHOLD_PERCENT = 90;
+
 const DEFAULTS = {
   autoplayNextEpisode: false,
+  postPlayRecommendationsEnabled: true,
+  postPlayMovieThresholdPercent: DEFAULT_POST_PLAY_MOVIE_THRESHOLD_PERCENT,
+  // Legacy Web-only switch. Subtitle startup is controlled by the preferred
+  // language ("off" = Android "None") plus useForcedSubtitles.
   subtitlesEnabled: true,
   subtitleLanguage: "en",
   secondarySubtitleLanguage: "off",
@@ -19,10 +31,12 @@ const DEFAULTS = {
   skipIntroEnabled: true,
   loadingOverlayEnabled: true,
   showPlayerLoadingStatus: true,
+  minimalBufferingUiEnabled: false,
   pauseOverlayEnabled: true,
   parentalGuideEnabled: true,
   autoSkipSegmentTypes: [],
   addonSubtitleStartupMode: "ALL_SUBTITLES",
+  addonSubtitleStartupModeAutoPreferred: false,
   nextEpisodeThresholdMode: "PERCENTAGE",
   nextEpisodeThresholdPercent: 99,
   nextEpisodeThresholdMinutesBeforeEnd: 2,
@@ -33,6 +47,7 @@ const DEFAULTS = {
   subtitleStyle: {
     fontSize: 100,
     textColor: "#FFFFFF",
+    textOpacity: SUBTITLE_TEXT_OPACITY_DEFAULT,
     bold: false,
     outlineEnabled: true,
     outlineColor: "#000000",
@@ -85,6 +100,17 @@ const STREAM_AUTO_PLAY_TIMEOUT_VALUES = [
   STREAM_AUTO_PLAY_TIMEOUT_UNLIMITED
 ];
 const NEXT_EPISODE_THRESHOLD_MODES = ["PERCENTAGE", "MINUTES_BEFORE_END"];
+
+export function normalizePostPlayMovieThreshold(value) {
+  const threshold = Math.trunc(Number(value));
+  if (!Number.isFinite(threshold)) {
+    return DEFAULT_POST_PLAY_MOVIE_THRESHOLD_PERCENT;
+  }
+  return Math.min(
+    MAX_POST_PLAY_MOVIE_THRESHOLD_PERCENT,
+    Math.max(MIN_POST_PLAY_MOVIE_THRESHOLD_PERCENT, threshold)
+  );
+}
 
 function normalizeStreamAutoPlayMode(value) {
   const normalized = String(value || "")
@@ -216,11 +242,17 @@ export function normalizePlayerSettings(settings = {}) {
         : storedOffset
   );
   subtitleStyle.verticalOffsetContract = SUBTITLE_VERTICAL_OFFSET_CONTRACT;
+  subtitleStyle.textOpacity = normalizeSubtitleTextOpacity(subtitleStyle.textOpacity);
   let preferredLanguage = normalizeSelectableSubtitleLanguageCode(
     subtitleStyle.preferredLanguage ?? persistentSettings.subtitleLanguage,
     DEFAULTS.subtitleStyle.preferredLanguage
   );
-  const subtitlesEnabled = persistentSettings.subtitlesEnabled ?? DEFAULTS.subtitlesEnabled;
+  // Migrate the removed Web-only master switch to Android's "None" language
+  // contract. Keep the legacy field enabled so forced-only mode can still run
+  // when the preferred language is off, matching Android TV.
+  if (persistentSettings.subtitlesEnabled === false) {
+    preferredLanguage = "off";
+  }
   let secondaryPreferredLanguage = normalizeSelectableSubtitleLanguageCode(
     subtitleStyle.secondaryPreferredLanguage ?? persistentSettings.secondarySubtitleLanguage,
     DEFAULTS.subtitleStyle.secondaryPreferredLanguage
@@ -247,6 +279,12 @@ export function normalizePlayerSettings(settings = {}) {
   return {
     ...DEFAULTS,
     ...persistentSettings,
+    postPlayRecommendationsEnabled: Boolean(
+      persistentSettings.postPlayRecommendationsEnabled ?? DEFAULTS.postPlayRecommendationsEnabled
+    ),
+    postPlayMovieThresholdPercent: normalizePostPlayMovieThreshold(
+      persistentSettings.postPlayMovieThresholdPercent
+    ),
     trailerAutoplay: persistentSettings.trailerAutoplay ?? DEFAULTS.trailerAutoplay,
     trailerDelaySeconds: Math.min(
       15,
@@ -254,6 +292,9 @@ export function normalizePlayerSettings(settings = {}) {
     ),
     loadingOverlayEnabled: persistentSettings.loadingOverlayEnabled !== false,
     showPlayerLoadingStatus: persistentSettings.showPlayerLoadingStatus !== false,
+    minimalBufferingUiEnabled: Boolean(
+      persistentSettings.minimalBufferingUiEnabled ?? DEFAULTS.minimalBufferingUiEnabled
+    ),
     pauseOverlayEnabled: persistentSettings.pauseOverlayEnabled !== false,
     parentalGuideEnabled: persistentSettings.parentalGuideEnabled !== false,
     autoSkipSegmentTypes: [
@@ -271,6 +312,9 @@ export function normalizePlayerSettings(settings = {}) {
     )
       ? String(persistentSettings.addonSubtitleStartupMode).toUpperCase()
       : "ALL_SUBTITLES",
+    addonSubtitleStartupModeAutoPreferred: Boolean(
+      persistentSettings.addonSubtitleStartupModeAutoPreferred
+    ),
     streamAutoPlayMode: normalizeStreamAutoPlayMode(
       persistentSettings.streamAutoPlayMode ?? DEFAULTS.streamAutoPlayMode
     ),
@@ -321,7 +365,7 @@ export function normalizePlayerSettings(settings = {}) {
       settings.stillWatchingEpisodeThreshold ?? DEFAULTS.stillWatchingEpisodeThreshold
     ),
     osdClockEnabled: Boolean(persistentSettings.osdClockEnabled ?? DEFAULTS.osdClockEnabled),
-    subtitlesEnabled,
+    subtitlesEnabled: true,
     secondaryPreferredAudioLanguage: (() => {
       const normalized = String(
         persistentSettings.secondaryPreferredAudioLanguage ??

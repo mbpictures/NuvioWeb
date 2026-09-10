@@ -1,21 +1,29 @@
 import { ThemeStore } from "../../../data/local/themeStore.js";
+import { MemberAccessRepository } from "../../../data/remote/supabase/memberAccessRepository.js";
 import { ThemeManager } from "../../theme/themeManager.js";
+
+async function applyThemeWithMemberAccess() {
+  const memberAccess = await MemberAccessRepository.getAccess().catch(() =>
+    MemberAccessRepository.getCurrentAccess()
+  );
+  ThemeManager.apply({ enforceAccess: true, access: memberAccess });
+}
 
 export const ThemeSettings = {
   getItems() {
     const theme = ThemeStore.get();
-    const setAccent = (accentColor) => {
+    const setAccent = async (accentColor) => {
       ThemeStore.set({ accentColor });
-      ThemeManager.apply();
+      await applyThemeWithMemberAccess();
     };
     return [
       {
         id: "theme_apply_dark",
         label: "Apply Dark Theme",
         description: `Current accent: ${theme.accentColor}`,
-        action: () => {
+        action: async () => {
           ThemeStore.set({ mode: "dark" });
-          ThemeManager.apply();
+          await applyThemeWithMemberAccess();
         }
       },
       {

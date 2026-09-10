@@ -1,4 +1,5 @@
 import { I18n } from "../../i18n/index.js";
+import { watchedItemIdentityValues } from "../../data/repository/watchedIdentity.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -14,20 +15,20 @@ function watchedBadgeLabel() {
 }
 
 export function buildWatchedTitleIdSet(watchedItems = []) {
-  return new Set(
-    (Array.isArray(watchedItems) ? watchedItems : [])
-      .filter((item) => item?.season == null && item?.episode == null)
-      .map((item) => String(item?.contentId || "").trim())
-      .filter(Boolean)
-  );
+  const titleIds = new Set();
+  (Array.isArray(watchedItems) ? watchedItems : [])
+    .filter((item) => item?.season == null && item?.episode == null)
+    .forEach((item) => {
+      watchedItemIdentityValues(item).forEach((value) => titleIds.add(value));
+    });
+  return titleIds;
 }
 
 export function isTitleItemWatched(item = {}, watchedTitleIds = null) {
-  const id = String(item?.id || item?.contentId || "").trim();
-  if (!id || !watchedTitleIds || typeof watchedTitleIds.has !== "function") {
+  if (!watchedTitleIds || typeof watchedTitleIds.has !== "function") {
     return false;
   }
-  return watchedTitleIds.has(id);
+  return Array.from(watchedItemIdentityValues(item)).some((id) => watchedTitleIds.has(id));
 }
 
 export function renderWatchedBadgeGlyph(className = "title-watched-badge-svg") {

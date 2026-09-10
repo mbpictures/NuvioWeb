@@ -7,8 +7,28 @@ const HAS_EVER_SELECTED_PROFILE_KEY = "hasEverSelectedProfile";
 export const MAX_PROFILES = 6;
 
 const DEFAULT_PROFILES = [
-  { id: "1", profileIndex: 1, name: "Profile 1", avatarColorHex: "#1E88E5", isPrimary: true }
+  {
+    id: "1",
+    profileIndex: 1,
+    name: "Profile 1",
+    avatarColorHex: "#1E88E5",
+    avatarId: null,
+    avatarUrl: null,
+    profileBackgroundId: null,
+    profileBackgroundUrl: null,
+    isPrimary: true
+  }
 ];
+
+function readBooleanFlag(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "true" || normalized === "1";
+  }
+  return false;
+}
 
 function normalizeProfile(profile, index = 0) {
   const fallbackIndex = index + 1;
@@ -24,9 +44,15 @@ function normalizeProfile(profile, index = 0) {
     avatarColorHex: String(profile?.avatarColorHex || "#1E88E5"),
     avatarId: profile?.avatarId || profile?.avatar_id || null,
     avatarUrl: String(profile?.avatarUrl || profile?.avatar_url || "").trim() || null,
-    isPrimary: Boolean(profile?.isPrimary || normalizedIndex === 1),
-    usesPrimaryAddons: Boolean(profile?.usesPrimaryAddons),
-    usesPrimaryPlugins: Boolean(profile?.usesPrimaryPlugins)
+    profileBackgroundId:
+      String(profile?.profileBackgroundId || profile?.profile_background_id || "").trim() || null,
+    profileBackgroundUrl:
+      String(profile?.profileBackgroundUrl || profile?.profile_background_url || "").trim() || null,
+    isPrimary: readBooleanFlag(profile?.isPrimary) || normalizedIndex === 1,
+    usesPrimaryAddons: readBooleanFlag(profile?.usesPrimaryAddons ?? profile?.uses_primary_addons),
+    usesPrimaryPlugins: readBooleanFlag(
+      profile?.usesPrimaryPlugins ?? profile?.uses_primary_plugins
+    )
   };
 }
 
@@ -99,6 +125,8 @@ export const ProfileManager = {
     avatarColorHex = "#1E88E5",
     avatarId = null,
     avatarUrl = null,
+    profileBackgroundId = null,
+    profileBackgroundUrl = null,
     usesPrimaryAddons = false,
     usesPrimaryPlugins = false
   } = {}) {
@@ -126,6 +154,8 @@ export const ProfileManager = {
           avatarColorHex,
           avatarId,
           avatarUrl,
+          profileBackgroundId,
+          profileBackgroundUrl,
           isPrimary: false,
           usesPrimaryAddons,
           usesPrimaryPlugins

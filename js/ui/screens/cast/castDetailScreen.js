@@ -1,6 +1,10 @@
 import { Router } from "../../navigation/router.js";
 import { ScreenUtils } from "../../navigation/screen.js";
-import { TmdbSettingsStore } from "../../../data/local/tmdbSettingsStore.js";
+import {
+  normalizeTmdbLanguageCode,
+  TmdbSettingsStore
+} from "../../../data/local/tmdbSettingsStore.js";
+import { containsCjkOrHangul, resolvePersonName } from "../../../core/tmdb/tmdbMetadataService.js";
 import { Environment } from "../../../platform/environment.js";
 import { TMDB_API_KEY } from "../../../config.js";
 import { I18n } from "../../../i18n/index.js";
@@ -49,6 +53,15 @@ function isBackEvent(event) {
   return Environment.isBackEvent(event);
 }
 
+function getDirection(event) {
+  const code = Number(event?.keyCode || 0);
+  if (code === 37) return "left";
+  if (code === 39) return "right";
+  if (code === 38) return "up";
+  if (code === 40) return "down";
+  return null;
+}
+
 function toType(mediaType) {
   const value = String(mediaType || "").toLowerCase();
   if (value === "tv" || value === "series" || value === "show") {
@@ -74,20 +87,90 @@ function uniqueCredits(items = []) {
 }
 
 export const CastDetailScreen = {
-  async mount(params = {}) {
+  getRouteStateKey(params = {}) {
+    const castId = String(params?.castId || "").trim();
+    const castName = String(params?.castName || "").trim();
+    const identity = castId ? `id:${castId}` : castName ? `name:${castName}` : "";
+    return identity ? `castDetail:${identity}` : null;
+  },
+
+  captureRouteState() {
+    const focused = this.container?.querySelector(".cast-credit-card.focusable.focused");
+    if (focused) {
+      this.rememberFocusedCard(focused);
+    }
+    return {
+      params: this.params ? { ...this.params } : {},
+      person: this.person ? { ...this.person } : null,
+      credits: Array.isArray(this.credits) ? this.credits.map((item) => ({ ...item })) : [],
+      sectionFocusIndexByKey: { ...(this.sectionFocusIndexByKey || {}) },
+      focusedSectionKey: String(this.lastFocusedSectionKey || ""),
+      focusedItemId: String(this.lastFocusedItemId || "")
+    };
+  },
+
+  hydrateFromRouteState(restoredState = null, params = {}) {
+    const snapshot = restoredState && typeof restoredState === "object" ? restoredState : null;
+    const currentKey = this.getRouteStateKey(params);
+    const snapshotKey = this.getRouteStateKey(snapshot?.params);
+    if (
+      !currentKey ||
+      currentKey !== snapshotKey ||
+      !snapshot?.person ||
+      typeof snapshot.person !== "object" ||
+      !Array.isArray(snapshot.credits)
+    ) {
+      return false;
+    }
+    this.params = params || {};
+    this.person = { ...snapshot.person };
+    this.credits = snapshot.credits.map((item) => ({ ...item }));
+    this.sectionFocusIndexByKey =
+      snapshot.sectionFocusIndexByKey && typeof snapshot.sectionFocusIndexByKey === "object"
+        ? { ...snapshot.sectionFocusIndexByKey }
+        : {};
+    this.lastFocusedSectionKey = String(snapshot.focusedSectionKey || "");
+    this.lastFocusedItemId = String(snapshot.focusedItemId || "");
+    this.pendingRestoreFocus = true;
+    return true;
+  },
+
+  async mount(params = {}, navigationContext = {}) {
     this.container = document.getElementById("castDetail");
     ScreenUtils.show(this.container);
     this.params = params || {};
     this.loadToken = (this.loadToken || 0) + 1;
     this.person = null;
     this.credits = [];
+    this.sectionFocusIndexByKey = {};
+    this.lastFocusedSectionKey = "";
+    this.lastFocusedItemId = "";
+    this.pendingRestoreFocus = false;
     this.posterOptionsController = null;
     this.posterOptionsFocusRestore = null;
     this.pendingPosterHoldTarget = null;
     this.pendingPosterHoldTimer = null;
 
+    if (
+      navigationContext?.isBackNavigation &&
+      this.hydrateFromRouteState(navigationContext?.restoredState || null, params)
+    ) {
+      this.render();
+      return;
+    }
+
     this.renderLoading();
-    await this.loadCastDetails();
+    const loadToken = this.loadToken;
+    // Android launches the person-detail request from the ViewModel after the
+    // loading surface is composed. Do the same so a slow TMDB request cannot
+    // hold the route or prevent Back from being handled.
+    void this.loadCastDetails().catch((error) => {
+      if (loadToken !== this.loadToken || Router.getCurrent() !== "castDetail") {
+        return;
+      }
+      console.warn("Cast detail background load failed", error);
+      this.renderError("Failed to load cast details.");
+    });
   },
 
   async getPersonIdFromName(name) {
@@ -113,6 +196,9 @@ export const CastDetailScreen = {
       const settings = TmdbSettingsStore.get();
       const apiKey = String(TMDB_API_KEY || "").trim();
       if (!apiKey) {
+        if (token !== this.loadToken || Router.getCurrent() !== "castDetail") {
+          return;
+        }
         this.renderError("TMDB API key not configured.");
         return;
       }
@@ -120,14 +206,20 @@ export const CastDetailScreen = {
       if (!personId || !/^\d+$/.test(personId)) {
         personId = await this.getPersonIdFromName(this.params?.castName || "");
       }
+      if (token !== this.loadToken || Router.getCurrent() !== "castDetail") {
+        return;
+      }
       if (!personId) {
         this.renderError("Cast profile not found.");
         return;
       }
 
-      const language = settings.language || "en-US";
+      const language = normalizeTmdbLanguageCode(settings.language || "en-US");
       const url = `${TMDB_BASE_URL}/person/${encodeURIComponent(personId)}?api_key=${encodeURIComponent(apiKey)}&language=${encodeURIComponent(language)}&append_to_response=combined_credits,images`;
       const response = await fetch(url);
+      if (token !== this.loadToken || Router.getCurrent() !== "castDetail") {
+        return;
+      }
       if (!response.ok) {
         this.renderError("Failed to load cast details.");
         return;
@@ -136,10 +228,44 @@ export const CastDetailScreen = {
       if (token !== this.loadToken) {
         return;
       }
+      const languageCode = language.split("-", 1)[0].toLowerCase();
+      const localizedName = String(person?.name || "").trim();
+      const originalName = String(person?.original_name || "").trim();
+      const shouldFetchEnglishPerson =
+        languageCode !== "en" &&
+        (String(person?.biography || "").trim() === "" ||
+          (containsCjkOrHangul(localizedName) &&
+            (!originalName || containsCjkOrHangul(originalName))));
+      let englishPerson = null;
+      if (shouldFetchEnglishPerson) {
+        try {
+          const englishUrl = `${TMDB_BASE_URL}/person/${encodeURIComponent(personId)}?api_key=${encodeURIComponent(apiKey)}&language=en&append_to_response=combined_credits,images`;
+          const englishResponse = await fetch(englishUrl);
+          if (englishResponse.ok) {
+            englishPerson = await englishResponse.json();
+          }
+        } catch (error) {
+          console.warn("Cast English name fallback failed", error);
+        }
+      }
+      if (token !== this.loadToken) {
+        return;
+      }
+      const resolvedName =
+        resolvePersonName({
+          localizedName: localizedName,
+          originalName,
+          fallbackEnglishName: englishPerson?.name,
+          preferredLanguage: language
+        }) ||
+        this.params?.castName ||
+        "Unknown";
       this.person = {
         id: String(person?.id || personId),
-        name: person?.name || this.params?.castName || "Unknown",
-        biography: person?.biography || "",
+        name: resolvedName,
+        biography:
+          String(person?.biography || "").trim() ||
+          (languageCode !== "en" ? String(englishPerson?.biography || "").trim() : ""),
         birthday: person?.birthday || "",
         placeOfBirth: person?.place_of_birth || "",
         knownForDepartment: person?.known_for_department || "",
@@ -151,7 +277,10 @@ export const CastDetailScreen = {
       this.credits = credits
         .map((item) => ({
           id: item?.id ? String(item.id) : "",
-          itemId: item?.imdb_id || item?.id ? String(item.imdb_id || item.id) : "",
+          // TMDB credits expose a numeric TMDB id. Keep the same canonical
+          // identity used by Android TV so the detail route can resolve it to
+          // the IMDb id expected by the metadata addons before loading episodes.
+          itemId: item?.imdb_id || (item?.id ? `tmdb:${String(item.id)}` : ""),
           type: toType(item?.media_type),
           name: item?.title || item?.name || "Untitled",
           subtitle: item?.character || "",
@@ -164,6 +293,9 @@ export const CastDetailScreen = {
 
       this.render();
     } catch (error) {
+      if (token !== this.loadToken || Router.getCurrent() !== "castDetail") {
+        return;
+      }
       console.warn("Cast detail load failed", error);
       this.renderError("Failed to load cast details.");
     }
@@ -183,8 +315,10 @@ export const CastDetailScreen = {
   renderError(message) {
     this.container.innerHTML = `
       <div class="cast-detail-shell">
+        <button class="cast-detail-back focusable" data-action="back" aria-label="${escapeAttribute(t("common.back", {}, "Back"))}">
+          <span class="material-icons" aria-hidden="true">arrow_back</span>
+        </button>
         <div class="cast-detail-error">${message}</div>
-        <button class="cast-detail-back focusable" data-action="back">Back</button>
       </div>
     `;
     ScreenUtils.indexFocusables(this.container);
@@ -223,8 +357,8 @@ export const CastDetailScreen = {
                data-poster-src="${escapeAttribute(item.poster || "")}"
                data-backdrop-src="${escapeAttribute(item.poster || "")}">
         <div class="cast-credit-poster"${item.poster ? ` style="background-image:url('${escapeAttribute(item.poster)}')"` : ""}></div>
-        <div class="cast-credit-title">${escapeHtml(item.name)}</div>
-        <div class="cast-credit-subtitle">${escapeHtml(item.subtitle || item.type)}</div>
+        <div class="cast-credit-title" dir="auto">${escapeHtml(item.name)}</div>
+        <div class="cast-credit-subtitle" dir="auto">${escapeHtml(item.subtitle || item.type)}</div>
       </article>
     `;
   },
@@ -238,7 +372,7 @@ export const CastDetailScreen = {
       .map(
         (section) => `
           <section class="cast-credit-section" data-credit-section="${escapeAttribute(section.key)}">
-            <h3 class="cast-detail-section-title">${escapeHtml(section.title)}</h3>
+            <h3 class="cast-detail-section-title" dir="${I18n.isRtl() ? "rtl" : "ltr"}">${escapeHtml(section.title)}</h3>
             <div class="cast-credit-track">${section.items.map((item) => this.renderCreditCard(item)).join("")}</div>
           </section>
         `
@@ -249,17 +383,15 @@ export const CastDetailScreen = {
   render() {
     const person = this.person || {};
     const creditsHtml = this.renderCreditSections();
+    const direction = I18n.isRtl() ? "rtl" : "ltr";
 
     this.container.innerHTML = `
       <div class="cast-detail-shell">
-        <button class="cast-detail-back focusable" data-action="back" aria-label="${escapeAttribute(t("common.back", {}, "Back"))}">
-          <span class="material-icons" aria-hidden="true">arrow_back</span>
-        </button>
         <section class="cast-detail-hero">
-          <div class="cast-detail-hero-content">
+          <div class="cast-detail-hero-content" dir="${direction}">
             <div class="cast-detail-avatar"${person.profile ? ` style="background-image:url('${escapeAttribute(person.profile)}')"` : ""}></div>
             <div class="cast-detail-meta">
-              <h2 class="cast-detail-name">${escapeHtml(person.name || "Unknown")}</h2>
+              <h2 class="cast-detail-name" dir="auto">${escapeHtml(person.name || "Unknown")}</h2>
               <div class="cast-detail-facts">
                 ${person.knownForDepartment ? `<span>${escapeHtml(person.knownForDepartment)}</span>` : ""}
                 ${person.birthday ? `<span>${escapeHtml(person.birthday)}</span>` : ""}
@@ -276,8 +408,122 @@ export const CastDetailScreen = {
     `;
 
     ScreenUtils.indexFocusables(this.container);
+    if (this.pendingRestoreFocus) {
+      this.pendingRestoreFocus = false;
+      if (this.restoreFocusedCard()) {
+        return;
+      }
+    }
     ScreenUtils.setInitialFocus(this.container, ".cast-credit-card.focusable");
+    const initial = this.container.querySelector(".cast-credit-card.focusable.focused");
+    if (initial) {
+      this.rememberFocusedCard(initial);
+    }
     this.syncFocusedCardScroll({ instant: true });
+  },
+
+  getCreditCardNodes(section = null) {
+    if (section instanceof HTMLElement) {
+      return Array.from(section.querySelectorAll(".cast-credit-card.focusable"));
+    }
+    return Array.from(this.container?.querySelectorAll(".cast-credit-card.focusable") || []);
+  },
+
+  rememberFocusedCard(node) {
+    if (!(node instanceof HTMLElement)) {
+      return;
+    }
+    const section = node.closest(".cast-credit-section");
+    const sectionKey = String(section?.dataset?.creditSection || "");
+    if (!sectionKey) {
+      return;
+    }
+    const index = this.getCreditCardNodes(section).indexOf(node);
+    if (index >= 0) {
+      this.sectionFocusIndexByKey[sectionKey] = index;
+    }
+    this.lastFocusedSectionKey = sectionKey;
+    this.lastFocusedItemId = String(node.dataset.itemId || "");
+  },
+
+  focusNode(node, { instant = false } = {}) {
+    if (!(node instanceof HTMLElement)) {
+      return false;
+    }
+    this.container?.querySelectorAll(".cast-credit-card.focusable.focused").forEach((current) => {
+      if (current !== node) {
+        current.classList.remove("focused");
+      }
+    });
+    node.classList.add("focused");
+    try {
+      node.focus({ preventScroll: true });
+    } catch (_) {
+      node.focus();
+    }
+    this.rememberFocusedCard(node);
+    this.syncFocusedCardScroll({ instant });
+    return true;
+  },
+
+  restoreFocusedCard() {
+    const cards = this.getCreditCardNodes();
+    const target =
+      cards.find((node) => {
+        const section = node.closest(".cast-credit-section");
+        return (
+          String(section?.dataset?.creditSection || "") === this.lastFocusedSectionKey &&
+          String(node.dataset.itemId || "") === this.lastFocusedItemId
+        );
+      }) || cards[0];
+    return target ? this.focusNode(target, { instant: true }) : false;
+  },
+
+  handleDpad(event) {
+    const direction = getDirection(event);
+    if (!direction) {
+      return false;
+    }
+    const current = this.container?.querySelector(".cast-credit-card.focusable.focused");
+    if (!(current instanceof HTMLElement)) {
+      return false;
+    }
+
+    const currentSection = current.closest(".cast-credit-section");
+    const currentCards = this.getCreditCardNodes(currentSection);
+    const currentIndex = currentCards.indexOf(current);
+    if (!(currentSection instanceof HTMLElement) || currentIndex < 0) {
+      return false;
+    }
+
+    if (direction === "left" || direction === "right") {
+      const nextIndex = currentIndex + (direction === "left" ? -1 : 1);
+      event?.preventDefault?.();
+      if (currentCards[nextIndex]) {
+        this.focusNode(currentCards[nextIndex]);
+      }
+      return true;
+    }
+
+    const sections = Array.from(this.container?.querySelectorAll(".cast-credit-section") || []);
+    const sectionIndex = sections.indexOf(currentSection);
+    const targetSection = sections[sectionIndex + (direction === "up" ? -1 : 1)];
+    if (!(targetSection instanceof HTMLElement)) {
+      return false;
+    }
+    const targetCards = this.getCreditCardNodes(targetSection);
+    if (!targetCards.length) {
+      return false;
+    }
+    event?.preventDefault?.();
+    const targetKey = String(targetSection.dataset.creditSection || "");
+    const rememberedIndex = Number(this.sectionFocusIndexByKey?.[targetKey]);
+    // Keep focus local to each filmography section. This prevents the
+    // scroll position of Popular from selecting a later card in Latest.
+    const targetIndex =
+      Number.isInteger(rememberedIndex) && rememberedIndex >= 0 ? rememberedIndex : 0;
+    this.focusNode(targetCards[Math.min(targetIndex, targetCards.length - 1)]);
+    return true;
   },
 
   syncFocusedCardScroll({ instant = false } = {}) {
@@ -307,13 +553,35 @@ export const CastDetailScreen = {
       }
     }
 
+    // Keep the Android-style hero context visible while entering the first
+    // filmography row. Constrained TV viewports cannot show the whole poster
+    // and the hero at once; scrolling to the card bottom would hide the
+    // actor's name and biography before the user can read them.
+    const firstSection = this.container?.querySelector(".cast-credit-section");
+    const focusedSection = focused.closest(".cast-credit-section");
+    if (firstSection && focusedSection === firstSection) {
+      if (shell.scrollTop > 0) {
+        if (!instant && typeof shell.scrollTo === "function") {
+          shell.scrollTo({ top: 0, behavior: "smooth" });
+        } else {
+          shell.scrollTop = 0;
+        }
+      }
+      this.savedScrollTop = 0;
+      return;
+    }
+
     const shellRect = shell.getBoundingClientRect();
     const focusRect = focused.getBoundingClientRect();
+    const focusedSectionRect =
+      focusedSection instanceof HTMLElement ? focusedSection.getBoundingClientRect() : focusRect;
     const padTop = 40;
     const padBottom = 58;
     let nextScrollTop = shell.scrollTop;
-    if (focusRect.top < shellRect.top + padTop) {
-      nextScrollTop -= shellRect.top + padTop - focusRect.top;
+    // Keep the section heading visible with the focused card. This matches
+    // Android's rail-level bring-into-view behavior when moving upward.
+    if (focusedSectionRect.top < shellRect.top + padTop) {
+      nextScrollTop -= shellRect.top + padTop - focusedSectionRect.top;
     } else if (focusRect.bottom > shellRect.bottom - padBottom) {
       nextScrollTop += focusRect.bottom - (shellRect.bottom - padBottom);
     }
@@ -387,6 +655,7 @@ export const CastDetailScreen = {
     if (!item?.id) {
       return false;
     }
+    this.rememberFocusedCard(node);
     this.posterOptionsFocusRestore = String(item.id || "").trim();
     if (!this.posterOptionsController) {
       this.posterOptionsController = new PosterOptionsDialogController({
@@ -419,6 +688,7 @@ export const CastDetailScreen = {
           });
           target.classList.add("focused");
           target.focus?.({ preventScroll: true });
+          this.rememberFocusedCard(target);
           this.syncFocusedCardScroll({ instant: true });
         }
       });
@@ -436,6 +706,7 @@ export const CastDetailScreen = {
   },
 
   openDetailFromNode(node) {
+    this.rememberFocusedCard(node);
     Router.navigate("detail", {
       itemId: node.dataset.itemId,
       itemType: node.dataset.itemType || "movie",
@@ -456,8 +727,10 @@ export const CastDetailScreen = {
       Router.back();
       return;
     }
+    if (this.handleDpad(event)) {
+      return;
+    }
     if (ScreenUtils.handleDpadNavigation(event, this.container)) {
-      this.syncFocusedCardScroll();
       return;
     }
     if (code !== 13) {
@@ -490,6 +763,12 @@ export const CastDetailScreen = {
     const current = this.container?.querySelector(".cast-credit-card.focusable.focused") || null;
     if (this.completePendingPosterHold(current, event)) {
       event?.preventDefault?.();
+    }
+  },
+
+  onPointerFocus(target) {
+    if (this.isPosterHoldTarget(target)) {
+      this.rememberFocusedCard(target);
     }
   },
 

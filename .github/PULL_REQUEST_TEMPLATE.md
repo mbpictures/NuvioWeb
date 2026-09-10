@@ -27,8 +27,7 @@
 - [ ] Continue Watching
 - [ ] Next Episode / Auto-play
 - [ ] Packaging / Build
-- [ ] Nuvio WebTV Installer compatibility
-- [ ] TizenBrew wrapper
+- [ ] Nuvio TV Installer compatibility
 - [ ] webOS Homebrew wrapper
 - [ ] Documentation
 - [ ] Other
@@ -89,8 +88,7 @@
 - [ ] `local.properties` / environment handling changed
 - [ ] `sync:tizen` changed
 - [ ] `sync:webos` changed
-- [ ] Nuvio WebTV Installer compatibility changed
-- [ ] TizenBrew wrapper support changed
+- [ ] Nuvio TV Installer compatibility changed
 - [ ] webOS Homebrew metadata support changed
 
 ## Policy check
@@ -109,7 +107,7 @@
 - [ ] I included a linked issue, reproduction steps, and testing notes if this is a critical bug fix.
 - [ ] I listed the testing performed below.
 
-> Feature additions, broad UI changes, refactors, playback rewrites, platform rewrites, installer rewrites, and other non-critical changes may be closed or deferred without review while NuvioTV Web is being prepared for a stable Smart TV release.
+> Feature additions, broad UI changes, refactors, playback rewrites, platform rewrites, installer rewrites, and other non-critical changes may be closed or deferred without review while Nuvio TV is being prepared for a stable Smart TV release.
 
 ## Scope boundaries
 

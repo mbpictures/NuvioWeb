@@ -10,7 +10,6 @@
   }
 
   var OVERLAY_ID = "nuvio-boot-error";
-  var WATCHDOG_MS = 25000;
   var COMPATIBILITY_INFO_TIMEOUT_MS = 1500;
   var DEFAULT_COMPATIBILITY_MESSAGES = {
     unsupported_device_title: "TV not supported",
@@ -55,39 +54,12 @@
   ];
   var active = true;
   var lastStage = "Loading startup files";
-  var watchdogId = 0;
-
-  function scheduleWatchdog() {
-    if (!active) {
-      return;
-    }
-    if (watchdogId) {
-      window.clearTimeout(watchdogId);
-    }
-    watchdogId = window.setTimeout(function onBootTimeout() {
-      watchdogId = 0;
-      if (active) {
-        showError(
-          "The application is taking too long to start.",
-          "Restart the app. If the problem continues, photograph this screen and report the code and stage.",
-          "BOOT-TIMEOUT"
-        );
-      }
-    }, WATCHDOG_MS);
-  }
 
   function text(value) {
     if (value === undefined || value === null || value === "") {
       return "Unavailable";
     }
     return String(value);
-  }
-
-  function stopWatchdog() {
-    if (watchdogId) {
-      window.clearTimeout(watchdogId);
-      watchdogId = 0;
-    }
   }
 
   function parseJson(value) {
@@ -305,7 +277,6 @@
     }
 
     removeOverlay();
-    stopWatchdog();
 
     overlay = document.createElement("div");
     overlay.id = OVERLAY_ID;
@@ -453,7 +424,7 @@
     }
   }
 
-  function readTizenInfo() {
+  function readTizenInfo(includeDeviceDetails) {
     var platformVersion = "";
     var firmwareVersion = "";
     var modelName = "";
@@ -464,12 +435,14 @@
         );
       }
     } catch (ignored) {}
-    try {
-      if (window.webapis && window.webapis.productinfo) {
-        firmwareVersion = String(window.webapis.productinfo.getFirmware() || "");
-        modelName = String(window.webapis.productinfo.getModel() || "");
-      }
-    } catch (ignored) {}
+    if (includeDeviceDetails) {
+      try {
+        if (window.webapis && window.webapis.productinfo) {
+          firmwareVersion = String(window.webapis.productinfo.getFirmware() || "");
+          modelName = String(window.webapis.productinfo.getModel() || "");
+        }
+      } catch (ignored) {}
+    }
     if (!platformVersion) {
       platformVersion =
         (String((window.navigator && window.navigator.userAgent) || "").match(
@@ -521,10 +494,13 @@
     }
 
     if (options.platform === "tizen") {
-      info = readTizenInfo();
+      // ProductInfo is only used to enrich the unsupported-device screen.
+      // Avoid invoking Samsung's optional ProductInfo methods on supported
+      // devices, where some firmware logs a misleading numeric status.
+      info = readTizenInfo(false);
       decision = compatibilityDecision(info, options);
       if (decision === "unsupported") {
-        renderUnsupported(info);
+        renderUnsupported(readTizenInfo(true));
         return;
       }
       onSupported();
@@ -654,7 +630,6 @@
     stage: function stage(name) {
       if (active && name) {
         lastStage = String(name);
-        scheduleWatchdog();
       }
     },
 
@@ -668,7 +643,6 @@
 
     ready: function ready() {
       active = false;
-      stopWatchdog();
       removeOverlay();
     },
 
@@ -710,6 +684,4 @@
       }
     });
   }
-
-  scheduleWatchdog();
 })(window, document);

@@ -3,9 +3,11 @@ import { ScreenUtils } from "../../navigation/screen.js";
 import { addonRepository } from "../../../data/repository/addonRepository.js";
 import { catalogRepository } from "../../../data/repository/catalogRepository.js";
 import { watchedItemsRepository } from "../../../data/repository/watchedItemsRepository.js";
+import { watchedTitleStateRepository } from "../../../data/repository/watchedTitleStateRepository.js";
 import { LayoutPreferences } from "../../../data/local/layoutPreferences.js";
 import { I18n } from "../../../i18n/index.js";
 import { Platform } from "../../../platform/index.js";
+import { MODERN_HOME_CONSTANTS } from "../home/modernHomeLayout.js";
 import { renderContentFilterPicker } from "../../components/filterPicker.js";
 import {
   PosterOptionsDialogController,
@@ -17,13 +19,26 @@ import {
   renderTitleWatchedBadge
 } from "../../components/watchedTitleBadge.js";
 import {
+  activateLegacySidebarAction,
+  bindRootSidebarEvents,
   focusWithoutAutoScroll,
+  getRootSidebarNodes,
+  getRootSidebarSelectedNode,
+  getSidebarProfileState,
+  isRootSidebarNode,
+  isSelectedSidebarAction,
+  renderRootSidebar,
+  setModernSidebarExpanded,
+  setModernSidebarPillIconOnly,
   setLegacySidebarExpanded
 } from "../../components/sidebarNavigation.js";
 import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
+import { allowDpadRepeat, resetDpadRepeat } from "../../navigation/dpadRepeatThrottle.js";
+import { catalogSkipStep, catalogSupportsExtra } from "../../../core/addons/homeCatalogs.js";
 
 const POSTER_HOLD_DELAY_MS = 650;
 const PICKER_MENU_EXIT_MS = 160;
+const DISCOVER_POSTER_PREFETCH_MARGIN_PX = 640;
 
 function toTitleCase(value) {
   const raw = String(value || "").trim();
@@ -47,7 +62,7 @@ function escapeHtml(value) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
+    .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
 
@@ -232,9 +247,15 @@ export const DiscoverScreen = {
     });
   },
 
-  async refreshWatchedTitleIds() {
+  async refreshWatchedTitleIds(items = this.items) {
     const watchedItems = await watchedItemsRepository.getAll(5000).catch(() => []);
-    this.watchedTitleIds = buildWatchedTitleIdSet(watchedItems);
+    const projectedItems = await watchedTitleStateRepository
+      .getTitleWatchedItems(Array.isArray(items) ? items : [], {
+        baseWatchedItems: watchedItems,
+        limit: 5000
+      })
+      .catch(() => watchedItems);
+    this.watchedTitleIds = buildWatchedTitleIdSet(projectedItems);
   },
 
   getRouteStateKey() {
@@ -261,7 +282,10 @@ export const DiscoverScreen = {
         this.rowFocusedIndexByRow && typeof this.rowFocusedIndexByRow === "object"
           ? { ...this.rowFocusedIndexByRow }
           : {},
-      focusZone: String(this.focusZone || "content")
+      focusZone: String(this.focusZone || "content"),
+      sidebarExpanded: Boolean(this.sidebarExpanded),
+      sidebarFocusIndex: Number(this.sidebarFocusIndex || 0),
+      pillIconOnly: Boolean(this.pillIconOnly)
     };
   },
 
@@ -286,6 +310,9 @@ export const DiscoverScreen = {
         ? { ...snapshot.rowFocusedIndexByRow }
         : {};
     this.focusZone = String(snapshot.focusZone || "content");
+    this.sidebarExpanded = Boolean(this.layoutPrefs?.modernSidebar && snapshot.sidebarExpanded);
+    this.sidebarFocusIndex = Number(snapshot.sidebarFocusIndex || 0);
+    this.pillIconOnly = Boolean(snapshot.pillIconOnly);
     this.loading = false;
     this.updateCatalogOptions();
     this.pendingRestoreFocus = true;
@@ -293,12 +320,24 @@ export const DiscoverScreen = {
     return true;
   },
 
-  async mount(params = {}, navigationContext = {}) {
+  async mount(_params = {}, navigationContext = {}) {
     this.container = document.getElementById("discover");
     ScreenUtils.show(this.container);
     this.layoutPrefs = LayoutPreferences.get();
+    const sidebarProfilePromise = getSidebarProfileState().catch((err) => {
+      console.warn("Discover sidebar profile failed to load", err);
+      return null;
+    });
+    try {
+      this.sidebarProfile = await getSidebarProfileState({ cacheOnly: true });
+    } catch (err) {
+      console.warn("Discover cached sidebar profile failed to load", err);
+      this.sidebarProfile = null;
+    }
     this.sidebarExpanded = false;
     this.focusZone = "content";
+    this.sidebarFocusIndex = 0;
+    this.pillIconOnly = false;
     this.discoverRouteEnterPending = true;
     this.suppressInitialLoadingRenders = true;
     this.loadToken = (this.loadToken || 0) + 1;
@@ -329,29 +368,55 @@ export const DiscoverScreen = {
     this.rowFocusedIndexByRow = {};
     this.pendingRestoreFocus = false;
     this.preserveViewportOnNextRender = false;
+    this.discoverVerticalFastScrollState = null;
+    this.discoverVerticalFastScrollEndTimer = null;
     this.nextSkip = 0;
     this.hasMore = true;
-    await this.refreshWatchedTitleIds();
-
-    if (
+    const routeLoadToken = this.loadToken;
+    const hasRestoredRouteState = Boolean(
       navigationContext?.isBackNavigation &&
       this.hydrateFromRouteState(navigationContext?.restoredState || null)
-    ) {
-      this.render();
-      return;
-    }
+    );
 
-    try {
-      await this.loadCatalogsAndContent();
-    } catch (err) {
-      console.error("discoverScreen: Failed to load content", err);
-      this.loading = false;
-      this.items = [];
-      this.suppressInitialLoadingRenders = false;
-      this.requestRender();
-    } finally {
-      this.suppressInitialLoadingRenders = false;
-    }
+    // Android composes the Discover surface before watched-state and catalog
+    // IO completes. Keep the Smart TV filters/focus surface responsive while
+    // the initial content request continues asynchronously.
+    this.render();
+
+    void sidebarProfilePromise.then((profile) => {
+      if (!profile || routeLoadToken !== this.loadToken || Router.getCurrent() !== "discover") {
+        return;
+      }
+      // This is cosmetic state; defer repainting so a late avatar response
+      // cannot replace the user's active picker or focused card.
+      this.sidebarProfile = profile;
+    });
+
+    void (async () => {
+      try {
+        await this.refreshWatchedTitleIds();
+        if (routeLoadToken !== this.loadToken || Router.getCurrent() !== "discover") {
+          return;
+        }
+        if (hasRestoredRouteState) {
+          this.suppressInitialLoadingRenders = false;
+          this.requestRender();
+          return;
+        }
+        await this.loadCatalogsAndContent();
+      } catch (err) {
+        if (routeLoadToken !== this.loadToken || Router.getCurrent() !== "discover") {
+          return;
+        }
+        console.error("discoverScreen: Failed to load content", err);
+        this.loading = false;
+        this.items = [];
+        this.suppressInitialLoadingRenders = false;
+        this.requestRender();
+      } finally {
+        this.suppressInitialLoadingRenders = false;
+      }
+    })();
   },
 
   async loadCatalogsAndContent() {
@@ -366,7 +431,10 @@ export const DiscoverScreen = {
         // Catalogs that merely support optional search are still browsable and
         // belong in Discover (e.g. some addons declare an optional search extra).
         const isSearchOnly = (catalog.extra || []).some(
-          (extra) => extra?.name === "search" && Boolean(extra?.isRequired)
+          (extra) =>
+            String(extra?.name || "")
+              .trim()
+              .toLowerCase() === "search" && Boolean(extra?.isRequired)
         );
         if (isSearchOnly) return;
         const type = String(catalog.apiType || "").trim();
@@ -379,7 +447,9 @@ export const DiscoverScreen = {
           catalogId: catalog.id,
           catalogName: catalog.name || catalog.id,
           type,
-          extra: Array.isArray(catalog.extra) ? catalog.extra : []
+          extra: Array.isArray(catalog.extra) ? catalog.extra : [],
+          supportsSkip: catalogSupportsExtra(catalog, "skip"),
+          skipStep: catalogSkipStep(catalog)
         });
       });
     });
@@ -407,7 +477,12 @@ export const DiscoverScreen = {
   updateGenreOptions() {
     const selectedCatalog =
       this.catalogOptions.find((entry) => entry.key === this.selectedCatalogKey) || null;
-    const genreExtra = (selectedCatalog?.extra || []).find((extra) => extra?.name === "genre");
+    const genreExtra = (selectedCatalog?.extra || []).find(
+      (extra) =>
+        String(extra?.name || "")
+          .trim()
+          .toLowerCase() === "genre"
+    );
     const genres = Array.isArray(genreExtra?.options) ? genreExtra.options.filter(Boolean) : [];
     this.genreOptions = ["Default", ...genres];
     if (!this.genreOptions.includes(this.selectedGenre)) {
@@ -446,7 +521,7 @@ export const DiscoverScreen = {
                  <div class="seeall-card-poster-wrap">
                    ${
                      item.poster
-                       ? `<img class="seeall-card-poster-image" src="${escapeHtml(item.poster)}" alt="${escapeHtml(item.name || "content")}" loading="lazy" decoding="async" />`
+                       ? `<img class="seeall-card-poster-image" data-src="${escapeHtml(item.poster)}" alt="${escapeHtml(item.name || "content")}" loading="lazy" decoding="async" />`
                        : `<div class="seeall-card-poster placeholder"></div>`
                    }
                    ${isTitleItemWatched(item, this.watchedTitleIds) ? renderTitleWatchedBadge() : ""}
@@ -554,6 +629,7 @@ export const DiscoverScreen = {
       extraArgs.genre = this.selectedGenre;
     }
 
+    const skip = Math.max(0, Number(this.nextSkip || 0));
     const result = await catalogRepository.getCatalog({
       addonBaseUrl: selectedCatalog.addonBaseUrl,
       addonId: selectedCatalog.addonId,
@@ -561,9 +637,10 @@ export const DiscoverScreen = {
       catalogId: selectedCatalog.catalogId,
       catalogName: selectedCatalog.catalogName,
       type: selectedCatalog.type,
-      skip: Math.max(0, Number(this.nextSkip || 0)),
+      skip,
+      skipStep: selectedCatalog.skipStep,
       extraArgs,
-      supportsSkip: true
+      supportsSkip: selectedCatalog.supportsSkip !== false
     });
 
     if (token !== this.loadToken) return;
@@ -587,7 +664,8 @@ export const DiscoverScreen = {
     } else if (!this.items.length) {
       this.items = [];
     }
-    if (incoming.length) {
+    const reportedNextSkip = Number(result?.data?.nextSkip);
+    if (incoming.length || (selectedCatalog.supportsSkip !== false && result?.data?.hasMore)) {
       const seen = new Set(this.items.map((item) => item.id));
       incoming.forEach((item) => {
         if (!item?.id || seen.has(item.id)) {
@@ -597,9 +675,12 @@ export const DiscoverScreen = {
         this.items.push(item);
         addedCount += 1;
       });
-      this.nextSkip = Math.max(0, Number(this.nextSkip || 0)) + 100;
+      this.nextSkip =
+        Number.isFinite(reportedNextSkip) && reportedNextSkip > skip
+          ? Math.trunc(reportedNextSkip)
+          : skip + (incoming.length || selectedCatalog.skipStep || 100);
     }
-    this.hasMore = incoming.length > 0;
+    this.hasMore = selectedCatalog.supportsSkip !== false && Boolean(result?.data?.hasMore);
     this.loading = false;
     if (!this.lastFocusedKey && this.items[0]?.id) {
       this.lastFocusedKey = `item:${this.items[0].id}`;
@@ -608,6 +689,11 @@ export const DiscoverScreen = {
     this.pendingRestoreFocus = Boolean(restoreFocusToGrid);
     this.preserveViewportOnNextRender = Boolean(preserveViewport && addedCount > 0);
     this.suppressInitialLoadingRenders = false;
+    void this.refreshWatchedTitleIds(this.items).then(() => {
+      if (token === this.loadToken && Router.getCurrent() === "discover") {
+        this.requestRender();
+      }
+    });
     if (partialRender) {
       this.updateRenderedDiscoverResults();
     } else {
@@ -768,6 +854,12 @@ export const DiscoverScreen = {
     ScreenUtils.indexFocusables(this.container);
     this.buildNavigationModel();
     this.bindCardEvents();
+    this.scheduleDiscoverPosterHydration();
+
+    if (this.isSidebarRootRoute() && this.focusZone === "sidebar") {
+      this.focusSidebarNode();
+      return;
+    }
 
     const focusedFilter = this.container.querySelector(".discover-filter.focused");
     if (focusedFilter instanceof HTMLElement) {
@@ -807,7 +899,9 @@ export const DiscoverScreen = {
         : kind === "catalog"
           ? "discoverFilterCatalog"
           : "discoverFilterGenre";
-    this.requestRender();
+    if (!this.updateRenderedPickerRow()) {
+      this.requestRender();
+    }
   },
 
   closePickerMenu() {
@@ -1201,13 +1295,20 @@ export const DiscoverScreen = {
     };
   },
 
-  resolvePreferredNodeForRow(rowNodes = []) {
+  resolvePreferredNodeForRow(rowNodes = [], preferredCol = undefined) {
     if (!Array.isArray(rowNodes) || !rowNodes.length) {
       return null;
     }
     const rowIndex = Number(rowNodes[0]?.dataset?.navRow || -1);
     const storedIndex = rowIndex >= 0 ? Number(this.rowFocusedIndexByRow?.[rowIndex]) : Number.NaN;
-    const preferredIndex = Number.isFinite(storedIndex) ? storedIndex : 0;
+    const currentCol = Number(preferredCol);
+    // Android TV keeps vertical D-pad movement in the current grid column.
+    // A row's remembered index is only a fallback for callers without a current column.
+    const preferredIndex = Number.isFinite(currentCol)
+      ? currentCol
+      : Number.isFinite(storedIndex)
+        ? storedIndex
+        : 0;
     return rowNodes[Math.max(0, Math.min(rowNodes.length - 1, preferredIndex))] || rowNodes[0];
   },
 
@@ -1250,6 +1351,133 @@ export const DiscoverScreen = {
       setLegacySidebarExpanded(this.container, false);
     }
     return true;
+  },
+
+  endDiscoverVerticalFastScroll({ land = true } = {}) {
+    const state = this.discoverVerticalFastScrollState || null;
+    if (state?.raf) {
+      cancelAnimationFrame(state.raf);
+    }
+    if (this.discoverVerticalFastScrollEndTimer) {
+      clearTimeout(this.discoverVerticalFastScrollEndTimer);
+      this.discoverVerticalFastScrollEndTimer = null;
+    }
+    this.discoverVerticalFastScrollState = null;
+    if (land && state?.direction) {
+      this.landDiscoverVerticalFastScroll(state.direction, state.startColumn);
+    }
+  },
+
+  canDiscoverVerticalFastScroll(scroller, direction) {
+    if (!scroller || !direction) {
+      return false;
+    }
+    const maxScrollTop = Math.max(
+      0,
+      Number(scroller.scrollHeight || 0) - Number(scroller.clientHeight || 0)
+    );
+    const scrollTop = Number(scroller.scrollTop || 0);
+    return direction > 0 ? scrollTop < maxScrollTop - 1 : scrollTop > 1;
+  },
+
+  startDiscoverVerticalFastScroll(direction) {
+    const scroller = this.getContentScroller();
+    const current = this.container?.querySelector(".discover-grid .seeall-card.focused") || null;
+    if (!scroller || !direction || !current) {
+      return false;
+    }
+    if (!this.canDiscoverVerticalFastScroll(scroller, direction)) {
+      this.endDiscoverVerticalFastScroll({ land: true });
+      return true;
+    }
+
+    const existing = this.discoverVerticalFastScrollState;
+    if (existing?.raf && existing.direction === direction) {
+      this.armDiscoverVerticalFastScrollEndTimer();
+      return true;
+    }
+
+    this.endDiscoverVerticalFastScroll({ land: true });
+    const state = {
+      scroller,
+      direction,
+      startColumn: Number(current.dataset.navCol || 0),
+      raf: null,
+      lastTime: performance.now()
+    };
+    const tick = (now) => {
+      if (this.discoverVerticalFastScrollState !== state) {
+        return;
+      }
+      if (!scroller.isConnected) {
+        this.endDiscoverVerticalFastScroll({ land: false });
+        return;
+      }
+      const dtMs = Math.min(
+        MODERN_HOME_CONSTANTS.verticalFastScrollMaxFrameMs,
+        Math.max(0, now - state.lastTime)
+      );
+      state.lastTime = now;
+      const maxScrollTop = Math.max(
+        0,
+        Number(scroller.scrollHeight || 0) - Number(scroller.clientHeight || 0)
+      );
+      const currentTop = Number(scroller.scrollTop || 0);
+      const delta =
+        state.direction * MODERN_HOME_CONSTANTS.verticalFastScrollVelocityPxPerSec * (dtMs / 1000);
+      const nextTop = Math.max(0, Math.min(maxScrollTop, currentTop + delta));
+      scroller.scrollTop = nextTop;
+      this.savedScrollTop = nextTop;
+      if (Math.abs(nextTop - currentTop) <= 0.1 || nextTop <= 0 || nextTop >= maxScrollTop) {
+        this.endDiscoverVerticalFastScroll({ land: true });
+        return;
+      }
+      state.raf = requestAnimationFrame(tick);
+    };
+
+    this.discoverVerticalFastScrollState = state;
+    state.raf = requestAnimationFrame(tick);
+    this.armDiscoverVerticalFastScrollEndTimer();
+    return true;
+  },
+
+  armDiscoverVerticalFastScrollEndTimer() {
+    if (this.discoverVerticalFastScrollEndTimer) {
+      clearTimeout(this.discoverVerticalFastScrollEndTimer);
+    }
+    this.discoverVerticalFastScrollEndTimer = setTimeout(() => {
+      this.discoverVerticalFastScrollEndTimer = null;
+      this.endDiscoverVerticalFastScroll({ land: true });
+    }, MODERN_HOME_CONSTANTS.verticalFastScrollEndTimeoutMs);
+  },
+
+  landDiscoverVerticalFastScroll(direction, startColumn) {
+    const scroller = this.getContentScroller();
+    if (!scroller) {
+      return;
+    }
+    const scrollerRect = scroller.getBoundingClientRect();
+    const visibleCards = Array.from(
+      this.container?.querySelectorAll(".discover-grid .seeall-card.focusable") || []
+    )
+      .map((node) => {
+        const rect = node.getBoundingClientRect();
+        const overlap =
+          Math.min(rect.bottom, scrollerRect.bottom) - Math.max(rect.top, scrollerRect.top);
+        return overlap > 0 ? node : null;
+      })
+      .filter(Boolean);
+    if (!visibleCards.length) {
+      return;
+    }
+    const sameColumn = visibleCards.filter(
+      (node) => Number(node.dataset.navCol || -1) === Number(startColumn)
+    );
+    const candidates = sameColumn.length ? sameColumn : visibleCards;
+    const target = direction > 0 ? candidates[candidates.length - 1] : candidates[0];
+    if (target) {
+      this.focusNode(target);
+    }
   },
 
   getContentScroller() {
@@ -1302,7 +1530,7 @@ export const DiscoverScreen = {
     if (!targetRowNodes?.length) {
       return true;
     }
-    return this.focusNode(this.resolvePreferredNodeForRow(targetRowNodes)) || true;
+    return this.focusNode(this.resolvePreferredNodeForRow(targetRowNodes, col)) || true;
   },
 
   focusFirstContentCard() {
@@ -1375,7 +1603,48 @@ export const DiscoverScreen = {
 
   async closeSidebarToContent() {
     this.focusZone = "content";
+    if (this.layoutPrefs?.modernSidebar && this.sidebarExpanded) {
+      this.sidebarExpanded = false;
+      setModernSidebarExpanded(this.container, false);
+    } else if (!this.layoutPrefs?.modernSidebar) {
+      setLegacySidebarExpanded(this.container, false);
+    }
     return this.restoreContentFocus() || true;
+  },
+
+  isSidebarRootRoute() {
+    return String(this.layoutPrefs?.discoverLocation || "in_search") === "in_sidebar";
+  },
+
+  focusSidebarNode(preferredNode = null) {
+    const nodes = getRootSidebarNodes(this.container, this.layoutPrefs);
+    const target =
+      preferredNode ||
+      getRootSidebarSelectedNode(this.container, this.layoutPrefs) ||
+      nodes[0] ||
+      null;
+    if (!target) return false;
+    this.container?.querySelectorAll(".focusable.focused").forEach((node) => {
+      if (node !== target) node.classList.remove("focused");
+    });
+    target.classList.add("focused");
+    focusWithoutAutoScroll(target);
+    this.focusZone = "sidebar";
+    this.sidebarFocusIndex = Math.max(0, nodes.indexOf(target));
+    return true;
+  },
+
+  async openSidebar() {
+    if (!this.isSidebarRootRoute()) return false;
+    this.captureViewState();
+    this.focusZone = "sidebar";
+    if (this.layoutPrefs?.modernSidebar && !this.sidebarExpanded) {
+      this.sidebarExpanded = true;
+      setModernSidebarExpanded(this.container, true);
+    } else if (!this.layoutPrefs?.modernSidebar) {
+      setLegacySidebarExpanded(this.container, true);
+    }
+    return this.focusSidebarNode();
   },
 
   getKindFromFilterAction(action) {
@@ -1416,10 +1685,80 @@ export const DiscoverScreen = {
     });
   },
 
+  renderPickerRowMarkup() {
+    const selectedCatalog = this.getSelectedCatalog();
+    return [
+      this.renderFilterPicker("type", "Type", formatAddonTypeLabel(this.selectedType)),
+      this.renderFilterPicker("catalog", "Catalog", selectedCatalog?.catalogName || "Select"),
+      this.renderFilterPicker("genre", "Genre", this.selectedGenre || "Default")
+    ].join("");
+  },
+
+  renderPickerMarkup(kind) {
+    if (kind === "type") {
+      return this.renderFilterPicker("type", "Type", formatAddonTypeLabel(this.selectedType));
+    }
+    if (kind === "catalog") {
+      return this.renderFilterPicker(
+        "catalog",
+        "Catalog",
+        this.getSelectedCatalog()?.catalogName || "Select"
+      );
+    }
+    if (kind === "genre") {
+      return this.renderFilterPicker("genre", "Genre", this.selectedGenre || "Default");
+    }
+    return "";
+  },
+
+  updateRenderedPickerRow() {
+    const pickerRow = this.container?.querySelector("#discoverPickerRow");
+    if (!(pickerRow instanceof HTMLElement)) {
+      return false;
+    }
+
+    const pickerKind = this.openPicker;
+    const currentPicker = pickerKind
+      ? pickerRow
+          .querySelector(`.library-picker-anchor[data-picker="${pickerKind}"]`)
+          ?.closest(".library-picker")
+      : null;
+    if (!(currentPicker instanceof HTMLElement)) {
+      return false;
+    }
+
+    const previousPicker = pickerRow.querySelector(".library-picker.open");
+    if (previousPicker && previousPicker !== currentPicker) {
+      // Pointer activation can switch pickers without going through the D-pad
+      // close path. Remove the old menu before replacing only the new picker.
+      this.closePickerMenuInDom(this.lastFocusedAction);
+    }
+
+    if (currentPicker.classList.contains("open") && this.lastRenderedOpenPicker === pickerKind) {
+      this.applyOpenPickerOptionFocus();
+      this.syncOpenPickerScroll();
+      return true;
+    }
+
+    currentPicker.outerHTML = this.renderPickerMarkup(pickerKind);
+    const renderedPicker = pickerRow
+      .querySelector(`.library-picker-anchor[data-picker="${pickerKind}"]`)
+      ?.closest(".library-picker");
+    this.lastRenderedOpenPicker = this.openPicker || null;
+    // Only the active picker was replaced. Keep the poster grid and the other
+    // picker nodes alive, and avoid scanning every card on constrained Tizen.
+    if (renderedPicker instanceof HTMLElement) {
+      ScreenUtils.indexFocusables(renderedPicker);
+    }
+    this.restoreContentFocus({ scrollMode: "none" });
+    this.syncOpenPickerScroll();
+    return true;
+  },
+
   render() {
     this.cancelScheduledRender();
     this.layoutPrefs = LayoutPreferences.get();
-    this.sidebarExpanded = false;
+    const showRootSidebar = this.isSidebarRootRoute();
     const openPicker = this.openPicker || null;
     if (this.lastRenderedOpenPicker && this.lastRenderedOpenPicker !== openPicker) {
       this.startClosingPicker(this.lastRenderedOpenPicker);
@@ -1442,7 +1781,18 @@ export const DiscoverScreen = {
     this.discoverRouteEnterPending = false;
 
     this.container.innerHTML = `
-      <div class="home-shell search-screen-shell discover-shell">
+      <div class="home-shell search-screen-shell discover-shell${showRootSidebar ? " discover-root-route" : ""}">
+        ${
+          showRootSidebar
+            ? renderRootSidebar({
+                selectedRoute: "discover",
+                profile: this.sidebarProfile,
+                layout: this.layoutPrefs,
+                expanded: Boolean(this.sidebarExpanded),
+                pillIconOnly: Boolean(this.pillIconOnly)
+              })
+            : ""
+        }
         <main class="home-main discover-main${enterClass}">
           <div class="seeall-shell discover-seeall-shell">
             <header class="seeall-header discover-header">
@@ -1450,9 +1800,7 @@ export const DiscoverScreen = {
               <div class="seeall-subtitle" id="discoverContextLabel">${escapeHtml(contextLabel)}</div>
             </header>
             <section class="library-picker-row discover-picker-row" id="discoverPickerRow">
-              ${this.renderFilterPicker("type", "Type", formatAddonTypeLabel(this.selectedType))}
-              ${this.renderFilterPicker("catalog", "Catalog", selectedCatalog?.catalogName || "Select")}
-              ${this.renderFilterPicker("genre", "Genre", this.selectedGenre || "Default")}
+              ${this.renderPickerRowMarkup()}
             </section>
             <section class="seeall-grid discover-grid" id="discoverGridMount">
               ${cards}
@@ -1465,22 +1813,85 @@ export const DiscoverScreen = {
 
     ScreenUtils.indexFocusables(this.container);
     this.buildNavigationModel();
+    if (showRootSidebar) {
+      bindRootSidebarEvents(this.container, {
+        currentRoute: "discover",
+        onSelectedAction: () => this.closeSidebarToContent(),
+        onExpandSidebar: () => this.openSidebar()
+      });
+    }
     this.bindCardEvents();
     this.bindShellEvents();
     this.bindPointerEvents();
+    this.scheduleDiscoverPosterHydration();
     if (this.pendingRestoreFocus) {
       const scrollMode = this.preserveViewportOnNextRender ? "none" : "center";
       this.pendingRestoreFocus = false;
       this.preserveViewportOnNextRender = false;
-      this.restoreFocusedCard({ scrollMode });
+      if (showRootSidebar && this.focusZone === "sidebar") {
+        this.focusSidebarNode();
+      } else {
+        this.restoreFocusedCard({ scrollMode });
+      }
       this.syncOpenPickerScroll();
       return;
     }
     this.restoreScrollState();
     const scrollMode = this.preserveViewportOnNextRender ? "none" : "center";
     this.preserveViewportOnNextRender = false;
-    this.restoreContentFocus({ scrollMode });
+    if (showRootSidebar && this.focusZone === "sidebar") {
+      this.focusSidebarNode();
+    } else {
+      this.restoreContentFocus({ scrollMode });
+    }
     this.syncOpenPickerScroll();
+  },
+
+  scheduleDiscoverPosterHydration() {
+    if (!this.container || this.discoverPosterHydrationRaf) {
+      return;
+    }
+    if (typeof requestAnimationFrame !== "function") {
+      this.hydrateDiscoverPosterImages();
+      return;
+    }
+    this.discoverPosterHydrationRaf = requestAnimationFrame(() => {
+      this.discoverPosterHydrationRaf = 0;
+      this.hydrateDiscoverPosterImages();
+    });
+  },
+
+  hydrateDiscoverPosterImages() {
+    const scroller = this.getContentScroller();
+    if (!scroller) {
+      return;
+    }
+    const viewport = scroller.getBoundingClientRect();
+    const margin = DISCOVER_POSTER_PREFETCH_MARGIN_PX;
+    this.container?.querySelectorAll(".discover-card-poster-image[data-src]").forEach((image) => {
+      if (!(image instanceof HTMLImageElement) || !image.isConnected) {
+        return;
+      }
+      const rect = image.getBoundingClientRect();
+      const isNearViewport =
+        rect.bottom >= viewport.top - margin &&
+        rect.top <= viewport.bottom + margin &&
+        rect.right >= viewport.left - margin &&
+        rect.left <= viewport.right + margin;
+      if (!isNearViewport) {
+        return;
+      }
+      const src = String(image.dataset.src || "").trim();
+      if (!src) {
+        image.removeAttribute("data-src");
+        return;
+      }
+      // The app owns the visible-image decision. Do not delegate it to native
+      // lazy loading, which can delay posters inside the TV scroll container.
+      image.loading = "eager";
+      image.removeAttribute("data-src");
+      image.src = src;
+    });
   },
 
   bindCardEvents() {
@@ -1493,6 +1904,7 @@ export const DiscoverScreen = {
           node.dataset.itemId || this.lastFocusedDiscoverItemId || ""
         );
         this.savedScrollTop = this.container?.querySelector(".discover-main")?.scrollTop || 0;
+        this.scheduleDiscoverPosterHydration();
       });
       node.addEventListener("mouseenter", () => {
         this.lastFocusedKey = node.dataset.focusKey || this.lastFocusedKey;
@@ -1513,6 +1925,7 @@ export const DiscoverScreen = {
       "scroll",
       () => {
         this.savedScrollTop = Number(scroller.scrollTop || 0);
+        this.scheduleDiscoverPosterHydration();
         if (this.shouldAutoLoadMoreFromScroll(scroller)) {
           this.loadNextPage({ preserveViewport: true });
         }
@@ -1572,6 +1985,14 @@ export const DiscoverScreen = {
         Router.suppressNextPopstate?.();
         return;
       }
+      if (this.isSidebarRootRoute()) {
+        if (this.focusZone === "sidebar") {
+          Platform.exitApp();
+        } else {
+          await this.openSidebar();
+        }
+        return;
+      }
       await Router.back();
       return;
     }
@@ -1585,6 +2006,45 @@ export const DiscoverScreen = {
       return;
     }
     const currentAction = String(current?.dataset?.action || "");
+    if (this.layoutPrefs?.modernSidebar && !this.sidebarExpanded) {
+      if (isDownKey(event)) {
+        this.pillIconOnly = true;
+        setModernSidebarPillIconOnly(this.container, true);
+      } else if (isUpKey(event)) {
+        this.pillIconOnly = false;
+        setModernSidebarPillIconOnly(this.container, false);
+      }
+    }
+
+    if (this.focusZone === "sidebar") {
+      const nodes = getRootSidebarNodes(this.container, this.layoutPrefs);
+      if (isUpKey(event) || isDownKey(event) || isRightKey(event)) {
+        event?.preventDefault?.();
+      }
+      if (isUpKey(event) || isDownKey(event)) {
+        const focusedIndex = Math.max(0, nodes.indexOf(current));
+        const nextIndex = Math.max(
+          0,
+          Math.min(nodes.length - 1, focusedIndex + (isUpKey(event) ? -1 : 1))
+        );
+        this.focusSidebarNode(nodes[nextIndex] || current);
+        return;
+      }
+      if (isRightKey(event)) {
+        await this.closeSidebarToContent();
+        return;
+      }
+      if (isEnterKey(event) && current && isRootSidebarNode(current)) {
+        event?.preventDefault?.();
+        const action = String(current.dataset.action || "");
+        activateLegacySidebarAction(action, "discover");
+        if (isSelectedSidebarAction(action, "discover")) {
+          await this.closeSidebarToContent();
+        }
+        return;
+      }
+    }
+
     const focusedFilterKind = this.getKindFromFilterAction(currentAction);
     if (isEnterKey(event) && focusedFilterKind) {
       event?.preventDefault?.();
@@ -1602,6 +2062,36 @@ export const DiscoverScreen = {
     }
     if (isUpKey(event) || isDownKey(event) || isLeftKey(event) || isRightKey(event)) {
       event?.preventDefault?.();
+    }
+
+    const activeFastScroll = this.discoverVerticalFastScrollState || null;
+    const requestedFastScrollDirection = isDownKey(event) ? 1 : isUpKey(event) ? -1 : 0;
+    if (
+      activeFastScroll &&
+      (isLeftKey(event) ||
+        isRightKey(event) ||
+        (!event?.repeat &&
+          requestedFastScrollDirection !== 0 &&
+          requestedFastScrollDirection !== activeFastScroll.direction))
+    ) {
+      this.endDiscoverVerticalFastScroll({ land: true });
+    }
+
+    if (
+      currentAction === "openDetail" &&
+      event?.repeat &&
+      requestedFastScrollDirection !== 0 &&
+      this.startDiscoverVerticalFastScroll(requestedFastScrollDirection)
+    ) {
+      return;
+    }
+
+    if (
+      currentAction === "openDetail" &&
+      (isLeftKey(event) || isRightKey(event)) &&
+      !allowDpadRepeat(this, event, { horizontalMs: 80, verticalMs: 112 })
+    ) {
+      return;
     }
 
     if (this.openPicker) {
@@ -1638,6 +2128,7 @@ export const DiscoverScreen = {
     if (focusedFilterKind) {
       if (isLeftKey(event)) {
         if (currentAction === "discoverFilterType") {
+          await this.openSidebar();
           return;
         }
         this.moveFilterFocus(-1);
@@ -1656,6 +2147,7 @@ export const DiscoverScreen = {
     if (currentAction === "openDetail") {
       if (isLeftKey(event) && Number(current.dataset.navCol || 0) === 0) {
         event?.preventDefault?.();
+        await this.openSidebar();
         return;
       }
       if (isUpKey(event) && Number(current.dataset.navRow || 0) === 0) {
@@ -1686,6 +2178,16 @@ export const DiscoverScreen = {
   },
 
   onKeyUp(event) {
+    const keyCode = Number(event?.keyCode || 0);
+    if ([37, 38, 39, 40].includes(keyCode)) {
+      resetDpadRepeat(this);
+    }
+    if (keyCode === 38 || keyCode === 40) {
+      const releasedDirection = keyCode === 40 ? 1 : -1;
+      if (this.discoverVerticalFastScrollState?.direction === releasedDirection) {
+        this.endDiscoverVerticalFastScroll({ land: true });
+      }
+    }
     if (this.suppressHoldMenuEnterUntilKeyUp) {
       this.suppressHoldMenuEnterUntilKeyUp = false;
       if (Number(event?.keyCode || 0) === 13) {
@@ -1693,7 +2195,7 @@ export const DiscoverScreen = {
         return;
       }
     }
-    if (Number(event?.keyCode || 0) !== 13) {
+    if (keyCode !== 13) {
       return;
     }
     const current =
@@ -1718,7 +2220,13 @@ export const DiscoverScreen = {
 
   cleanup() {
     this.loadToken = (this.loadToken || 0) + 1;
+    resetDpadRepeat(this);
+    this.endDiscoverVerticalFastScroll({ land: false });
     this.cancelScheduledRender();
+    if (this.discoverPosterHydrationRaf) {
+      cancelAnimationFrame(this.discoverPosterHydrationRaf);
+      this.discoverPosterHydrationRaf = 0;
+    }
     this.clearClosingPicker();
     this.lastRenderedOpenPicker = null;
     this.cancelPendingPosterHold();

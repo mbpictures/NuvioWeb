@@ -9,8 +9,83 @@ var SERVICE_ID = "space.nuvio.webos.service";
 var PORT_CANDIDATES = require("./constants").PORT_CANDIDATES;
 var REQUEST_TIMEOUT_MS = 5000;
 
+function patchWebOsMediaRuntimeCode(code, filename) {
+  var source = String(code || "");
+  if (!/media-http\.cjs$/i.test(String(filename || ""))) {
+    return source;
+  }
+
+  // The vendored proxy always passes an https.Agent to node-fetch. node-fetch
+  // rejects that agent for http:// destinations, so an otherwise reachable
+  // HTTP stream is returned as a generic proxy 500. Keep the custom agent for
+  // HTTPS and let node-fetch select its normal HTTP agent for HTTP URLs.
+  var proxyAgentTarget = 'agent:httpsAgent,redirect:"manual"';
+  var proxyAgentReplacement = 'agent:"https:"===dest.protocol?httpsAgent:null,redirect:"manual"';
+  if (source.indexOf(proxyAgentReplacement) < 0 && source.indexOf(proxyAgentTarget) >= 0) {
+    source = source.replace(proxyAgentTarget, proxyAgentReplacement);
+  }
+
+  // The app-side proxy URL builder encodes each header value once before
+  // placing it in the route. The vendored EngineFS HLS rewriter serializes
+  // those propagated headers again for every child URL, so normalize one
+  // existing URI-encoding layer before serializing them or Referer/Origin
+  // values accumulate an extra layer on cross-host requests. Keep this
+  // compatibility patch at the webOS bootstrap boundary because the runtime
+  // is a generated third-party bundle, not source maintained here.
+  // The same runtime also concatenates url.parse(...).search while rewriting
+  // absolute media URLs. Node's legacy parser returns null for a URL without
+  // a query string, so that concatenation produces a literal `null` suffix
+  // (for example, `segment.tsnull`) and sends malformed HLS segment URLs.
+  if (
+    source.indexOf("function encodeProxyHeaderString(") >= 0 &&
+    source.indexOf("decodeURIComponent(parsed[1])") >= 0 &&
+    source.indexOf('lineUrl.pathname+(lineUrl.search||"")') >= 0 &&
+    source.indexOf('urlJoin([virtualRoot,lineUrl.pathname])+(lineUrl.search||"")') >= 0
+  ) {
+    return source;
+  }
+
+  var helperTarget =
+    'function parseHeaderString(headerString){var headerArray=headerString.split(":");return[headerArray.shift(),headerArray.join(":")]}function urlJoin(segments){';
+  var childTarget = '"/proxy/"+querystring.stringify(newOpts)+lineUrl.pathname+lineUrl.search';
+  var sameHostTarget = "urlJoin([virtualRoot,lineUrl.pathname])+lineUrl.search";
+  var rootTarget =
+    '"/"+querystring.stringify(opts);result.body.pipe(getParserStream(virtualRoot,dest))';
+  var targetCount = [helperTarget, childTarget, rootTarget].filter(function (target) {
+    return source.indexOf(target) >= 0;
+  }).length;
+
+  // Allow a future vendored runtime that already contains an equivalent fix,
+  // but fail fast if only part of the known vulnerable shape changed.
+  if (targetCount === 0) {
+    return source;
+  }
+  if (targetCount !== 3) {
+    throw new Error("Unsupported webOS media runtime proxy layout: " + filename);
+  }
+
+  var helperReplacement =
+    'function parseHeaderString(headerString){var headerArray=headerString.split(":");return[headerArray.shift(),headerArray.join(":")]}function encodeProxyHeaderString(headerString){var parsed=parseHeaderString(headerString);try{parsed[1]=decodeURIComponent(parsed[1])}catch(_){ }return parsed[0]+":"+encodeURIComponent(parsed[1])}function stringifyProxyOptions(options,cfgOpts){var serialized=Object.assign({},options);serialized[cfgOpts.DestinationHeader]=ensureArray(serialized[cfgOpts.DestinationHeader]).map(encodeProxyHeaderString);return querystring.stringify(serialized)}function urlJoin(segments){';
+  source = source.replace(helperTarget, helperReplacement);
+  source = source.replace(
+    childTarget,
+    '"/proxy/"+stringifyProxyOptions(newOpts,cfgOpts)+lineUrl.pathname+(lineUrl.search||"")'
+  );
+  source = source.replace(
+    sameHostTarget,
+    'urlJoin([virtualRoot,lineUrl.pathname])+(lineUrl.search||"")'
+  );
+  source = source.replace(
+    rootTarget,
+    '"/"+stringifyProxyOptions(opts,cfgOpts);result.body.pipe(getParserStream(virtualRoot,dest))'
+  );
+
+  return source;
+}
+
 function loadCommonJsScript(filename) {
   var code = fs.readFileSync(filename, "utf8");
+  code = patchWebOsMediaRuntimeCode(code, filename);
   var mod = new Module(filename, module);
   mod.filename = filename;
   mod.paths = Module._nodeModulePaths(path.dirname(filename));
@@ -193,5 +268,6 @@ module.exports = {
   probeLocalServer: probeLocalServer,
   requestLocalHttp: requestLocalHttp,
   requestActiveServerHttp: requestActiveServerHttp,
-  requestActiveServerPath: requestActiveServerPath
+  requestActiveServerPath: requestActiveServerPath,
+  patchWebOsMediaRuntimeCode: patchWebOsMediaRuntimeCode
 };

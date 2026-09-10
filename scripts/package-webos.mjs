@@ -15,10 +15,13 @@ const cacheDir = path.join(rootDir, ".cache");
 const stagingDir = path.join(cacheDir, "webos-package");
 const appStageDir = path.join(stagingDir, "app");
 const serviceStageDir = path.join(stagingDir, "space.nuvio.webos.service");
+const pluginServiceStageDir = path.join(stagingDir, "space.nuvio.webos.plugin.service");
 
 const appName = "Nuvio TV";
 const webOsServiceId = "space.nuvio.webos.service";
+const webOsPluginServiceId = "space.nuvio.webos.plugin.service";
 const webOsServiceSourceDir = path.join(rootDir, "services", "webos");
+const webOsPluginServiceSourceDir = path.join(rootDir, "services", "webos", "plugin");
 const webOsRuntimeScriptPath = "assets/libs/webOSTV.js";
 
 async function assertDistExists() {
@@ -36,6 +39,97 @@ async function pathExists(filePath) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function validateWebOsAppInfo(appInfo) {
+  const requiredFields = ["id", "title", "type", "main", "icon", "version"];
+  const missingField = requiredFields.find((field) => !String(appInfo?.[field] || "").trim());
+  if (missingField) {
+    throw new Error(`webOS appinfo.json is missing required field: ${missingField}`);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(appInfo, "requiredVersion")) {
+    throw new Error(
+      "webOS appinfo.json contains unsupported requiredVersion metadata. " +
+        "The app runtime compatibility gate is maintained in scripts/compatibilityPolicy.mjs."
+    );
+  }
+
+  if (!/^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(String(appInfo.iconColor || ""))) {
+    throw new Error("webOS appinfo.json requires a valid iconColor in #RRGGBB or #RRGGBBAA form.");
+  }
+
+  if (String(appInfo.title).length > 20) {
+    throw new Error("webOS appinfo.json title must be 20 characters or fewer.");
+  }
+  if (String(appInfo.appDescription || "").length > 60) {
+    throw new Error("webOS appinfo.json appDescription must be 60 characters or fewer.");
+  }
+
+  const appId = String(appInfo.id);
+  const services = Array.isArray(appInfo.services) ? appInfo.services : [];
+  if (services.some((serviceId) => !String(serviceId).startsWith(`${appId}.`))) {
+    throw new Error("webOS service IDs must begin with the application ID followed by a dot.");
+  }
+}
+
+async function validatePngDimensions(filePath, expectedWidth, expectedHeight, label) {
+  const image = await readFile(filePath);
+  const isPng =
+    image.length >= 24 &&
+    image.readUInt32BE(0) === 0x89504e47 &&
+    image.readUInt32BE(4) === 0x0d0a1a0a;
+  if (
+    !isPng ||
+    image.readUInt32BE(16) !== expectedWidth ||
+    image.readUInt32BE(20) !== expectedHeight
+  ) {
+    throw new Error(
+      `${label} must be a PNG of exactly ${expectedWidth}x${expectedHeight}: ${filePath}`
+    );
+  }
+}
+
+async function validateOpaquePng(filePath, label) {
+  const image = await readFile(filePath);
+  const isPng =
+    image.length >= 26 &&
+    image.readUInt32BE(0) === 0x89504e47 &&
+    image.readUInt32BE(4) === 0x0d0a1a0a;
+  const colorType = isPng ? image.readUInt8(25) : -1;
+  if (!isPng || colorType === 4 || colorType === 6) {
+    throw new Error(`${label} must use an opaque PNG color type: ${filePath}`);
+  }
+
+  let offset = 8;
+  while (offset + 12 <= image.length) {
+    const chunkLength = image.readUInt32BE(offset);
+    const chunkType = image.toString("ascii", offset + 4, offset + 8);
+    if (chunkType === "tRNS") {
+      throw new Error(`${label} must not contain a transparency chunk: ${filePath}`);
+    }
+    offset += chunkLength + 12;
+  }
+}
+
+function validateWebOsServiceManifest(serviceManifest, expectedId = webOsServiceId) {
+  if (String(serviceManifest?.id || "") !== expectedId) {
+    throw new Error(`webOS services.json must use service id ${expectedId}.`);
+  }
+
+  const services = Array.isArray(serviceManifest?.services) ? serviceManifest.services : [];
+  if (
+    !services.length ||
+    services.some(
+      (service) =>
+        !String(service?.name || "").startsWith(`${expectedId}.`) &&
+        String(service?.name || "") !== expectedId
+    )
+  ) {
+    throw new Error(
+      "Every webOS services.json service name must begin with the application service ID."
+    );
   }
 }
 
@@ -74,6 +168,7 @@ function buildWebOsIndexHtml({ webOsScriptPath = "" } = {}) {
   <script src="boot-guard.js"></script>
   <script src="core-js.bundle.js" onerror="window.NuvioBootGuard &amp;&amp; window.NuvioBootGuard.scriptFailed(this.src)"></script>
   <script>window.__NUVIO_PLATFORM__ = "webos";</script>
+  <script>window.__NUVIO_WEBOS_PLUGIN_SERVICE_ENABLED__ = true; window.__NUVIO_WEBOS_PLUGIN_SERVICE_ID__ = "${webOsPluginServiceId}";</script>
   <script src="nuvio.env.js"></script>
   <script src="assets/libs/qrcode-generator.js"></script>
 ${webOsScriptTag}  <script>
@@ -96,10 +191,31 @@ async function stageApp() {
   appInfo.version = version;
   appInfo.icon = "icon.png";
   appInfo.largeIcon = "largeIcon.png";
-  appInfo.services = [webOsServiceId];
+  appInfo.services = [webOsServiceId, webOsPluginServiceId];
+  validateWebOsAppInfo(appInfo);
   await writeFile(appInfoPath, `${JSON.stringify(appInfo, null, 2)}\n`, "utf8");
 
   await Promise.all([
+    validatePngDimensions(
+      path.join(rootDir, "assets", "images", "icon.png"),
+      80,
+      80,
+      "webOS small icon"
+    ),
+    validatePngDimensions(
+      path.join(rootDir, "assets", "images", "largeIcon.png"),
+      130,
+      130,
+      "webOS large icon"
+    ),
+    validateOpaquePng(path.join(rootDir, "assets", "images", "icon.png"), "webOS small icon"),
+    validateOpaquePng(path.join(rootDir, "assets", "images", "largeIcon.png"), "webOS large icon"),
+    validatePngDimensions(
+      path.join(rootDir, "assets", "images", "splash.png"),
+      1920,
+      1080,
+      "webOS splash image"
+    ),
     cp(path.join(rootDir, "assets", "images", "icon.png"), path.join(appStageDir, "icon.png")),
     cp(
       path.join(rootDir, "assets", "images", "largeIcon.png"),
@@ -118,7 +234,10 @@ async function stageApp() {
 
 async function stageService() {
   const packageJsonPath = path.join(webOsServiceSourceDir, "package.json");
+  const servicesManifestPath = path.join(webOsServiceSourceDir, "services.json");
   const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+  const servicesManifest = JSON.parse(await readFile(servicesManifestPath, "utf8"));
+  validateWebOsServiceManifest(servicesManifest);
 
   await mkdir(path.join(serviceStageDir, "src"), { recursive: true });
   await mkdir(path.join(serviceStageDir, "runtime"), { recursive: true });
@@ -129,9 +248,10 @@ async function stageService() {
       `${JSON.stringify(packageJson, null, 2)}\n`,
       "utf8"
     ),
-    cp(
-      path.join(webOsServiceSourceDir, "services.json"),
-      path.join(serviceStageDir, "services.json")
+    writeFile(
+      path.join(serviceStageDir, "services.json"),
+      `${JSON.stringify(servicesManifest, null, 2)}\n`,
+      "utf8"
     ),
     cp(
       path.join(webOsServiceSourceDir, "runtime", "media-http.cjs"),
@@ -151,6 +271,39 @@ async function stageService() {
   });
 }
 
+async function stagePluginService() {
+  const packageJsonPath = path.join(webOsPluginServiceSourceDir, "package.json");
+  const servicesManifestPath = path.join(webOsPluginServiceSourceDir, "services.json");
+  const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+  const servicesManifest = JSON.parse(await readFile(servicesManifestPath, "utf8"));
+  validateWebOsServiceManifest(servicesManifest, webOsPluginServiceId);
+
+  await mkdir(path.join(pluginServiceStageDir, "src"), { recursive: true });
+  await Promise.all([
+    writeFile(
+      path.join(pluginServiceStageDir, "package.json"),
+      `${JSON.stringify(packageJson, null, 2)}\n`,
+      "utf8"
+    ),
+    writeFile(
+      path.join(pluginServiceStageDir, "services.json"),
+      `${JSON.stringify(servicesManifest, null, 2)}\n`,
+      "utf8"
+    )
+  ]);
+
+  await build({
+    entryPoints: [path.join(webOsPluginServiceSourceDir, "src", "index.js")],
+    outfile: path.join(pluginServiceStageDir, "src", "index.js"),
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: [`node${compatibilityPolicy.webOsServiceNodeVersion}`],
+    external: ["webos-service"],
+    logLevel: "silent"
+  });
+}
+
 async function packageWebOs() {
   await syncVersionFiles();
   await assertDistExists();
@@ -158,11 +311,17 @@ async function packageWebOs() {
   console.log("staging webOS package files...");
   await rm(stagingDir, { recursive: true, force: true });
   await mkdir(stagingDir, { recursive: true });
-  await Promise.all([stageApp(), stageService()]);
+  await Promise.all([stageApp(), stageService(), stagePluginService()]);
 
   console.log("creating webOS IPK...");
   try {
-    await runWebOsToolsBinary("ares-package", [appStageDir, serviceStageDir, "--outdir", rootDir]);
+    await runWebOsToolsBinary("ares-package", [
+      appStageDir,
+      serviceStageDir,
+      pluginServiceStageDir,
+      "--outdir",
+      rootDir
+    ]);
   } catch (error) {
     const { version } = await readAppMetadata();
     const expectedIpk = path.join(rootDir, `space.nuvio.webos_${version}_all.ipk`);

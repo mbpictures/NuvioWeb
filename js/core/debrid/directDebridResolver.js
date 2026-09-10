@@ -419,6 +419,12 @@ export const DirectDebridResolver = {
     return Boolean(getStreamUrl(stream) || stream.ytId || this.canResolveStream(stream));
   },
 
+  cachedPlayableStream(stream = {}, { season = null, episode = null } = {}) {
+    const key = cacheKeyFor(stream, season, episode);
+    const cached = key ? cachedResult(key) : null;
+    return cached ? withResolvedUrl(stream, cached) : null;
+  },
+
   async resolve(stream = {}, { season = null, episode = null } = {}) {
     if (getStreamUrl(stream)) {
       return { status: "success", stream };

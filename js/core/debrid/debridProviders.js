@@ -11,12 +11,18 @@ export const DEBRID_CAPABILITIES = {
   CLOUD_LIBRARY: "cloudLibrary"
 };
 
+export const DEBRID_AUTH_METHODS = {
+  API_KEY: "apiKey",
+  DEVICE_CODE: "deviceCode"
+};
+
 const PROVIDERS = [
   {
     id: DEBRID_PROVIDER_IDS.TORBOX,
     displayName: "Torbox",
     shortName: "TB",
     visibleInUi: true,
+    authMethod: DEBRID_AUTH_METHODS.DEVICE_CODE,
     apiKeyField: "torboxApiKey",
     capabilities: [
       DEBRID_CAPABILITIES.CLIENT_RESOLVE,
@@ -30,6 +36,7 @@ const PROVIDERS = [
     displayName: "Premiumize",
     shortName: "PM",
     visibleInUi: true,
+    authMethod: DEBRID_AUTH_METHODS.DEVICE_CODE,
     apiKeyField: "premiumizeApiKey",
     capabilities: [
       DEBRID_CAPABILITIES.CLIENT_RESOLVE,
@@ -43,6 +50,7 @@ const PROVIDERS = [
     displayName: "Real-Debrid",
     shortName: "RD",
     visibleInUi: false,
+    authMethod: DEBRID_AUTH_METHODS.API_KEY,
     apiKeyField: "realDebridApiKey",
     capabilities: [DEBRID_CAPABILITIES.CLIENT_RESOLVE]
   }

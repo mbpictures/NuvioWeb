@@ -3,10 +3,13 @@ import { ScreenUtils } from "../../navigation/screen.js";
 import { addonRepository } from "../../../data/repository/addonRepository.js";
 import { catalogRepository } from "../../../data/repository/catalogRepository.js";
 import { watchedItemsRepository } from "../../../data/repository/watchedItemsRepository.js";
+import { watchedTitleStateRepository } from "../../../data/repository/watchedTitleStateRepository.js";
 import { LayoutPreferences } from "../../../data/local/layoutPreferences.js";
 import { I18n } from "../../../i18n/index.js";
 import { Platform } from "../../../platform/index.js";
+import { getTvRuntimePerformanceProfile } from "../../../platform/tvRuntimePerformance.js";
 import { MODERN_HOME_CONSTANTS } from "../home/modernHomeLayout.js";
+import { allowDpadRepeat, resetDpadRepeat } from "../../navigation/dpadRepeatThrottle.js";
 import {
   activateLegacySidebarAction,
   bindRootSidebarEvents,
@@ -31,7 +34,13 @@ import {
   renderTitleWatchedBadge
 } from "../../components/watchedTitleBadge.js";
 import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
-import { buildSearchTargets, catalogSupportsExtra } from "./searchCatalogTargets.js";
+import { filterReleasedItems } from "../../../core/util/releaseInfoUtils.js";
+import {
+  buildSearchScheduleIndices,
+  buildSearchTargets,
+  catalogSkipStep,
+  catalogSupportsExtra
+} from "./searchCatalogTargets.js";
 
 const POSTER_HOLD_DELAY_MS = 650;
 const SEARCH_RESULTS_PER_ROW_DEFAULT = 18;
@@ -127,8 +136,7 @@ function isSearchableCatalogType(type) {
 
 function isPerformanceConstrainedRuntime() {
   return (
-    Platform.isWebOS() ||
-    Platform.isTizen() ||
+    getTvRuntimePerformanceProfile().isPerformanceConstrained ||
     Boolean(globalThis.document?.body?.classList?.contains("performance-constrained"))
   );
 }
@@ -237,13 +245,16 @@ function formatReleaseYear(item = {}) {
   return "";
 }
 
-async function withTimeout(promise, ms, fallbackValue) {
+async function withTimeout(promise, ms, fallbackValue, onTimeout = null) {
   let timer = null;
   try {
     return await Promise.race([
       promise,
       new Promise((resolve) => {
-        timer = setTimeout(() => resolve(fallbackValue), ms);
+        timer = setTimeout(() => {
+          if (typeof onTimeout === "function") onTimeout();
+          resolve(fallbackValue);
+        }, ms);
       })
     ]);
   } finally {
@@ -397,9 +408,18 @@ export const SearchScreen = {
     });
   },
 
-  async refreshWatchedTitleIds() {
+  async refreshWatchedTitleIds(items = null) {
     const watchedItems = await watchedItemsRepository.getAll(5000).catch(() => []);
-    this.watchedTitleIds = buildWatchedTitleIdSet(watchedItems);
+    const catalogItems = Array.isArray(items)
+      ? items
+      : (this.rows || []).flatMap((row) => (Array.isArray(row?.items) ? row.items : []));
+    const projectedItems = await watchedTitleStateRepository
+      .getTitleWatchedItems(catalogItems, {
+        baseWatchedItems: watchedItems,
+        limit: 5000
+      })
+      .catch(() => watchedItems);
+    this.watchedTitleIds = buildWatchedTitleIdSet(projectedItems);
   },
 
   captureLiveViewState() {
@@ -429,10 +449,14 @@ export const SearchScreen = {
     this.searchRouteEnterPending = true;
     this.activationGuardUntil = Date.now() + 220;
     this.layoutPrefs = LayoutPreferences.get();
+    const sidebarProfilePromise = getSidebarProfileState().catch((err) => {
+      console.warn("Search sidebar profile failed to load", err);
+      return null;
+    });
     try {
-      this.sidebarProfile = await getSidebarProfileState();
+      this.sidebarProfile = await getSidebarProfileState({ cacheOnly: true });
     } catch (err) {
-      console.warn("debug: fail on load", err);
+      console.warn("Search cached sidebar profile failed to load", err);
       this.sidebarProfile = null;
     }
     this.sidebarExpanded = false;
@@ -444,7 +468,10 @@ export const SearchScreen = {
     this.rowScrollLeftByKey = {};
     this.rowFocusedIndexByKey = {};
     this.restoredFocusedDescriptor = null;
+    // TV platforms provide voice input through their native keyboard/IME, not
+    // through a supported Web Speech API that an in-app button can start.
     this.voiceSearchSupported =
+      Platform.isBrowser() &&
       typeof window !== "undefined" &&
       (typeof window.SpeechRecognition === "function" ||
         typeof window.webkitSpeechRecognition === "function");
@@ -458,7 +485,6 @@ export const SearchScreen = {
     this.pendingPosterHoldTarget = null;
     this.pendingPosterHoldTimer = null;
     this.hydrateFromRouteState(navigationContext?.restoredState || null, params);
-    await this.refreshWatchedTitleIds();
     if (!navigationContext?.isBackNavigation) {
       this.focusZone = "content";
       this.sidebarExpanded = false;
@@ -466,24 +492,48 @@ export const SearchScreen = {
       this.pillIconOnly = false;
     }
     this.loadToken = (this.loadToken || 0) + 1;
+    const routeLoadToken = this.loadToken;
+    const watchedTitleIdsPromise = this.refreshWatchedTitleIds();
     const hasExplicitQuery = Boolean(String(params.query || "").trim());
     const restoredQuery = String(navigationContext?.restoredState?.query || "").trim();
     const shouldUseRestoredState = Boolean(
       navigationContext?.restoredState &&
       (!hasExplicitQuery || restoredQuery === String(params.query || "").trim())
     );
-    if (shouldUseRestoredState) {
-      this.render();
-      return;
-    }
-    this.renderLoading();
-    try {
-      await this.reloadRows();
-    } catch (err) {
-      console.error("searchScreen: Failed to load rows", err);
-      this.rows = [];
-      this.render();
-    }
+    // Android composes the search surface before catalog and watched-state IO
+    // completes. Paint the Smart TV shell now so the native input and sidebar
+    // remain usable while the row request runs in the background.
+    this.render();
+
+    void sidebarProfilePromise.then((profile) => {
+      if (!profile || routeLoadToken !== this.loadToken || Router.getCurrent() !== "search") {
+        return;
+      }
+      // The profile/avatar is cosmetic. Do not replace the search DOM after
+      // the user starts typing; the next render will use the refreshed value.
+      this.sidebarProfile = profile;
+    });
+
+    void (async () => {
+      try {
+        await watchedTitleIdsPromise;
+        if (routeLoadToken !== this.loadToken || Router.getCurrent() !== "search") {
+          return;
+        }
+        if (shouldUseRestoredState) {
+          this.requestRender();
+          return;
+        }
+        await this.reloadRows();
+      } catch (err) {
+        if (routeLoadToken !== this.loadToken || Router.getCurrent() !== "search") {
+          return;
+        }
+        console.error("searchScreen: Failed to load rows", err);
+        this.rows = [];
+        this.render();
+      }
+    })();
   },
 
   renderLoading() {
@@ -528,6 +578,11 @@ export const SearchScreen = {
       this.rows = [];
     }
     if (token !== this.loadToken) return;
+    void this.refreshWatchedTitleIds().then(() => {
+      if (token === this.loadToken && Router.getCurrent() === "search") {
+        this.requestRender();
+      }
+    });
     if (this.shouldPatchResultsWithoutReplacingInput()) {
       this.renderResultsOnly();
       return;
@@ -556,7 +611,9 @@ export const SearchScreen = {
     ScreenUtils.indexFocusables(this.container);
     this.buildNavigationModel();
     this.bindActionEvents();
-    input.value = this.query || "";
+    // Keep the live IME value untouched while only the result siblings are refreshed.
+    // `this.query` is normalized for catalog requests and may omit a trailing space
+    // that the user has just entered and is still editing.
     input.focus?.();
     this.focusNode(this.container?.querySelector(".focusable.focused") || null, input);
     restoreInputSelection(input, selectionSnapshot);
@@ -578,14 +635,17 @@ export const SearchScreen = {
                 .toLowerCase() === "search" && Boolean(extra?.isRequired)
           );
         if (requiresSearch) return;
-        if (!isSearchableCatalogType(catalog.apiType)) return;
+        if (!isSearchableCatalogType(catalog.apiType) && !catalogSupportsExtra(catalog, "search"))
+          return;
         sections.push({
           addonBaseUrl: addon.baseUrl,
           addonId: addon.id,
           addonName: addon.displayName,
           catalogId: catalog.id,
           catalogName: catalog.name,
-          type: catalog.apiType
+          type: catalog.apiType,
+          supportsSkip: catalogSupportsExtra(catalog, "skip"),
+          skipStep: catalogSkipStep(catalog)
         });
       });
     });
@@ -604,7 +664,8 @@ export const SearchScreen = {
             catalogName: section.catalogName,
             type: section.type,
             skip: 0,
-            supportsSkip: true
+            skipStep: section.skipStep,
+            supportsSkip: section.supportsSkip !== false
           }),
           getSearchCatalogTimeoutMs(),
           { status: "error", message: "timeout" }
@@ -634,7 +695,10 @@ export const SearchScreen = {
     return resolved
       .filter((entry) => entry.result?.status === "success" && entry.result?.data?.items?.length)
       .map((entry) => {
-        const items = entry.result?.data?.items || [];
+        const rawItems = entry.result?.data?.items || [];
+        const items = this.layoutPrefs?.hideUnreleasedContent
+          ? filterReleasedItems(rawItems)
+          : rawItems;
         return {
           title: formatCatalogRowTitle(
             entry.catalogName,
@@ -652,21 +716,28 @@ export const SearchScreen = {
           addonName: entry.addonName,
           catalogId: entry.catalogId,
           catalogName: entry.catalogName,
+          nextSkip: Number(entry.result?.data?.nextSkip || 0),
           hasMore: Boolean(items.length > itemLimit || entry.result?.data?.hasMore),
+          initialItems: items,
+          supportsSkip: entry.supportsSkip !== false && entry.result?.data?.supportsSkip !== false,
+          skipStep: Number(entry.skipStep || entry.result?.data?.skipStep || 100),
           items: items.slice(0, itemLimit)
         };
-      });
+      })
+      .filter((row) => row.items.length);
   },
 
   async searchRows(query, { token = this.loadToken, onFirstResults = null } = {}) {
     const addons = await addonRepository.getInstalledAddons();
     const searchableCatalogs = buildSearchTargets(addons);
+    const scheduleIndices = buildSearchScheduleIndices(searchableCatalogs);
     const batchSize = getSearchCatalogBatchSize();
     const itemLimit = getSearchResultsPerRow();
     const responses = new Array(searchableCatalogs.length);
-    let nextCatalogIndex = 0;
+    let nextScheduleIndex = 0;
     let publishedFirstResults = false;
     const runCatalogSearch = async (catalog) => {
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
       try {
         const result = await withTimeout(
           catalogRepository.getCatalog({
@@ -677,11 +748,14 @@ export const SearchScreen = {
             catalogName: catalog.catalogName,
             type: catalog.type,
             skip: 0,
+            skipStep: catalog.skipStep,
             extraArgs: { search: query },
-            supportsSkip: catalog.supportsSkip
+            supportsSkip: catalog.supportsSkip,
+            signal: controller?.signal || null
           }),
           getSearchCatalogTimeoutMs(),
-          { status: "error", message: "timeout" }
+          { status: "error", message: "timeout" },
+          () => controller?.abort()
         );
         return { catalog, result };
       } catch (err) {
@@ -697,7 +771,10 @@ export const SearchScreen = {
       responses
         .filter(({ result } = {}) => result?.status === "success" && result?.data?.items?.length)
         .map(({ catalog, result }) => {
-          const items = result?.data?.items || [];
+          const rawItems = result?.data?.items || [];
+          const items = this.layoutPrefs?.hideUnreleasedContent
+            ? filterReleasedItems(rawItems)
+            : rawItems;
           return {
             title: formatCatalogRowTitle(
               catalog.catalogName,
@@ -715,10 +792,16 @@ export const SearchScreen = {
             addonName: catalog.addonName,
             catalogId: catalog.catalogId,
             catalogName: catalog.catalogName,
+            nextSkip: Number(result?.data?.nextSkip || 0),
             hasMore: Boolean(items.length > itemLimit || result?.data?.hasMore),
+            initialItems: items,
+            supportsSkip: catalog.supportsSkip !== false && result?.data?.supportsSkip !== false,
+            extraArgs: { search: query },
+            skipStep: Number(catalog.skipStep || result?.data?.skipStep || 100),
             items: items.slice(0, itemLimit)
           };
-        });
+        })
+        .filter((row) => row.items.length);
 
     const publishFirstResults = () => {
       if (
@@ -736,9 +819,9 @@ export const SearchScreen = {
 
     const runWorker = async () => {
       while (token === this.loadToken) {
-        const index = nextCatalogIndex;
-        nextCatalogIndex += 1;
-        if (index >= searchableCatalogs.length) return;
+        const index = scheduleIndices[nextScheduleIndex];
+        nextScheduleIndex += 1;
+        if (typeof index !== "number") return;
         responses[index] = await runCatalogSearch(searchableCatalogs[index]);
         publishFirstResults();
       }
@@ -784,6 +867,9 @@ export const SearchScreen = {
       .map((row, rowIndex) => {
         const rowKey = row.stateKey || buildRowStateKey(row, rowIndex);
         const seeAllLabel = t("action_see_all", {}, "See All");
+        const seeAllArrowClass = I18n.isRtl() ? " is-rtl" : "";
+        const seeAllItems = Array.isArray(row.initialItems) ? row.initialItems : row.items || [];
+        const hasEnoughForSeeAll = seeAllItems.length >= 15;
         return `
       <section class="search-results-row" data-row-key="${escapeHtml(rowKey)}">
         <h3 class="search-results-title">${row.title}</h3>
@@ -808,14 +894,14 @@ export const SearchScreen = {
                 ${item.poster ? `<img class="search-result-poster" src="${item.poster}" alt="${item.name || "content"}" loading="lazy" decoding="async" />` : `<div class="search-result-poster placeholder"></div>`}
                 ${isTitleItemWatched(item, this.watchedTitleIds) ? renderTitleWatchedBadge() : ""}
               </div>
-              <div class="search-result-name">${item.name || "Untitled"}</div>
+              <div class="search-result-name" dir="auto">${item.name || "Untitled"}</div>
               <div class="search-result-date">${formatReleaseYear(item)}</div>
             </article>
           `
             )
             .join("")}
           ${
-            row.hasMore || (row.items || []).length >= 15
+            hasEnoughForSeeAll
               ? `
             <article class="search-result-card search-seeall-card focusable"
                      data-action="openCatalogSeeAll"
@@ -828,7 +914,7 @@ export const SearchScreen = {
                      data-row-index="${rowIndex}"
                      data-row-key="${escapeHtml(rowKey)}">
               <div class="search-seeall-inner">
-                <div class="search-seeall-arrow" aria-hidden="true">&#8594;</div>
+                <div class="search-seeall-arrow${seeAllArrowClass}" aria-hidden="true">&#8594;</div>
                 <div class="search-seeall-label">${escapeHtml(seeAllLabel)}</div>
               </div>
             </article>
@@ -855,7 +941,7 @@ export const SearchScreen = {
           pillIconOnly: Boolean(this.pillIconOnly)
         })}
         <main class="home-main search-content">
-          <section class="search-header${this.layoutPrefs?.discoverLocation === "in_search" ? "" : " no-discover"}">
+          <section class="search-header${this.layoutPrefs?.discoverLocation === "in_search" ? "" : " no-discover"}${this.voiceSearchSupported ? "" : " no-voice"}">
             ${
               this.layoutPrefs?.discoverLocation === "in_search"
                 ? `
@@ -865,13 +951,17 @@ export const SearchScreen = {
             `
                 : ""
             }
-            <button
+            ${
+              this.voiceSearchSupported
+                ? `<button
               class="search-voice-btn focusable${this.voiceSearchActive ? " listening" : ""}"
               data-action="openVoice"
               aria-label="Voice search"
             >
               <span class="search-action-icon material-icons" aria-hidden="true">mic</span>
-            </button>
+            </button>`
+                : ""
+            }
             <input
               id="searchInput"
               class="search-input-field focusable"
@@ -1101,7 +1191,7 @@ export const SearchScreen = {
     };
   },
 
-  resolvePreferredResultsNode(rowNodes = [], fallbackCol = 0) {
+  resolvePreferredResultsNode(rowNodes = [], _fallbackCol = 0) {
     if (!Array.isArray(rowNodes) || !rowNodes.length) {
       return null;
     }
@@ -1517,6 +1607,10 @@ export const SearchScreen = {
     }
     const zone = String(current.dataset.navZone || "");
 
+    if (!allowDpadRepeat(this, event, { horizontalMs: 80, verticalMs: 112 })) {
+      return true;
+    }
+
     event?.preventDefault?.();
 
     if (zone === "header") {
@@ -1534,6 +1628,11 @@ export const SearchScreen = {
       if (direction === "down") {
         const firstRow = nav.rows?.[0] || [];
         const target = this.resolvePreferredResultsNode(firstRow, col);
+        if (target && current?.id === "searchInput") {
+          // Match Android TV: leaving the query field with DPAD_DOWN must dismiss the
+          // platform IME before focus moves to the first result row.
+          current.blur?.();
+        }
         return this.focusNode(current, target) || true;
       }
       if (direction === "up") {
@@ -1873,7 +1972,19 @@ export const SearchScreen = {
       catalogId: node.dataset.catalogId || "",
       catalogName: node.dataset.catalogName || "",
       type: node.dataset.catalogType || "movie",
-      initialItems: Array.isArray(sourceRow?.items) ? sourceRow.items : []
+      initialItems: Array.isArray(sourceRow?.initialItems)
+        ? sourceRow.initialItems
+        : Array.isArray(sourceRow?.items)
+          ? sourceRow.items
+          : [],
+      initialNextSkip: Number(sourceRow?.nextSkip || 0),
+      initialHasMore: Boolean(sourceRow?.hasMore),
+      supportsSkip: sourceRow?.supportsSkip !== false,
+      skipStep: Number(sourceRow?.skipStep || 100),
+      extraArgs:
+        sourceRow?.extraArgs && typeof sourceRow.extraArgs === "object"
+          ? { ...sourceRow.extraArgs }
+          : {}
     });
   },
 
@@ -1989,6 +2100,9 @@ export const SearchScreen = {
   },
 
   onKeyUp(event) {
+    if ([37, 38, 39, 40].includes(Number(event?.keyCode || 0))) {
+      resetDpadRepeat(this);
+    }
     if (this.suppressHoldMenuEnterUntilKeyUp) {
       this.suppressHoldMenuEnterUntilKeyUp = false;
       if (Number(event?.keyCode || 0) === 13) {
@@ -2010,6 +2124,7 @@ export const SearchScreen = {
   },
 
   cleanup() {
+    resetDpadRepeat(this);
     this.cancelScheduledRender();
     this.cancelPendingPosterHold();
     this.posterOptionsMenu = null;

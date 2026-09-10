@@ -3,6 +3,7 @@ const SUBTITLE_STYLE_CONTROL_IDS = [
   "fontSize",
   "bold",
   "textColor",
+  "textOpacity",
   "outlineEnabled",
   "outlineColor",
   "verticalOffset",
@@ -11,12 +12,16 @@ const SUBTITLE_STYLE_CONTROL_IDS = [
 
 export function resolveSubtitleStyleControlAvailability({
   isTizenAvPlay = false,
+  isWebOsNative = false,
   rendererMode = "none",
   supportsExternalDelay = false
 } = {}) {
   const availability = Object.fromEntries(
     SUBTITLE_STYLE_CONTROL_IDS.map((controlId) => [controlId, true])
   );
+  if (isWebOsNative && !["html", "html-callback"].includes(rendererMode)) {
+    availability.textOpacity = false;
+  }
   if (
     !isTizenAvPlay ||
     rendererMode === "html" ||

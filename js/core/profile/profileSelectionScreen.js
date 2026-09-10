@@ -4,11 +4,18 @@ import { ProfileSyncService } from "../../core/profile/profileSyncService.js";
 import { StartupSyncService } from "../../core/profile/startupSyncService.js";
 import { ScreenUtils } from "../../ui/navigation/screen.js";
 import { AvatarRepository } from "../../data/remote/supabase/avatarRepository.js";
+import { MemberAccessRepository } from "../../data/remote/supabase/memberAccessRepository.js";
+import { ProfileBackgroundRepository } from "../../data/remote/supabase/profileBackgroundRepository.js";
 import { ThemeManager } from "../../ui/theme/themeManager.js";
+import { renderMemberBrandWordmark } from "../../ui/components/memberBrandWordmark.js";
 import { I18n } from "../../i18n/index.js";
 import { NuvioDialog } from "../../ui/components/nuvioDialog.js";
 import { detailWatchedEnrichmentService } from "../../data/repository/detailWatchedEnrichmentService.js";
-import { Platform } from "../../platform/index.js";
+import { resolveExperienceRoute } from "./experienceModeRouting.js";
+import { getTvRuntimePerformanceProfile } from "../../platform/tvRuntimePerformance.js";
+import { PluginStore } from "../../data/local/pluginStore.js";
+import { PluginCodeStore } from "../../data/local/pluginCodeStore.js";
+import { PluginRuntime } from "../player/pluginRuntime.js";
 
 const PINNED_AVATAR_CATEGORIES = ["anime", "animation", "tv", "movie", "gaming"];
 const DEFAULT_PROFILE_COLOR = "#f5f5f5";
@@ -32,7 +39,7 @@ const PROFILE_PIN_TEXT = {
   supportVerifyChange: "Enter the current 4-digit PIN before setting a new one.",
   supportVerifyRemove: "Enter the current 4-digit PIN to remove this lock.",
   mismatch: "PINs did not match. Enter a new PIN again.",
-  forgot: "Forgot PIN? Reset it from your Nuvio account on nuvio website.",
+  forgot: "Forgot PIN? Reset it from your Nuvio account page.",
   back: "Press back to cancel",
   verifying: "Verifying…",
   saving: "Saving…",
@@ -240,13 +247,18 @@ function categoryLabel(category) {
       return "TV";
     case "gaming":
       return "Gaming";
+    case "supporter":
+      return t("profile_avatar_category_supporter", {}, "Supporter");
     default:
       return String(category || "Other").replace(/^./, (match) => match.toUpperCase());
   }
 }
 
 function getAvatarCategories(avatars) {
-  const normalizedCategories = (Array.isArray(avatars) ? avatars : [])
+  const avatarEntries = Array.isArray(avatars) ? avatars : [];
+  const hasMemberAvatars = avatarEntries.some((avatar) => Boolean(avatar?.memberOnly));
+  const normalizedCategories = avatarEntries
+    .filter((avatar) => !avatar?.memberOnly)
     .map((avatar) =>
       String(avatar?.category || "")
         .trim()
@@ -254,13 +266,19 @@ function getAvatarCategories(avatars) {
     )
     .filter(Boolean);
   const uniqueCategories = Array.from(new Set(normalizedCategories));
-  return [
+  const categories = [
     "all",
     ...PINNED_AVATAR_CATEGORIES.filter((category) => uniqueCategories.includes(category)),
     ...uniqueCategories
-      .filter((category) => !PINNED_AVATAR_CATEGORIES.includes(category))
+      .filter(
+        (category) => category !== "supporter" && !PINNED_AVATAR_CATEGORIES.includes(category)
+      )
       .sort((left, right) => left.localeCompare(right))
   ];
+  if (hasMemberAvatars) {
+    categories.push("supporter");
+  }
+  return categories;
 }
 
 function isTextInput(node) {
@@ -355,6 +373,13 @@ export const ProfileSelectionScreen = {
     this.pinTransitionCallback = null;
     this.suppressedFocusClick = null;
     this.avatarCatalog = [];
+    this.profileBackgroundCatalog = [];
+    this.memberAccess = MemberAccessRepository.getCurrentAccess();
+    this.hasProfileAvatarAccess = false;
+    this.hasProfileBackgroundAccess = false;
+    this.memberAccessUnsubscribe = null;
+    this.profileBackgroundUnsubscribe = null;
+    this.isMounted = true;
     this.lastKeyboardActivation = null;
     this.suppressHoldMenuEnterUntilKeyUp = false;
     this.isActivatingProfile = false;
@@ -373,13 +398,31 @@ export const ProfileSelectionScreen = {
     this.profilePinEnabled = profilePinEnabled;
     this.lastProfileFocusKey = `profile:${this.activeProfileId || "1"}`;
     globalThis.NuvioBootGuard?.stage?.("Loading profile avatars");
-    await this.loadAvatarCatalog();
+    await this.refreshMemberFeatures({ render: false });
+    this.memberAccessUnsubscribe = MemberAccessRepository.subscribe((access) => {
+      this.memberAccess = access;
+      if (!this.isMounted || !this.profiles) {
+        return;
+      }
+      void this.refreshMemberFeatures({ render: true });
+    });
+    this.profileBackgroundUnsubscribe = ProfileBackgroundRepository.subscribe((catalog) => {
+      this.profileBackgroundCatalog = Array.isArray(catalog) ? catalog : [];
+      if (!this.isMounted) {
+        return;
+      }
+      if (this.editorState) {
+        this.render();
+      } else {
+        this.updateProfileBackground(this.getFocusedProfile());
+      }
+    });
     this.render();
   },
 
-  async loadAvatarCatalog() {
+  async loadAvatarCatalog(hasMemberAccess = this.hasProfileAvatarAccess) {
     try {
-      this.avatarCatalog = await AvatarRepository.getAvatarCatalog();
+      this.avatarCatalog = await AvatarRepository.getAvatarCatalog(Boolean(hasMemberAccess));
     } catch (error) {
       console.warn("Failed to load avatar catalog", error);
       this.avatarCatalog = [];
@@ -390,10 +433,53 @@ export const ProfileSelectionScreen = {
     }, {});
   },
 
+  async refreshMemberFeatures({ render = false } = {}) {
+    const previousBackgroundAccess = Boolean(this.hasProfileBackgroundAccess);
+    const access = await MemberAccessRepository.getAccess().catch(() => this.memberAccess);
+    this.memberAccess = access;
+    this.hasProfileAvatarAccess = MemberAccessRepository.hasEntitlement(access, "PROFILE_AVATARS");
+    this.hasProfileBackgroundAccess = MemberAccessRepository.hasEntitlement(
+      access,
+      "PROFILE_BACKGROUNDS"
+    );
+    await this.loadAvatarCatalog(this.hasProfileAvatarAccess);
+    if (this.hasProfileBackgroundAccess) {
+      this.profileBackgroundCatalog = await ProfileBackgroundRepository.ensureLoaded();
+      const selectedId = this.getFocusedProfile()?.profileBackgroundId || null;
+      void ProfileBackgroundRepository.loadSelectedAndPreload(selectedId);
+    } else {
+      if (previousBackgroundAccess || this.profileBackgroundCatalog.length) {
+        ProfileBackgroundRepository.invalidateCache();
+      }
+      this.profileBackgroundCatalog = [];
+    }
+    if (render && this.isMounted) {
+      this.render();
+    }
+  },
+
   getProfileById(profileId) {
     return (
       (this.profiles || []).find((profile) => String(profile.id) === String(profileId)) || null
     );
+  },
+
+  getFocusedProfile() {
+    const focusedProfileId = this.focusedNode?.dataset?.profileId;
+    return (
+      this.getProfileById(focusedProfileId) ||
+      this.getProfileById(this.activeProfileId) ||
+      this.getVisibleProfiles()[0] ||
+      null
+    );
+  },
+
+  getProfileBackgroundImageUrl(profile) {
+    if (!this.hasProfileBackgroundAccess || !profile) {
+      return null;
+    }
+    const customUrl = String(profile.profileBackgroundUrl || "").trim();
+    return customUrl || ProfileBackgroundRepository.getImageUrl(profile.profileBackgroundId);
   },
 
   getVisibleProfiles() {
@@ -428,13 +514,30 @@ export const ProfileSelectionScreen = {
     );
   },
 
+  getEditorSelectedBackground() {
+    const selectedId = String(this.editorState?.selectedBackgroundId || "").trim();
+    if (!selectedId) {
+      return null;
+    }
+    return this.profileBackgroundCatalog.find((background) => background.id === selectedId) || null;
+  },
+
+  getEditorBackgroundPreviewUrl() {
+    const customUrl = String(this.editorState?.selectedBackgroundUrl || "").trim();
+    return customUrl || this.getEditorSelectedBackground()?.imageUrl || null;
+  },
+
   getFilteredEditorAvatars() {
     const category = String(this.editorState?.category || "all");
     if (category === "all") {
       return this.avatarCatalog;
     }
+    if (category.toLowerCase() === "supporter") {
+      return this.avatarCatalog.filter((avatar) => Boolean(avatar.memberOnly));
+    }
     return this.avatarCatalog.filter(
-      (avatar) => String(avatar.category || "").toLowerCase() === category.toLowerCase()
+      (avatar) =>
+        !avatar.memberOnly && String(avatar.category || "").toLowerCase() === category.toLowerCase()
     );
   },
 
@@ -461,8 +564,13 @@ export const ProfileSelectionScreen = {
 
     this.container.innerHTML = `
       <div class="profile-screen${pinScreenPhaseClass}${compactGridScreenClass}">
+        <div class="profile-screen-background" data-role="profile-screen-background" aria-hidden="true"></div>
         <div class="profile-main-layer"${isPinActive ? ' aria-hidden="true"' : ""}>
-          <img src="assets/brand/app_logo_wordmark.png" class="profile-logo" alt="Nuvio"/>
+          ${renderMemberBrandWordmark({
+            access: this.memberAccess,
+            imageClass: "profile-logo",
+            wrapperClass: "profile-brand-lockup"
+          })}
 
           <h1 class="profile-title">${escapeHtml(title)}</h1>
           <p class="profile-subtitle">${escapeHtml(subtitle)}</p>
@@ -488,6 +596,7 @@ export const ProfileSelectionScreen = {
       }
     }
     this.restoreFocus();
+    this.updateProfileBackground(this.getFocusedProfile());
   },
 
   renderProfileCard(profile) {
@@ -556,6 +665,10 @@ export const ProfileSelectionScreen = {
           this.getAvatarImageUrl(this.editorState.baseAvatarId) ||
           null
         : null);
+    const hasBackgroundTab = Boolean(this.hasProfileBackgroundAccess);
+    const editorTab =
+      hasBackgroundTab && this.editorState.editorTab === "background" ? "background" : "avatar";
+    const previewBackgroundUrl = this.getEditorBackgroundPreviewUrl();
     const overlayHeading =
       this.editorState.mode === "edit"
         ? `
@@ -567,6 +680,32 @@ export const ProfileSelectionScreen = {
         : `<span class="profile-editor-heading-title">${escapeHtml(editorTitle)}</span>`;
     const categories = getAvatarCategories(this.avatarCatalog);
     const filteredAvatars = this.getFilteredEditorAvatars();
+    const selectedBackgroundId = String(this.editorState.selectedBackgroundId || "");
+    const selectedBackgroundUrl = String(this.editorState.selectedBackgroundUrl || "").trim();
+    const backgroundOptions = [
+      {
+        id: "normal",
+        label: t("profile_background_normal", {}, "Default"),
+        imageUrl: null,
+        selected: !selectedBackgroundId && !selectedBackgroundUrl
+      },
+      ...(String(this.editorState.baseBackgroundUrl || "").trim()
+        ? [
+            {
+              id: "custom",
+              label: t("profile_background_custom", {}, "Custom URL"),
+              imageUrl: String(this.editorState.baseBackgroundUrl || "").trim(),
+              selected: !selectedBackgroundId && Boolean(selectedBackgroundUrl)
+            }
+          ]
+        : []),
+      ...this.profileBackgroundCatalog.map((background) => ({
+        id: background.id,
+        label: background.displayName,
+        imageUrl: background.imageUrl,
+        selected: !selectedBackgroundUrl && selectedBackgroundId === background.id
+      }))
+    ];
 
     return `
       <div class="profile-editor-backdrop" data-action="dismiss-overlay">
@@ -585,6 +724,11 @@ export const ProfileSelectionScreen = {
 
           <div class="profile-editor-body">
             <div class="profile-editor-preview">
+              ${
+                previewBackgroundUrl
+                  ? `<div class="profile-editor-preview-background"><img src="${escapeHtml(previewBackgroundUrl)}" alt="" aria-hidden="true"/></div>`
+                  : ""
+              }
               <div class="profile-editor-preview-avatar" style="background:${escapeHtml(this.editorState.selectedColorHex || getDefaultProfileColor())}">
                 ${
                   previewAvatarUrl
@@ -618,56 +762,111 @@ export const ProfileSelectionScreen = {
 
             <div class="profile-editor-divider" aria-hidden="true"></div>
 
-            <div class="profile-editor-avatar-pane">
-              <div class="profile-editor-avatar-title">${escapeHtml(t("profile_choose_avatar", {}, "Choose Avatar"))}</div>
-
-              <div class="profile-editor-category-row">
-                ${categories
-                  .map(
-                    (category) => `
-                  <button class="profile-avatar-category profile-overlay-focusable${this.editorState.category === category ? " is-selected" : ""}"
-                          type="button"
-                          data-action="select-avatar-category"
-                          data-category="${escapeHtml(category)}"
-                          data-focus-key="editor:category:${escapeHtml(category)}"
-                          tabindex="0">
-                    ${escapeHtml(categoryLabel(category))}
-                  </button>
-                `
-                  )
-                  .join("")}
-              </div>
+            <div class="profile-editor-picker-pane">
+              ${
+                hasBackgroundTab
+                  ? `<div class="profile-editor-tabs" role="tablist">
+                    <button class="profile-editor-tab profile-overlay-focusable${editorTab === "avatar" ? " is-selected" : ""}"
+                            type="button" role="tab" aria-selected="${editorTab === "avatar" ? "true" : "false"}"
+                            data-action="select-editor-tab" data-editor-tab="avatar"
+                            data-focus-key="editor:tab:avatar" tabindex="0">
+                      ${escapeHtml(t("profile_editor_tab_avatar", {}, "Avatar"))}
+                    </button>
+                    <button class="profile-editor-tab profile-overlay-focusable${editorTab === "background" ? " is-selected" : ""}"
+                            type="button" role="tab" aria-selected="${editorTab === "background" ? "true" : "false"}"
+                            data-action="select-editor-tab" data-editor-tab="background"
+                            data-focus-key="editor:tab:background" tabindex="0">
+                      ${escapeHtml(t("profile_editor_tab_background", {}, "Background"))}
+                    </button>
+                  </div>`
+                  : ""
+              }
 
               ${
-                filteredAvatars.length
+                editorTab === "avatar"
                   ? `
-                <div class="profile-editor-avatar-grid">
-                  ${filteredAvatars
-                    .map(
-                      (avatar) => `
-                    <button class="profile-avatar-tile profile-overlay-focusable${this.editorState.selectedAvatarId === avatar.id ? " is-selected" : ""}"
-                            type="button"
-                            data-action="select-avatar"
-                            data-avatar-id="${escapeHtml(avatar.id)}"
-                            data-focus-key="editor:avatar:${escapeHtml(avatar.id)}"
-                            tabindex="0">
-                      <img class="profile-avatar-tile-image" src="${escapeHtml(avatar.imageUrl)}" alt="${escapeHtml(avatar.displayName)}"/>
-                    </button>
+                <div class="profile-editor-avatar-pane">
+                  <div class="profile-editor-avatar-title">${escapeHtml(t("profile_choose_avatar", {}, "Choose Avatar"))}</div>
+
+                  <div class="profile-editor-category-row">
+                    ${categories
+                      .map(
+                        (category) => `
+                      <button class="profile-avatar-category profile-overlay-focusable${this.editorState.category === category ? " is-selected" : ""}"
+                              type="button"
+                              data-action="select-avatar-category"
+                              data-category="${escapeHtml(category)}"
+                              data-focus-key="editor:category:${escapeHtml(category)}"
+                              tabindex="0">
+                        ${escapeHtml(categoryLabel(category))}
+                      </button>
+                    `
+                      )
+                      .join("")}
+                  </div>
+
+                  ${
+                    filteredAvatars.length
+                      ? `
+                    <div class="profile-editor-avatar-grid">
+                      ${filteredAvatars
+                        .map(
+                          (avatar) => `
+                        <button class="profile-avatar-tile profile-overlay-focusable${this.editorState.selectedAvatarId === avatar.id ? " is-selected" : ""}"
+                                type="button"
+                                data-action="select-avatar"
+                                data-avatar-id="${escapeHtml(avatar.id)}"
+                                data-focus-key="editor:avatar:${escapeHtml(avatar.id)}"
+                                tabindex="0">
+                          <img class="profile-avatar-tile-image" src="${escapeHtml(avatar.imageUrl)}" alt="${escapeHtml(avatar.displayName)}"/>
+                        </button>
+                      `
+                        )
+                        .join("")}
+                    </div>
                   `
-                    )
-                    .join("")}
+                      : `
+                    <div class="profile-editor-avatar-empty">
+                      ${escapeHtml(t("profile_choose_avatar", {}, "Choose Avatar"))}
+                    </div>
+                  `
+                  }
+
+                  <div class="profile-editor-avatar-hint${this.editorState.focusedAvatarName ? " has-name" : ""}" data-role="editor-avatar-hint">
+                    ${escapeHtml(this.editorState.focusedAvatarName || t("profile_avatar_focus_hint", {}, "Focus an avatar to view its name"))}
+                  </div>
                 </div>
               `
                   : `
-                <div class="profile-editor-avatar-empty">
-                  ${escapeHtml(t("profile_choose_avatar", {}, "Choose Avatar"))}
+                <div class="profile-editor-background-pane">
+                  <div class="profile-editor-avatar-title">${escapeHtml(t("profile_choose_background", {}, "Choose Background"))}</div>
+                  <div class="profile-editor-background-note">${escapeHtml(t("profile_background_member_note", {}, "Supporter backgrounds are available with an active membership."))}</div>
+                  <div class="profile-background-grid">
+                    ${backgroundOptions
+                      .map(
+                        (background) => `
+                      <button class="profile-background-tile profile-overlay-focusable${background.selected ? " is-selected" : ""}"
+                              type="button"
+                              data-action="select-background"
+                              data-background-id="${escapeHtml(background.id)}"
+                              data-focus-key="editor:background:${escapeHtml(background.id)}"
+                              tabindex="0">
+                        <span class="profile-background-tile-media${background.imageUrl ? " has-image" : ""}">
+                          ${
+                            background.imageUrl
+                              ? `<img src="${escapeHtml(background.imageUrl)}" alt="${escapeHtml(background.label)}"/>`
+                              : ""
+                          }
+                        </span>
+                        <span class="profile-background-tile-label">${escapeHtml(background.label)}</span>
+                      </button>
+                    `
+                      )
+                      .join("")}
+                  </div>
                 </div>
               `
               }
-
-              <div class="profile-editor-avatar-hint${this.editorState.focusedAvatarName ? " has-name" : ""}" data-role="editor-avatar-hint">
-                ${escapeHtml(this.editorState.focusedAvatarName || t("profile_avatar_focus_hint", {}, "Focus an avatar to view its name"))}
-              </div>
             </div>
           </div>
         </div>
@@ -702,6 +901,16 @@ export const ProfileSelectionScreen = {
   },
 
   renderPinKeypad() {
+    const deleteIcon = `
+      <svg
+        class="profile-pin-delete-icon"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        focusable="false">
+        <path d="M20 5H9l-6 7 6 7h11a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1Z"></path>
+        <path d="m11 9 6 6m0-6-6 6"></path>
+      </svg>
+    `;
     const keys = [
       { value: "1", label: "1" },
       { value: "2", label: "2" },
@@ -712,19 +921,19 @@ export const ProfileSelectionScreen = {
       { value: "7", label: "7" },
       { value: "8", label: "8" },
       { value: "9", label: "9" },
-      { value: "delete", label: "⌫", ariaLabel: "Delete digit" },
+      { value: "delete", label: deleteIcon, ariaLabel: "Delete digit", isIcon: true },
       { value: "0", label: "0" }
     ];
     return keys
       .map(
-        ({ value, label, ariaLabel = label }) => `
+        ({ value, label, ariaLabel = label, isIcon = false }) => `
           <button
             class="profile-pin-key focusable"
             type="button"
             data-pin-key="${escapeHtml(value)}"
             data-focus-key="pin:${escapeHtml(value)}"
             aria-label="${escapeHtml(ariaLabel)}"
-            tabindex="0">${escapeHtml(label)}</button>
+            tabindex="0">${isIcon ? label : escapeHtml(label)}</button>
         `
       )
       .join("");
@@ -891,10 +1100,12 @@ export const ProfileSelectionScreen = {
       if (profile) {
         this.lastProfileFocusKey = `profile:${profile.id}`;
         this.updateBackground(profile.avatarColorHex || getDefaultProfileColor());
+        this.updateProfileBackground(profile);
       }
     } else if (profileId === "add") {
       this.lastProfileFocusKey = "profile:add";
       this.updateBackground("#555555");
+      this.updateProfileBackground(null);
     }
 
     if (avatarId && this.editorState) {
@@ -1020,11 +1231,36 @@ export const ProfileSelectionScreen = {
       submitButton: overlayRoot.querySelector("[data-focus-key='editor:submit']"),
       nameInput: overlayRoot.querySelector("[data-focus-key='editor:name']"),
       cancelButton: overlayRoot.querySelector("[data-focus-key='editor:cancel']"),
+      tabButtons: Array.from(overlayRoot.querySelectorAll("[data-action='select-editor-tab']")),
       categoryButtons: Array.from(
         overlayRoot.querySelectorAll("[data-action='select-avatar-category']")
       ),
-      avatarButtons: Array.from(overlayRoot.querySelectorAll("[data-action='select-avatar']"))
+      avatarButtons: Array.from(overlayRoot.querySelectorAll("[data-action='select-avatar']")),
+      backgroundButtons: Array.from(
+        overlayRoot.querySelectorAll("[data-action='select-background']")
+      )
     };
+  },
+
+  getPreferredEditorTabButton(navigationState) {
+    return (
+      navigationState?.tabButtons?.find((node) => node.classList.contains("is-selected")) ||
+      navigationState?.tabButtons?.[0] ||
+      null
+    );
+  },
+
+  getPreferredEditorContentButton(navigationState, referenceNode = null) {
+    const isBackgroundTab = this.editorState?.editorTab === "background";
+    const candidates = isBackgroundTab
+      ? navigationState?.backgroundButtons || []
+      : navigationState?.avatarButtons || [];
+    return (
+      candidates.find((node) => node.classList.contains("is-selected")) ||
+      findNearestByHorizontalCenter(referenceNode, candidates) ||
+      candidates[0] ||
+      null
+    );
   },
 
   getPreferredEditorCategoryButton(navigationState) {
@@ -1106,14 +1342,16 @@ export const ProfileSelectionScreen = {
       return false;
     }
 
+    const preferredTabButton = this.getPreferredEditorTabButton(navigationState);
     const preferredCategoryButton = this.getPreferredEditorCategoryButton(navigationState);
+    const preferredContentButton = this.getPreferredEditorContentButton(navigationState, current);
     let target = null;
 
     if (current === navigationState.submitButton) {
       if (direction === "left") {
         target = navigationState.nameInput;
       } else if (direction === "down" || direction === "right") {
-        target = preferredCategoryButton;
+        target = preferredTabButton || preferredCategoryButton;
       }
     } else if (current === navigationState.nameInput) {
       if (direction === "up") {
@@ -1121,15 +1359,26 @@ export const ProfileSelectionScreen = {
       } else if (direction === "down") {
         target = navigationState.cancelButton || preferredCategoryButton;
       } else if (direction === "right") {
-        target = preferredCategoryButton;
+        target = preferredTabButton || preferredCategoryButton;
       }
     } else if (current === navigationState.cancelButton) {
       if (direction === "up") {
         target = navigationState.nameInput;
       } else if (direction === "right" || direction === "down") {
-        target = preferredCategoryButton;
+        target = preferredTabButton || preferredCategoryButton;
       } else if (direction === "left") {
         target = navigationState.nameInput;
+      }
+    } else if (current.matches?.("[data-action='select-editor-tab']")) {
+      const index = navigationState.tabButtons.indexOf(current);
+      if (direction === "left") {
+        target = index > 0 ? navigationState.tabButtons[index - 1] : navigationState.cancelButton;
+      } else if (direction === "right") {
+        target = navigationState.tabButtons[index + 1] || null;
+      } else if (direction === "up") {
+        target = navigationState.submitButton;
+      } else if (direction === "down") {
+        target = preferredContentButton;
       }
     } else if (current.matches?.("[data-action='select-avatar-category']")) {
       const index = navigationState.categoryButtons.indexOf(current);
@@ -1139,7 +1388,7 @@ export const ProfileSelectionScreen = {
       } else if (direction === "right") {
         target = navigationState.categoryButtons[index + 1] || null;
       } else if (direction === "up") {
-        target = navigationState.submitButton;
+        target = preferredTabButton || navigationState.submitButton;
       } else if (direction === "down") {
         target = this.getPreferredEditorAvatarButton(navigationState, current);
       }
@@ -1158,9 +1407,31 @@ export const ProfileSelectionScreen = {
           ? findNearestByHorizontalCenter(current, previousRow.nodes)
           : preferredCategoryButton ||
             this.getEditorCategoryButtonForAvatar(navigationState, current.dataset.avatarId) ||
-            findNearestByHorizontalCenter(current, navigationState.categoryButtons);
+            findNearestByHorizontalCenter(current, navigationState.categoryButtons) ||
+            preferredTabButton;
       } else if (direction === "down") {
         const nextRow = position.rows[position.rowIndex + 1];
+        target = nextRow ? findNearestByHorizontalCenter(current, nextRow.nodes) : null;
+      }
+    } else if (current.matches?.("[data-action='select-background']")) {
+      const rows = buildVisualRows(navigationState.backgroundButtons || []);
+      const rowIndex = rows.findIndex((row) => row.nodes.includes(current));
+      if (rowIndex < 0) {
+        return false;
+      }
+      const row = rows[rowIndex];
+      const columnIndex = row.nodes.indexOf(current);
+      if (direction === "left") {
+        target = row.nodes[columnIndex - 1] || navigationState.cancelButton;
+      } else if (direction === "right") {
+        target = row.nodes[columnIndex + 1] || null;
+      } else if (direction === "up") {
+        const previousRow = rows[rowIndex - 1];
+        target = previousRow
+          ? findNearestByHorizontalCenter(current, previousRow.nodes)
+          : preferredTabButton || navigationState.submitButton;
+      } else if (direction === "down") {
+        const nextRow = rows[rowIndex + 1];
         target = nextRow ? findNearestByHorizontalCenter(current, nextRow.nodes) : null;
       }
     }
@@ -1251,8 +1522,7 @@ export const ProfileSelectionScreen = {
     }
 
     if (
-      Platform.isTizen() ||
-      Platform.isWebOS() ||
+      getTvRuntimePerformanceProfile().isPerformanceConstrained ||
       globalThis.document?.body?.classList?.contains("performance-constrained")
     ) {
       this._bgCurrentColor = targetColor;
@@ -1284,6 +1554,33 @@ export const ProfileSelectionScreen = {
     };
 
     this._bgAnimRaf = requestAnimationFrame(tick);
+  },
+
+  updateProfileBackground(profile) {
+    const layer = this.container?.querySelector("[data-role='profile-screen-background']");
+    if (!layer) {
+      return;
+    }
+    const imageUrl = String(this.getProfileBackgroundImageUrl(profile) || "").trim();
+    if (String(layer.dataset.imageUrl || "") === imageUrl) {
+      return;
+    }
+    layer.dataset.imageUrl = imageUrl;
+    layer.innerHTML = imageUrl
+      ? `<img src="${escapeHtml(imageUrl)}" alt="" aria-hidden="true"/>`
+      : "";
+    layer.classList.toggle("has-image", Boolean(imageUrl));
+    if (imageUrl) {
+      const image = layer.querySelector("img");
+      image?.addEventListener("error", () => {
+        if (String(layer.dataset.imageUrl || "") !== imageUrl) {
+          return;
+        }
+        layer.dataset.imageUrl = "";
+        layer.classList.remove("has-image");
+        layer.innerHTML = "";
+      });
+    }
   },
 
   buildBackgroundStyle(colorHex) {
@@ -1361,7 +1658,13 @@ export const ProfileSelectionScreen = {
       selectedAvatarId: null,
       baseAvatarId: null,
       baseColorHex: "#1E88E5",
+      originalBackgroundUrl: null,
+      baseBackgroundId: null,
+      baseBackgroundUrl: null,
+      selectedBackgroundId: null,
+      selectedBackgroundUrl: null,
       category: "all",
+      editorTab: "avatar",
       focusedAvatarName: null
     };
     this.pendingFocusKey = "editor:name";
@@ -1384,7 +1687,13 @@ export const ProfileSelectionScreen = {
       selectedAvatarId: profile.avatarId || null,
       baseAvatarId: profile.avatarId || null,
       baseColorHex: String(profile.avatarColorHex || getDefaultProfileColor()),
+      originalBackgroundUrl: String(profile.profileBackgroundUrl || "").trim() || null,
+      baseBackgroundId: profile.profileBackgroundId || null,
+      baseBackgroundUrl: String(profile.profileBackgroundUrl || "").trim() || null,
+      selectedBackgroundId: profile.profileBackgroundId || null,
+      selectedBackgroundUrl: String(profile.profileBackgroundUrl || "").trim() || null,
       category: "all",
+      editorTab: "avatar",
       focusedAvatarName: null
     };
     this.pendingFocusKey = "editor:name";
@@ -1934,14 +2243,18 @@ export const ProfileSelectionScreen = {
         avatarUrl:
           editorState.selectedAvatarId !== editorState.baseAvatarId
             ? null
-            : String(existing.avatarUrl || "").trim() || null
+            : String(existing.avatarUrl || "").trim() || null,
+        profileBackgroundId: editorState.selectedBackgroundId || null,
+        profileBackgroundUrl: String(editorState.selectedBackgroundUrl || "").trim() || null
       });
     } else {
       success = await ProfileManager.createProfile({
         name: trimmedName,
         avatarColorHex: editorState.selectedColorHex || getDefaultProfileColor(),
         avatarId: editorState.selectedAvatarId || null,
-        avatarUrl: null
+        avatarUrl: null,
+        profileBackgroundId: editorState.selectedBackgroundId || null,
+        profileBackgroundUrl: String(editorState.selectedBackgroundUrl || "").trim() || null
       });
     }
 
@@ -1963,6 +2276,8 @@ export const ProfileSelectionScreen = {
 
     const deleted = await ProfileManager.deleteProfile(profile.id);
     if (deleted !== false) {
+      PluginStore.clearProfile(profile.id);
+      await PluginCodeStore.clearProfile(profile.id);
       await ProfileSyncService.deleteProfileData(profile.id);
       await ProfileSyncService.push();
       await this.refreshProfilePinStates();
@@ -2004,9 +2319,59 @@ export const ProfileSelectionScreen = {
       await this.submitEditor();
       return;
     }
+    if (action === "select-editor-tab" && this.editorState) {
+      const editorTab = String(node.dataset.editorTab || "avatar");
+      if (editorTab !== "background" || this.hasProfileBackgroundAccess) {
+        this.editorState.editorTab = editorTab === "background" ? "background" : "avatar";
+        this.pendingFocusKey = `editor:tab:${this.editorState.editorTab}`;
+        this.render();
+      }
+      return;
+    }
     if (action === "select-avatar-category" && this.editorState) {
       this.editorState.category = String(node.dataset.category || "all");
       this.pendingFocusKey = `editor:category:${this.editorState.category}`;
+      this.render();
+      return;
+    }
+    if (action === "select-background" && this.editorState) {
+      const backgroundId = String(node.dataset.backgroundId || "");
+      if (backgroundId === "normal") {
+        this.editorState.selectedBackgroundId = null;
+        this.editorState.selectedBackgroundUrl = null;
+      } else if (backgroundId === "custom") {
+        const customUrl = String(this.editorState.baseBackgroundUrl || "").trim();
+        if (!customUrl) {
+          return;
+        }
+        if (
+          !this.editorState.selectedBackgroundId &&
+          this.editorState.selectedBackgroundUrl === customUrl
+        ) {
+          this.editorState.selectedBackgroundUrl = null;
+        } else {
+          this.editorState.selectedBackgroundId = null;
+          this.editorState.selectedBackgroundUrl = customUrl;
+        }
+      } else {
+        const background = this.profileBackgroundCatalog.find((entry) => entry.id === backgroundId);
+        if (!background) {
+          return;
+        }
+        if (
+          !this.editorState.selectedBackgroundUrl &&
+          this.editorState.selectedBackgroundId === background.id
+        ) {
+          this.editorState.selectedBackgroundId = null;
+          this.editorState.selectedBackgroundUrl = null;
+        } else {
+          this.editorState.selectedBackgroundId = background.id;
+          this.editorState.selectedBackgroundUrl = null;
+          void ProfileBackgroundRepository.loadSelectedAndPreload(background.id);
+        }
+      }
+      this.editorState.editorTab = "background";
+      this.pendingFocusKey = `editor:background:${backgroundId}`;
       this.render();
       return;
     }
@@ -2095,14 +2460,27 @@ export const ProfileSelectionScreen = {
       ) || null;
     profileCard?.classList?.add("is-activating");
     try {
+      // A provider started under the previous profile must not publish late
+      // results into the newly selected profile's stream screen.
+      PluginRuntime.cancelAll();
       await ProfileManager.setActiveProfile(profileId);
       StartupSyncService.enableProfileScopedSync();
       detailWatchedEnrichmentService.invalidateAllCache();
       await I18n.init();
-      ThemeManager.apply();
+      const memberAccess = await MemberAccessRepository.getAccess().catch(() =>
+        MemberAccessRepository.getCurrentAccess()
+      );
+      ThemeManager.apply({ enforceAccess: true, access: memberAccess });
       I18n.apply();
-      await Router.navigate("home", { forceReload: true });
-      void StartupSyncService.requestSyncNow().catch((error) => {
+      const experienceRoute = await resolveExperienceRoute(profileId);
+      await Router.navigate(
+        experienceRoute,
+        experienceRoute === "home" ? { forceReload: true } : {},
+        experienceRoute === "home" ? {} : { replaceHistory: true, skipStackPush: true }
+      );
+      void StartupSyncService.requestSyncNow({
+        notifyPullCompleted: ["home", "plugins"].includes(experienceRoute)
+      }).catch((error) => {
         console.warn("Profile background sync failed", error);
       });
     } catch (error) {
@@ -2258,6 +2636,11 @@ export const ProfileSelectionScreen = {
   },
 
   cleanup() {
+    this.isMounted = false;
+    this.memberAccessUnsubscribe?.();
+    this.memberAccessUnsubscribe = null;
+    this.profileBackgroundUnsubscribe?.();
+    this.profileBackgroundUnsubscribe = null;
     this._destroyDialogs();
     this.cancelPendingProfileHold();
     this.suppressHoldMenuEnterUntilKeyUp = false;

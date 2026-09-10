@@ -1,4 +1,5 @@
 import { DebridSettingsStore } from "../../data/local/debridSettingsStore.js";
+import { selectAutoPlayStream, STREAM_AUTO_PLAY_MODE } from "../streams/streamAutoPlaySelector.js";
 import { DirectDebridResolver } from "./directDebridResolver.js";
 
 const MAX_BACKGROUND_PREPARES_PER_MINUTE = 6;
@@ -27,18 +28,42 @@ function consumeBudget() {
   return true;
 }
 
-function preparationKey(stream = {}) {
-  const resolve = stream.clientResolve || stream.raw?.clientResolve || {};
-  return [
-    resolve.service,
-    resolve.infoHash || stream.infoHash,
-    resolve.fileIdx ?? stream.fileIdx,
-    resolve.filename || stream.behaviorHints?.filename,
-    resolve.torrentName,
-    resolve.magnetUri,
-    stream.name,
-    stream.title
-  ]
+function isMagnetLink(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .startsWith("magnet:");
+}
+
+function playableStreamUrl(stream = {}) {
+  return [stream.url, stream.externalUrl].find((value) => value && !isMagnetLink(value)) || null;
+}
+
+function torrentMagnetUri(stream = {}) {
+  return [stream.url, stream.externalUrl].find((value) => isMagnetLink(value)) || null;
+}
+
+export function directDebridPreparationKey(stream = {}) {
+  const resolve = stream.clientResolve || stream.raw?.clientResolve || null;
+  const values = resolve
+    ? [
+        resolve.service,
+        resolve.infoHash,
+        resolve.fileIdx,
+        resolve.filename,
+        resolve.torrentName,
+        resolve.magnetUri
+      ]
+    : [
+        stream.addonName,
+        stream.infoHash,
+        torrentMagnetUri(stream),
+        stream.fileIdx,
+        playableStreamUrl(stream),
+        stream.name,
+        stream.title
+      ];
+  return values
     .map((value) =>
       String(value ?? "")
         .trim()
@@ -47,8 +72,98 @@ function preparationKey(stream = {}) {
     .join("|");
 }
 
+function searchableText(stream = {}) {
+  return [stream.addonName, stream.name, stream.title, stream.description, stream.url]
+    .map((value) => String(value || ""))
+    .join(" ");
+}
+
+export function prioritizeDirectDebridCandidates(
+  streams = [],
+  {
+    limit = 0,
+    season = null,
+    episode = null,
+    playerSettings = {},
+    installedAddonNames = new Set()
+  } = {}
+) {
+  const normalizedLimit = Math.max(0, Math.trunc(Number(limit || 0)));
+  if (!normalizedLimit) return [];
+  const seen = new Set();
+  const candidates = (Array.isArray(streams) ? streams : [])
+    .filter((stream) => !playableStreamUrl(stream))
+    .filter((stream) => DirectDebridResolver.canResolveStream(stream, { season, episode }))
+    .filter((stream) => {
+      const key = directDebridPreparationKey(stream);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  if (!candidates.length) return [];
+
+  const prioritized = [];
+  const selected = selectAutoPlayStream(streams, {
+    mode: playerSettings.streamAutoPlayMode,
+    source: playerSettings.streamAutoPlaySource,
+    regexPattern: playerSettings.streamAutoPlayRegex,
+    installedAddonNames,
+    selectedAddons: playerSettings.streamAutoPlaySelectedAddons,
+    selectedPlugins: playerSettings.streamAutoPlaySelectedPlugins
+  });
+  const selectedKey = selected ? directDebridPreparationKey(selected) : "";
+  const selectedCandidate = candidates.find(
+    (candidate) => selectedKey && directDebridPreparationKey(candidate) === selectedKey
+  );
+  if (selectedCandidate) prioritized.push(selectedCandidate);
+
+  if (
+    String(playerSettings.streamAutoPlayMode || "").toUpperCase() ===
+    STREAM_AUTO_PLAY_MODE.REGEX_MATCH
+  ) {
+    let regex = null;
+    try {
+      regex = new RegExp(String(playerSettings.streamAutoPlayRegex || "").trim(), "i");
+    } catch (_) {
+      regex = null;
+    }
+    if (regex) {
+      candidates.forEach((candidate) => {
+        if (
+          !prioritized.some(
+            (entry) => directDebridPreparationKey(entry) === directDebridPreparationKey(candidate)
+          ) &&
+          regex.test(searchableText(candidate))
+        ) {
+          prioritized.push(candidate);
+        }
+      });
+    }
+  }
+
+  candidates.forEach((candidate) => {
+    if (
+      !prioritized.some(
+        (entry) => directDebridPreparationKey(entry) === directDebridPreparationKey(candidate)
+      )
+    ) {
+      prioritized.push(candidate);
+    }
+  });
+  return prioritized.slice(0, normalizedLimit);
+}
+
 export const DirectDebridStreamPreparer = {
-  async prepare(streams = [], { season = null, episode = null, onPrepared = null } = {}) {
+  async prepare(
+    streams = [],
+    {
+      season = null,
+      episode = null,
+      playerSettings = {},
+      installedAddonNames = new Set(),
+      onPrepared = null
+    } = {}
+  ) {
     const settings = DebridSettingsStore.get();
     const limit = Math.max(
       0,
@@ -57,21 +172,20 @@ export const DirectDebridStreamPreparer = {
     if (!settings.enabled || limit <= 0) {
       return;
     }
-    const seen = new Set();
-    const candidates = (streams || [])
-      .filter((stream) => !stream.url && !stream.externalUrl)
-      .filter((stream) => DirectDebridResolver.canResolveStream(stream, { season, episode }))
-      .filter((stream) => {
-        const key = preparationKey(stream);
-        if (seen.has(key)) {
-          return false;
-        }
-        seen.add(key);
-        return true;
-      })
-      .slice(0, limit);
+    const candidates = prioritizeDirectDebridCandidates(streams, {
+      limit,
+      season,
+      episode,
+      playerSettings,
+      installedAddonNames
+    });
 
     for (const stream of candidates) {
+      const cached = DirectDebridResolver.cachedPlayableStream(stream, { season, episode });
+      if (cached) {
+        if (typeof onPrepared === "function") onPrepared(stream, cached);
+        continue;
+      }
       if (!consumeBudget()) {
         return;
       }

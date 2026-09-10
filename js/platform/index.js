@@ -18,10 +18,10 @@ function parseWebOsMajorVersion() {
   ].filter(Boolean);
 
   const patterns = [
-    /web0s\.tv[\s\-\/]?(\d{1,2})/i,
-    /webos\.tv[\s\-\/]?(\d{1,2})/i,
-    /web0s[\s\-\/]?(\d{1,2})/i,
-    /webos[\s\-\/]?(\d{1,2})/i,
+    /web0s\.tv[\s/-]?(\d{1,2})/i,
+    /webos\.tv[\s/-]?(\d{1,2})/i,
+    /web0s[\s/-]?(\d{1,2})/i,
+    /webos[\s/-]?(\d{1,2})/i,
     /chromium\/(\d{2,3})/i,
     /chrome\/(\d{2,3})/i
   ];
@@ -60,7 +60,7 @@ function detectPlatformName() {
     return override;
   }
   const searchParams = String(globalThis.location?.search || "").toLowerCase();
-  if (searchParams.includes("wrapper=tizen") || searchParams.includes("source=tizenbrew")) {
+  if (searchParams.includes("wrapper=tizen")) {
     return "tizen";
   }
   const userAgent = String(globalThis.navigator?.userAgent || "").toLowerCase();

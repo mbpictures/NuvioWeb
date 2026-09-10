@@ -1,11 +1,14 @@
 import { ThemeStore } from "../data/local/themeStore.js";
 
 const DEFAULT_LOCALE = "en";
+const RTL_LOCALES = new Set(["ar", "he"]);
 const SUPPORTED_LOCALES = [
   "en",
   "ar",
+  "bg",
   "bs",
   "cs",
+  "da",
   "de",
   "el",
   "es",
@@ -27,11 +30,15 @@ const SUPPORTED_LOCALES = [
   "ru",
   "sk",
   "sl",
+  "sr-latn",
+  "sq",
   "sv",
   "ta",
   "tr",
+  "uk",
   "vi",
-  "zh-cn"
+  "zh-cn",
+  "zh-tw"
 ];
 
 const KEY_ALIASES = {
@@ -41,6 +48,7 @@ const KEY_ALIASES = {
   "common.normal": "player_speed_normal",
   "common.notSet": "mdblist_not_set",
   "common.off": "subtitle_off",
+  "common.retry": "action_retry",
   "common.save": "action_save",
   "common.systemDefault": "appearance_language_system",
   "sidebar.addons": "nav_addons",
@@ -202,10 +210,18 @@ const KEY_ALIASES = {
   "settings.layout.autoplayTrailerExpandedCard.title": "layout_autoplay_trailer_expanded",
   "settings.layout.blurUnwatched.subtitle": "layout_blur_unwatched_sub",
   "settings.layout.blurUnwatched.title": "layout_blur_unwatched",
+  "settings.layout.blurContinueWatchingNextUp.subtitle": "layout_blur_cw_next_up_sub",
+  "settings.layout.blurContinueWatchingNextUp.title": "layout_blur_cw_next_up",
   "settings.layout.catalogType.subtitle": "layout_catalog_type_sub",
   "settings.layout.catalogType.title": "layout_catalog_type",
   "settings.layout.collapseSidebar.subtitle": "layout_collapse_sidebar_sub",
   "settings.layout.collapseSidebar.title": "layout_collapse_sidebar",
+  "settings.layout.continueWatchingEnabled.subtitle": "layout_cw_enabled_sub",
+  "settings.layout.continueWatchingEnabled.title": "layout_cw_enabled",
+  "settings.layout.continueWatchingSort.default": "layout_cw_sort_default",
+  "settings.layout.continueWatchingSort.streamingStyle": "layout_cw_sort_streaming",
+  "settings.layout.continueWatchingSort.subtitle": "layout_cw_sort_mode_sub",
+  "settings.layout.continueWatchingSort.title": "layout_cw_sort_mode",
   "settings.layout.focusedPosterExpand.subtitle": "layout_expand_poster_sub",
   "settings.layout.focusedPosterExpand.title": "layout_expand_poster",
   "settings.layout.focusedPosterExpandDelay.subtitle": "layout_expand_delay_sub",
@@ -218,6 +234,8 @@ const KEY_ALIASES = {
   "settings.layout.groups.homeContent.title": "layout_section_content",
   "settings.layout.groups.homeLayout.subtitle": "layout_section_home_desc",
   "settings.layout.groups.homeLayout.title": "layout_section_home",
+  "settings.layout.groups.continueWatching.subtitle": "layout_section_continue_watching_desc",
+  "settings.layout.groups.continueWatching.title": "layout_section_continue_watching",
   "settings.layout.heroSection.subtitle": "layout_show_hero_sub",
   "settings.layout.heroSection.title": "layout_show_hero",
   "settings.layout.hideUnreleased.subtitle": "layout_hide_unreleased_sub",
@@ -236,6 +254,8 @@ const KEY_ALIASES = {
   "settings.layout.modernSidebar.title": "layout_modern_sidebar",
   "settings.layout.modernSidebarBlur.subtitle": "layout_modern_sidebar_blur_sub",
   "settings.layout.modernSidebarBlur.title": "layout_modern_sidebar_blur",
+  "settings.layout.nextUpFromFurthest.subtitle": "layout_next_up_furthest_episode_sub",
+  "settings.layout.nextUpFromFurthest.title": "layout_next_up_furthest_episode",
   "settings.layout.posterLabels.subtitle": "layout_poster_labels_sub",
   "settings.layout.posterLabels.title": "layout_poster_labels",
   "settings.layout.preferExternalMeta.subtitle": "layout_prefer_external_meta_sub",
@@ -244,6 +264,8 @@ const KEY_ALIASES = {
   "settings.layout.searchDiscover.title": "layout_show_discover",
   "settings.layout.showTrailerButton.subtitle": "layout_trailer_button_sub",
   "settings.layout.showTrailerButton.title": "layout_trailer_button",
+  "settings.layout.showUnairedNextUp.subtitle": "layout_show_unaired_next_up_sub",
+  "settings.layout.showUnairedNextUp.title": "layout_show_unaired_next_up",
   "settings.layout.trailerMuted.subtitle": "layout_trailer_muted_sub_preview",
   "settings.layout.trailerMuted.title": "layout_trailer_muted",
   "settings.layout.trailerMutedExpandedCard.subtitle": "layout_trailer_muted_sub_expanded",
@@ -252,6 +274,8 @@ const KEY_ALIASES = {
   "settings.layout.trailerTarget.title": "layout_trailer_location",
   "settings.layout.trailerTargets.expandedCard": "layout_trailer_expanded_card",
   "settings.layout.trailerTargets.heroMedia": "layout_trailer_hero_media",
+  "settings.layout.useEpisodeThumbnailsInCw.subtitle": "layout_use_episode_thumbnails_cw_sub",
+  "settings.layout.useEpisodeThumbnailsInCw.title": "layout_use_episode_thumbnails_cw",
   "settings.playback.nextEpisodeThresholdMinutes.subtitle": "autoplay_threshold_min_sub",
   "settings.playback.nextEpisodeThresholdMinutes.title": "autoplay_threshold_min_title",
   "settings.playback.nextEpisodeThresholdMode.minutes": "autoplay_threshold_min",
@@ -350,20 +374,38 @@ const KEY_ALIASES = {
   "auth.qr.cardSubtitleSignedOut": "auth_qr_scan_instruction",
   "auth.qr.cardTitle": "auth_qr_account_login",
   "auth.qr.codeLabel": "auth_qr_code_label",
+  "auth.qr.connected": "auth_qr_connected",
   "auth.qr.continue": "auth_qr_continue",
   "auth.qr.continueWithoutAccount": "auth_qr_continue_without_account",
+  "auth.qr.configureServer": "auth_qr_configure_server",
   "auth.qr.expired": "qr_login_expired",
   "auth.qr.leftDescriptionSignedIn": "auth_qr_connected",
   "auth.qr.leftDescriptionSignedOut": "auth_qr_phone_hint",
+  "auth.qr.manualInstruction": "auth_qr_manual_instruction",
+  "auth.qr.notConfigured": "auth_qr_not_configured",
   "auth.qr.preparing": "auth_qr_generating",
   "auth.qr.refresh": "auth_qr_refresh",
   "auth.qr.scanPrompt": "auth_qr_scan_instruction",
   "auth.qr.waitingApproval": "qr_login_pending",
   "auth.qr.scanAndSignIn": "auth_qr_scan_instruction",
+  "auth.qr.scanInstruction": "auth_qr_scan_instruction",
+  "auth.qr.success": "qr_login_success",
+  "auth.qr.syncedData": "auth_qr_synced_data",
   "auth.qr.title": "auth_qr_title",
   "auth.qr.unavailable": "auth_qr_unavailable",
+  "auth.email.emailLabel": "auth_email_email_label",
+  "auth.email.hint": "auth_email_hint",
+  "auth.email.instruction": "auth_email_instruction",
+  "auth.email.invalidCredentials": "auth_email_invalid_credentials",
+  "auth.email.networkError": "auth_email_network_error",
+  "auth.email.passwordLabel": "auth_email_password_label",
+  "auth.email.passwordPlaceholder": "auth_password_placeholder",
+  "auth.email.placeholder": "auth_email_placeholder",
+  "auth.email.required": "auth_email_required",
+  "auth.email.signIn": "auth_email_sign_in",
+  "auth.email.signInFailed": "auth_email_sign_in_failed",
+  "auth.email.signingIn": "auth_email_signing_in",
   "common.all": "common_all",
-  "common.beta": "common_beta",
   "auth.signIn.back": "auth_qr_back",
   "auth.signIn.description": "auth_signin_tv_disabled",
   "auth.signIn.emailPrompt": "debug_email_placeholder",
@@ -469,6 +511,10 @@ function decodeUnicodeEscapes(value) {
   );
 }
 
+function decodeAndroidStringEscapes(value) {
+  return decodeUnicodeEscapes(value).replace(/\\n/g, "\n");
+}
+
 function parseStringsXml(source) {
   const parser = new DOMParser();
   const xml = parser.parseFromString(source, "application/xml");
@@ -481,7 +527,7 @@ function parseStringsXml(source) {
     if (!name) {
       return messages;
     }
-    messages[name] = decodeUnicodeEscapes(node.textContent || "");
+    messages[name] = decodeAndroidStringEscapes(node.textContent || "");
     return messages;
   }, {});
 }
@@ -600,6 +646,14 @@ export const I18n = {
 
   resolveLocale(preferred = null) {
     return resolvePreferredLocale(preferred);
+  },
+
+  isRtl(locale = this.getLocale()) {
+    const language = String(locale || "")
+      .trim()
+      .toLowerCase()
+      .split(/[-_]/, 1)[0];
+    return RTL_LOCALES.has(language);
   },
 
   getSupportedLocales() {

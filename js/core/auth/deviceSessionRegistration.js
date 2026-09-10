@@ -1,11 +1,12 @@
 /* global __NUVIO_APP_VERSION__ */
 
 import { Platform } from "../../platform/index.js";
+import { getTizenCapabilities } from "../../platform/tizen/tizenCapabilities.js";
 import { SupabaseApi } from "../../data/remote/supabase/supabaseApi.js";
 import { AuthManager } from "./authManager.js";
 import { AuthState } from "./authState.js";
 
-const CLIENT_NAME = "Nuvio Web";
+const CLIENT_NAME = "Nuvio TV";
 const INSTALLATION_ID_KEY = "nuvio_web_installation_id";
 const INSTALLATION_ID_PREFIX = "nuvio-web-";
 const INSTALLATION_ID_LENGTH = 32;
@@ -96,9 +97,10 @@ export function getOrCreateInstallationId(storage = globalThis.localStorage, ran
 }
 
 export function buildDeviceRegistrationParams({ installationId, clientVersion, metadata }) {
+  const clientName = normalizedText(metadata?.clientName) || CLIENT_NAME;
   return {
     p_installation_id: installationId,
-    p_client_name: CLIENT_NAME,
+    p_client_name: clientName,
     p_client_version: normalizedText(clientVersion).slice(0, 40),
     p_platform: firstText(metadata?.platform, "Unknown").slice(0, MAX_PLATFORM_LENGTH),
     p_device_name: normalizedText(metadata?.deviceName).slice(0, MAX_DEVICE_NAME_LENGTH) || null
@@ -106,25 +108,16 @@ export function buildDeviceRegistrationParams({ installationId, clientVersion, m
 }
 
 function readTizenMetadata(runtime, fallbackDeviceName) {
-  let version = "";
+  const capabilities = getTizenCapabilities(runtime);
+  let version = capabilities.tizenVersion || "";
   let model = "";
-  try {
-    version = normalizedText(
-      runtime.tizen?.systeminfo?.getCapability?.("http://tizen.org/feature/platform.version")
-    );
-  } catch {
-    // Fall back to the user agent below.
-  }
   try {
     model = normalizedText(runtime.webapis?.productinfo?.getModel?.());
   } catch {
     // Model access is optional on wrappers and older TVs.
   }
-  if (!version) {
-    version =
-      (normalizedText(runtime.navigator?.userAgent).match(/Tizen[\s/]([0-9.]+)/i) || [])[1] || "";
-  }
   return {
+    clientName: CLIENT_NAME,
     deviceName: model || fallbackDeviceName || "Tizen TV",
     platform: version ? `Tizen ${version}` : "Tizen"
   };
@@ -165,6 +158,7 @@ async function readWebOsMetadata(runtime, fallbackDeviceName) {
   );
   const model = firstText(details.modelName, details.model);
   return {
+    clientName: CLIENT_NAME,
     deviceName: model || fallbackDeviceName || "webOS TV",
     platform: version ? `webOS ${version}` : "webOS"
   };
@@ -185,6 +179,7 @@ export async function resolveCurrentDeviceMetadata(platform = Platform, runtime 
     runtime.navigator?.platform
   );
   return {
+    clientName: CLIENT_NAME,
     deviceName: fallbackDeviceName || "Web Browser",
     platform: browserPlatform ? `Web Browser ${browserPlatform}` : "Web Browser"
   };

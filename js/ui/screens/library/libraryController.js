@@ -7,13 +7,30 @@ import {
 } from "../../../data/repository/libraryRepository.js";
 import { AuthManager } from "../../../core/auth/authManager.js";
 import { watchedItemsRepository } from "../../../data/repository/watchedItemsRepository.js";
+import { watchedTitleStateRepository } from "../../../data/repository/watchedTitleStateRepository.js";
 import { I18n } from "../../../i18n/index.js";
-import { buildWatchedTitleIdSet } from "../../components/watchedTitleBadge.js";
+import { buildWatchedTitleIdSet, isTitleItemWatched } from "../../components/watchedTitleBadge.js";
+import {
+  cloudLibraryRepository,
+  cloudLibrarySettingsSignature
+} from "../../../data/repository/cloudLibraryRepository.js";
+import {
+  CLOUD_LIBRARY_ITEM_TYPES,
+  playableCloudFiles
+} from "../../../core/cloud/cloudLibraryModels.js";
+import { DebridSettingsStore } from "../../../data/local/debridSettingsStore.js";
+import { LibraryPreferencesStore } from "../../../data/local/libraryPreferencesStore.js";
 
 const ALL_KEY = "__all__";
 const MESSAGE_CLEAR_MS = 2400;
 const SYNC_LOADING_MIN_MS = 700;
 const LEADING_ARTICLE_REGEX = /^(the|an|a)\s+/i;
+export const LIBRARY_VIEW_MODE = { SAVED: "saved", CLOUD: "cloud" };
+export const LIBRARY_WATCHED_FILTER = {
+  ALL: "all",
+  WATCHED: "watched",
+  UNWATCHED: "unwatched"
+};
 
 export const LIBRARY_SORT_OPTIONS = [
   {
@@ -47,9 +64,11 @@ export const LIBRARY_PRIVACY_OPTIONS = [
 ];
 
 let persistedPosterFocusKey = null;
+let persistedLibraryViewMode = LIBRARY_VIEW_MODE.SAVED;
 
 function makeInitialState() {
   return {
+    viewMode: persistedLibraryViewMode,
     sourceMode: LibrarySourceMode.LOCAL,
     allItems: [],
     visibleItems: [],
@@ -64,6 +83,7 @@ function makeInitialState() {
     selectedTypeKey: ALL_KEY,
     selectedGenre: null,
     selectedYear: null,
+    selectedWatchedFilter: LIBRARY_WATCHED_FILTER.ALL,
     selectedSortKey: LibrarySortOptionKey.ADDED_DESC,
     expandedPicker: null,
     pickerFocusIndex: 0,
@@ -79,7 +99,91 @@ function makeInitialState() {
     lastFocusedPosterKey: persistedPosterFocusKey,
     isNuvioAccount: false,
     isTraktAuthenticated: false,
-    watchedTitleIds: new Set()
+    watchedTitleIds: new Set(),
+    cloudLibrary: {
+      isLoaded: false,
+      isEnabled: true,
+      isRefreshing: false,
+      providers: [],
+      items: []
+    },
+    visibleCloudItems: [],
+    availableCloudProviders: [],
+    availableCloudTypes: [],
+    selectedCloudProviderId: null,
+    selectedCloudType: null,
+    cloudSearchQuery: "",
+    resolvingCloudFileKey: null,
+    cloudFilePickerItem: null
+  };
+}
+
+function cloudTypeLabel(type) {
+  const labels = {
+    [CLOUD_LIBRARY_ITEM_TYPES.TORRENT]: ["cloud_library_type_torrents", "Torrents"],
+    [CLOUD_LIBRARY_ITEM_TYPES.USENET]: ["cloud_library_type_usenet", "Usenet"],
+    [CLOUD_LIBRARY_ITEM_TYPES.WEB_DOWNLOAD]: ["cloud_library_type_web", "Web"],
+    [CLOUD_LIBRARY_ITEM_TYPES.FILE]: ["cloud_library_type_files", "Files"]
+  };
+  const [key, fallback] = labels[type] || ["cloud_library_type_files", String(type || "")];
+  return t(key, {}, fallback);
+}
+
+function withVisibleCloudItems(state) {
+  const allItems = Array.isArray(state.cloudLibrary?.items) ? state.cloudLibrary.items : [];
+  const providerItems = state.selectedCloudProviderId
+    ? allItems.filter((item) => item.providerId === state.selectedCloudProviderId)
+    : allItems;
+  const typeItems = state.selectedCloudType
+    ? providerItems.filter((item) => item.type === state.selectedCloudType)
+    : providerItems;
+  const query = String(state.cloudSearchQuery || "")
+    .trim()
+    .toLowerCase();
+  const visibleCloudItems = query
+    ? typeItems.filter(
+        (item) =>
+          String(item.name || "")
+            .toLowerCase()
+            .includes(query) ||
+          (item.files || []).some((file) =>
+            String(file.name || "")
+              .toLowerCase()
+              .includes(query)
+          )
+      )
+    : typeItems;
+  const providerMap = new Map();
+  allItems.forEach((item) => {
+    const current = providerMap.get(item.providerId) || {
+      key: item.providerId,
+      label: item.providerName,
+      count: 0
+    };
+    current.count += 1;
+    providerMap.set(item.providerId, current);
+  });
+  const typeMap = new Map();
+  providerItems.forEach((item) => typeMap.set(item.type, (typeMap.get(item.type) || 0) + 1));
+  const availableCloudProviders = [...providerMap.values()].sort((left, right) =>
+    left.label.localeCompare(right.label)
+  );
+  const availableCloudTypes = Object.values(CLOUD_LIBRARY_ITEM_TYPES)
+    .filter((type) => typeMap.has(type))
+    .map((type) => ({ key: type, label: cloudTypeLabel(type), count: typeMap.get(type) }));
+  return {
+    ...state,
+    visibleCloudItems,
+    availableCloudProviders,
+    availableCloudTypes,
+    selectedCloudProviderId: availableCloudProviders.some(
+      (option) => option.key === state.selectedCloudProviderId
+    )
+      ? state.selectedCloudProviderId
+      : null,
+    selectedCloudType: availableCloudTypes.some((option) => option.key === state.selectedCloudType)
+      ? state.selectedCloudType
+      : null
   };
 }
 
@@ -258,6 +362,13 @@ function sortForState(items, state) {
     ? genreFiltered.filter((item) => itemMatchesYear(item, state.selectedYear))
     : genreFiltered;
 
+  const watchedFiltered =
+    state.selectedWatchedFilter === LIBRARY_WATCHED_FILTER.WATCHED
+      ? yearFiltered.filter((item) => isTitleItemWatched(item, state.watchedTitleIds))
+      : state.selectedWatchedFilter === LIBRARY_WATCHED_FILTER.UNWATCHED
+        ? yearFiltered.filter((item) => !isTitleItemWatched(item, state.watchedTitleIds))
+        : yearFiltered;
+
   const listMetaValue = (item, field) => {
     if (!state.selectedListKey) {
       return field === "listedAt" ? Number(item.listedAt || 0) : item.traktRank;
@@ -292,7 +403,7 @@ function sortForState(items, state) {
     return String(left.id).localeCompare(String(right.id), undefined, { sensitivity: "base" });
   };
 
-  const sorted = [...yearFiltered];
+  const sorted = [...watchedFiltered];
   sorted.sort((left, right) => {
     switch (state.selectedSortKey) {
       case LibrarySortOptionKey.DEFAULT: {
@@ -357,6 +468,10 @@ export class LibraryController {
     this.messageTimer = null;
     this.reloadToken = 0;
     this.disposed = false;
+    this.cloudSettingsSignature = cloudLibrarySettingsSignature();
+    this.unsubscribeDebridSettings = DebridSettingsStore.subscribe(() => {
+      void this.refreshCloudLibraryIfSettingsChanged();
+    });
   }
 
   async init() {
@@ -367,6 +482,8 @@ export class LibraryController {
   dispose() {
     this.disposed = true;
     this.reloadToken += 1;
+    this.unsubscribeDebridSettings?.();
+    this.unsubscribeDebridSettings = null;
     if (this.messageTimer) {
       clearTimeout(this.messageTimer);
       this.messageTimer = null;
@@ -383,6 +500,14 @@ export class LibraryController {
       availableSortOptions: [...this.state.availableSortOptions],
       allItems: [...this.state.allItems],
       visibleItems: [...this.state.visibleItems],
+      visibleCloudItems: [...this.state.visibleCloudItems],
+      availableCloudProviders: [...this.state.availableCloudProviders],
+      availableCloudTypes: [...this.state.availableCloudTypes],
+      cloudLibrary: {
+        ...this.state.cloudLibrary,
+        providers: [...(this.state.cloudLibrary?.providers || [])],
+        items: [...(this.state.cloudLibrary?.items || [])]
+      },
       watchedTitleIds: new Set(this.state.watchedTitleIds || []),
       listEditorState: copyEditorState(this.state.listEditorState)
     };
@@ -416,12 +541,25 @@ export class LibraryController {
       selectedYear
     };
     this.state.visibleItems = sortForState(this.state.allItems, this.state);
-    const hasFocusedPoster = this.state.visibleItems.some(
-      (item) => `${item.type}:${item.id}` === this.state.lastFocusedPosterKey
-    );
+    this.state = withVisibleCloudItems(this.state);
+    const hasFocusedPoster =
+      this.state.viewMode === LIBRARY_VIEW_MODE.CLOUD
+        ? this.state.visibleCloudItems.some(
+            (item) => `cloud:${item.stableKey}` === this.state.lastFocusedPosterKey
+          )
+        : this.state.visibleItems.some(
+            (item) => `${item.type}:${item.id}` === this.state.lastFocusedPosterKey
+          );
     if (!hasFocusedPoster) {
-      const firstItem = this.state.visibleItems[0] || null;
-      this.state.lastFocusedPosterKey = firstItem ? `${firstItem.type}:${firstItem.id}` : null;
+      const firstItem =
+        this.state.viewMode === LIBRARY_VIEW_MODE.CLOUD
+          ? this.state.visibleCloudItems[0] || null
+          : this.state.visibleItems[0] || null;
+      this.state.lastFocusedPosterKey = firstItem
+        ? this.state.viewMode === LIBRARY_VIEW_MODE.CLOUD
+          ? `cloud:${firstItem.stableKey}`
+          : `${firstItem.type}:${firstItem.id}`
+        : null;
       persistedPosterFocusKey = this.state.lastFocusedPosterKey;
     }
     if (options.notify !== false) {
@@ -456,12 +594,15 @@ export class LibraryController {
       return;
     }
 
+    const persistedListKey = LibraryPreferencesStore.getLastSelectedListKey();
     const nextSelectedListKey =
       sourceMode !== LibrarySourceMode.LOCAL
         ? this.state.selectedListKey &&
           listTabs.some((item) => item.key === this.state.selectedListKey)
           ? this.state.selectedListKey
-          : listTabs[0]?.key || null
+          : listTabs.some((item) => item.key === persistedListKey)
+            ? persistedListKey
+            : listTabs[0]?.key || null
         : null;
 
     const availableSortOptions =
@@ -531,6 +672,23 @@ export class LibraryController {
     this.state.visibleItems = sortForState(this.state.allItems, this.state);
     this.onChange(this.getState());
 
+    void watchedTitleStateRepository
+      .getTitleWatchedItems(allItems, { baseWatchedItems: watchedItems, limit: 5000 })
+      .then((projectedItems) => {
+        if (this.disposed || reloadToken !== this.reloadToken) {
+          return;
+        }
+        this.setState(
+          { watchedTitleIds: buildWatchedTitleIdSet(projectedItems) },
+          { reason: "watchedTitleProjection" }
+        );
+      })
+      .catch((error) => {
+        if (!this.disposed && reloadToken === this.reloadToken) {
+          console.warn("Library watched title projection failed", error);
+        }
+      });
+
     let hydrationChanged = false;
     void libraryRepository
       .hydrateItems(allItems, {
@@ -557,6 +715,9 @@ export class LibraryController {
   }
 
   getSourceLabel() {
+    if (this.state.viewMode === LIBRARY_VIEW_MODE.CLOUD) {
+      return t("library_source_cloud", {}, "CLOUD").toUpperCase();
+    }
     if (this.state.sourceMode === LibrarySourceMode.TRAKT) {
       return t("library_source_trakt", {}, "TRAKT");
     }
@@ -596,6 +757,15 @@ export class LibraryController {
 
   getSelectedYearLabel() {
     return this.state.selectedYear || t("library_type_all", {}, "All");
+  }
+
+  getSelectedWatchedLabel() {
+    const labels = {
+      [LIBRARY_WATCHED_FILTER.ALL]: t("library_watched_filter_all", {}, "All"),
+      [LIBRARY_WATCHED_FILTER.WATCHED]: t("library_watched_filter_watched", {}, "Watched"),
+      [LIBRARY_WATCHED_FILTER.UNWATCHED]: t("library_watched_filter_unwatched", {}, "Unwatched")
+    };
+    return labels[this.state.selectedWatchedFilter] || labels[LIBRARY_WATCHED_FILTER.ALL];
   }
 
   getEmptyStateTitle() {
@@ -638,6 +808,24 @@ export class LibraryController {
   }
 
   getPickerOptions(picker) {
+    if (picker === "cloud_provider") {
+      return [
+        { value: ALL_KEY, label: t("cloud_library_provider_all", {}, "All") },
+        ...this.state.availableCloudProviders.map((item) => ({
+          value: item.key,
+          label: `${item.label} (${item.count})`
+        }))
+      ];
+    }
+    if (picker === "cloud_type") {
+      return [
+        { value: ALL_KEY, label: t("cloud_library_type_all", {}, "All") },
+        ...this.state.availableCloudTypes.map((item) => ({
+          value: item.key,
+          label: `${item.label} (${item.count})`
+        }))
+      ];
+    }
     if (picker === "list") {
       return this.state.listTabs.map((item) => ({ value: item.key, label: item.title }));
     }
@@ -668,6 +856,22 @@ export class LibraryController {
         }))
       ];
     }
+    if (picker === "watched") {
+      return [
+        {
+          value: LIBRARY_WATCHED_FILTER.ALL,
+          label: t("library_watched_filter_all", {}, "All")
+        },
+        {
+          value: LIBRARY_WATCHED_FILTER.WATCHED,
+          label: t("library_watched_filter_watched", {}, "Watched")
+        },
+        {
+          value: LIBRARY_WATCHED_FILTER.UNWATCHED,
+          label: t("library_watched_filter_unwatched", {}, "Unwatched")
+        }
+      ];
+    }
     return [];
   }
 
@@ -677,15 +881,21 @@ export class LibraryController {
     let pickerFocusIndex = 0;
     if (nextExpanded) {
       const currentValue =
-        picker === "list"
-          ? this.state.selectedListKey
-          : picker === "type"
-            ? this.state.selectedTypeKey
-            : picker === "genre"
-              ? this.state.selectedGenre || ALL_KEY
-              : picker === "year"
-                ? this.state.selectedYear || ALL_KEY
-                : this.state.selectedSortKey;
+        picker === "cloud_provider"
+          ? this.state.selectedCloudProviderId || ALL_KEY
+          : picker === "cloud_type"
+            ? this.state.selectedCloudType || ALL_KEY
+            : picker === "list"
+              ? this.state.selectedListKey
+              : picker === "type"
+                ? this.state.selectedTypeKey
+                : picker === "genre"
+                  ? this.state.selectedGenre || ALL_KEY
+                  : picker === "year"
+                    ? this.state.selectedYear || ALL_KEY
+                    : picker === "watched"
+                      ? this.state.selectedWatchedFilter
+                      : this.state.selectedSortKey;
       const optionIndex = Math.max(
         0,
         options.findIndex((item) => item.value === currentValue)
@@ -736,6 +946,14 @@ export class LibraryController {
     if (!option) {
       return;
     }
+    if (picker === "cloud_provider") {
+      this.selectCloudProvider(option.value === ALL_KEY ? null : option.value);
+      return;
+    }
+    if (picker === "cloud_type") {
+      this.selectCloudType(option.value === ALL_KEY ? null : option.value);
+      return;
+    }
     if (picker === "list") {
       this.selectList(option.value);
       return;
@@ -754,10 +972,122 @@ export class LibraryController {
     }
     if (picker === "year") {
       this.selectYear(option.value === ALL_KEY ? null : option.value);
+      return;
+    }
+    if (picker === "watched") {
+      this.selectWatchedFilter(option.value);
     }
   }
 
+  async selectViewMode(mode) {
+    const normalized =
+      mode === LIBRARY_VIEW_MODE.CLOUD ? LIBRARY_VIEW_MODE.CLOUD : LIBRARY_VIEW_MODE.SAVED;
+    persistedLibraryViewMode = normalized;
+    this.setState({ viewMode: normalized, expandedPicker: null });
+    if (normalized === LIBRARY_VIEW_MODE.CLOUD && !this.state.cloudLibrary.isLoaded) {
+      await this.refreshCloudLibrary();
+    }
+  }
+
+  async refreshCloudLibrary() {
+    if (this.state.cloudLibrary.isRefreshing) return false;
+    this.setState({
+      cloudLibrary: { ...this.state.cloudLibrary, isRefreshing: true },
+      cloudFilePickerItem: null
+    });
+    try {
+      const cloudLibrary = await cloudLibraryRepository.refresh();
+      if (this.disposed) return false;
+      this.cloudSettingsSignature = cloudLibrarySettingsSignature();
+      this.setState({ cloudLibrary });
+      return true;
+    } catch (error) {
+      if (this.disposed) return false;
+      this.setTransientMessage(
+        String(error?.message || "") ||
+          t("cloud_library_load_failed", { provider: "" }, "Could not load cloud library")
+      );
+      this.setState({
+        cloudLibrary: { ...this.state.cloudLibrary, isLoaded: true, isRefreshing: false }
+      });
+      return false;
+    }
+  }
+
+  async refreshCloudLibraryIfSettingsChanged() {
+    if (this.state.viewMode !== LIBRARY_VIEW_MODE.CLOUD) return false;
+    const signature = cloudLibrarySettingsSignature();
+    if (signature === this.cloudSettingsSignature) return false;
+    this.cloudSettingsSignature = signature;
+    return this.refreshCloudLibrary();
+  }
+
+  selectCloudProvider(providerId) {
+    this.setState({ selectedCloudProviderId: providerId, expandedPicker: null });
+  }
+
+  selectCloudType(type) {
+    this.setState({ selectedCloudType: type, expandedPicker: null });
+  }
+
+  setCloudSearchQuery(query, options = {}) {
+    this.setState(
+      { cloudSearchQuery: String(query || "") },
+      { reason: options.reason || "cloudSearch" }
+    );
+  }
+
+  openCloudFilePicker(item) {
+    this.setState({ cloudFilePickerItem: item || null });
+  }
+
+  closeCloudFilePicker() {
+    if (!this.state.cloudFilePickerItem) return false;
+    this.setState({ cloudFilePickerItem: null, resolvingCloudFileKey: null });
+    return true;
+  }
+
+  cloudItemByKey(stableKey) {
+    return this.state.visibleCloudItems.find((item) => item.stableKey === stableKey) || null;
+  }
+
+  async resolveCloudPlayback(item, file) {
+    if (!item || !file || this.state.resolvingCloudFileKey) return null;
+    const resolveKey = `${item.stableKey}:${file.stableKey}`;
+    this.setState({ resolvingCloudFileKey: resolveKey });
+    try {
+      const result = await cloudLibraryRepository.resolvePlayback(item, file);
+      if (this.disposed) return null;
+      this.setState({ resolvingCloudFileKey: null });
+      if (result?.status === "success") return result;
+      const fallback =
+        result?.status === "missingCredentials"
+          ? t("cloud_library_connect_message", {}, "Connect a cloud account in Settings.")
+          : result?.status === "notPlayable"
+            ? t("cloud_library_no_playable_files", {}, "No playable files")
+            : result?.status === "disabled"
+              ? t("cloud_library_error_disabled", {}, "Cloud library is disabled.")
+              : t("cloud_library_play_failed", {}, "Could not play this cloud file.");
+      this.setTransientMessage(result?.message || fallback);
+      return null;
+    } catch (error) {
+      if (!this.disposed) {
+        this.setState({ resolvingCloudFileKey: null });
+        this.setTransientMessage(
+          String(error?.message || "") ||
+            t("cloud_library_play_failed", {}, "Could not play this cloud file.")
+        );
+      }
+      return null;
+    }
+  }
+
+  playableFilesForCloudItem(item) {
+    return playableCloudFiles(item);
+  }
+
   selectList(key) {
+    LibraryPreferencesStore.setLastSelectedListKey(key);
     this.setState({
       selectedListKey: key,
       selectedTypeKey: ALL_KEY,
@@ -785,6 +1115,17 @@ export class LibraryController {
   selectYear(key) {
     this.setState({
       selectedYear: key || null,
+      expandedPicker: null,
+      pickerFocusIndex: 0
+    });
+  }
+
+  selectWatchedFilter(key) {
+    const selectedWatchedFilter = Object.values(LIBRARY_WATCHED_FILTER).includes(key)
+      ? key
+      : LIBRARY_WATCHED_FILTER.ALL;
+    this.setState({
+      selectedWatchedFilter,
       expandedPicker: null,
       pickerFocusIndex: 0
     });
@@ -1004,6 +1345,9 @@ export class LibraryController {
   }
 
   async refreshNow() {
+    if (this.state.isSyncing) {
+      return false;
+    }
     const startedAt = Date.now();
     this.setState({ isSyncing: true, errorMessage: null });
     try {

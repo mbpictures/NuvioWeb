@@ -2,6 +2,8 @@ import { AuthManager } from "../auth/authManager.js";
 import { SupabaseApi } from "../../data/remote/supabase/supabaseApi.js";
 import { CollectionsStore } from "../../data/local/collectionsStore.js";
 import { ProfileManager } from "./profileManager.js";
+import { getSyncBackoffRemainingMs, isSyncBackoffActive } from "../sync/syncBackoffPolicy.js";
+import { registerSessionTeardownHandler } from "../auth/sessionLifecycle.js";
 
 const PULL_RPC = "sync_pull_collections";
 const PUSH_RPC = "sync_push_collections";
@@ -43,13 +45,14 @@ function parseRemoteCollectionsPayload(blob = null) {
 export const CollectionSyncService = {
   syncingFromRemoteProfiles: new Set(),
   pushTimers: new Map(),
+  syncGeneration: 0,
 
   isSyncingFromRemote(profileId = null) {
     return this.syncingFromRemoteProfiles.has(resolveProfileId(profileId));
   },
 
   async push(profileId = null) {
-    if (!AuthManager.isAuthenticated) {
+    if (!AuthManager.isAuthenticated || isSyncBackoffActive()) {
       return false;
     }
     const resolvedProfileId = resolveProfileId(profileId);
@@ -72,7 +75,7 @@ export const CollectionSyncService = {
   },
 
   async pull(profileId = null) {
-    if (!AuthManager.isAuthenticated) {
+    if (!AuthManager.isAuthenticated || isSyncBackoffActive()) {
       return false;
     }
     const resolvedProfileId = resolveProfileId(profileId);
@@ -110,7 +113,7 @@ export const CollectionSyncService = {
     }
   },
 
-  triggerPush(profileId = null) {
+  triggerPush(profileId = null, delayMs = PUSH_DEBOUNCE_MS) {
     if (!AuthManager.isAuthenticated) {
       return;
     }
@@ -118,14 +121,36 @@ export const CollectionSyncService = {
     if (this.isSyncingFromRemote(resolvedProfileId)) {
       return;
     }
+    const generation = this.syncGeneration;
     const existingTimer = this.pushTimers.get(resolvedProfileId);
     if (existingTimer) {
       clearTimeout(existingTimer);
     }
-    const timerId = setTimeout(() => {
+    const cooldownMs = getSyncBackoffRemainingMs();
+    const effectiveDelayMs = Math.max(
+      PUSH_DEBOUNCE_MS,
+      Number(delayMs) || 0,
+      cooldownMs > 0 ? cooldownMs + 50 : 0
+    );
+    const timerId = setTimeout(async () => {
+      if (generation !== this.syncGeneration) {
+        return;
+      }
       this.pushTimers.delete(resolvedProfileId);
-      void this.push(resolvedProfileId);
-    }, PUSH_DEBOUNCE_MS);
+      const didPush = await this.push(resolvedProfileId);
+      if (generation === this.syncGeneration && !didPush && isSyncBackoffActive()) {
+        this.triggerPush(resolvedProfileId, getSyncBackoffRemainingMs() + 50);
+      }
+    }, effectiveDelayMs);
     this.pushTimers.set(resolvedProfileId, timerId);
   }
 };
+
+registerSessionTeardownHandler?.(() => {
+  CollectionSyncService.syncGeneration += 1;
+  CollectionSyncService.pushTimers.forEach((timerId) => clearTimeout(timerId));
+  CollectionSyncService.pushTimers.clear();
+  CollectionSyncService.syncingFromRemoteProfiles.clear();
+  // In-flight RPCs are tracked and drained centrally by sessionLifecycle.
+  return true;
+});

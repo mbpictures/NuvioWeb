@@ -571,9 +571,10 @@ function normalizeDebridSettings(value = {}) {
     streamCodecFilter: normalizeEnum(source.streamCodecFilter, "streamCodecFilter"),
     streamBadgesEnabled: source.streamBadgesEnabled !== false,
     streamPreferences,
-    streamNameTemplate: String(
-      source.streamNameTemplate || DEBRID_SETTINGS_DEFAULTS.streamNameTemplate
-    ),
+    streamNameTemplate:
+      source.streamNameTemplate == null
+        ? DEBRID_SETTINGS_DEFAULTS.streamNameTemplate
+        : String(source.streamNameTemplate),
     streamDescriptionTemplate: normalizeStreamDescriptionTemplate(source.streamDescriptionTemplate)
   };
 }
@@ -582,8 +583,61 @@ const store = createProfileScopedStore({
   key: KEY,
   normalize: normalizeDebridSettings
 });
+const settingsListeners = new Set();
+
+function notifySettingsListeners(profileId, settings) {
+  settingsListeners.forEach((listener) => {
+    try {
+      listener(settings, profileId);
+    } catch (error) {
+      console.warn("Debrid settings listener failed", error);
+    }
+  });
+}
+
+function providerApiKeyField(providerId) {
+  const normalizedProviderId = String(providerId || "")
+    .trim()
+    .toLowerCase();
+  return normalizedProviderId === "torbox"
+    ? "torboxApiKey"
+    : normalizedProviderId === "premiumize"
+      ? "premiumizeApiKey"
+      : normalizedProviderId === "realdebrid"
+        ? "realDebridApiKey"
+        : "";
+}
+
+function queueProviderCredentialPush(profileId) {
+  void import("../../core/profile/providerCredentialSyncService.js")
+    .then(({ ProviderCredentialSyncService }) => ProviderCredentialSyncService.queuePush(profileId))
+    .catch((error) => console.warn("Provider credential sync enqueue failed", error));
+}
+
+function credentialSignature(settings = {}) {
+  return JSON.stringify([
+    String(settings.torboxApiKey || ""),
+    String(settings.premiumizeApiKey || ""),
+    String(settings.realDebridApiKey || "")
+  ]);
+}
+
+function queueIfCredentialChanged(profileId, previous, next, options = {}) {
+  if (
+    !options.silentCredentialSync &&
+    credentialSignature(previous) !== credentialSignature(next)
+  ) {
+    queueProviderCredentialPush(profileId);
+  }
+}
 
 export const DebridSettingsStore = {
+  subscribe(listener) {
+    if (typeof listener !== "function") return () => {};
+    settingsListeners.add(listener);
+    return () => settingsListeners.delete(listener);
+  },
+
   getForProfile(profileId) {
     return store.getForProfile(profileId);
   },
@@ -593,33 +647,35 @@ export const DebridSettingsStore = {
   },
 
   replaceForProfile(profileId, nextValue, options = {}) {
-    return store.replaceForProfile(profileId, nextValue, options);
+    const previous = store.getForProfile(profileId);
+    const saved = store.replaceForProfile(profileId, nextValue, options);
+    queueIfCredentialChanged(profileId, previous, saved, options);
+    notifySettingsListeners(profileId, saved);
+    return saved;
   },
 
   setForProfile(profileId, partial, options = {}) {
-    return store.setForProfile(profileId, partial, options);
+    const previous = store.getForProfile(profileId);
+    const saved = store.setForProfile(profileId, partial, options);
+    queueIfCredentialChanged(profileId, previous, saved, options);
+    notifySettingsListeners(profileId, saved);
+    return saved;
   },
 
   set(partial, options = {}) {
-    return store.set(partial, options);
+    return this.setForProfile(options.profileId, partial, options);
   },
 
   setProviderApiKey(providerId, apiKey, options = {}) {
-    const normalizedProviderId = String(providerId || "")
-      .trim()
-      .toLowerCase();
-    const field =
-      normalizedProviderId === "torbox"
-        ? "torboxApiKey"
-        : normalizedProviderId === "premiumize"
-          ? "premiumizeApiKey"
-          : normalizedProviderId === "realdebrid"
-            ? "realDebridApiKey"
-            : "";
+    return this.setProviderApiKeyForProfile(options.profileId, providerId, apiKey, options);
+  },
+
+  setProviderApiKeyForProfile(profileId, providerId, apiKey, options = {}) {
+    const field = providerApiKeyField(providerId);
     if (!field) {
-      return store.get();
+      return store.getForProfile(profileId);
     }
-    const current = store.get();
+    const current = store.getForProfile(profileId);
     const partial = { [field]: String(apiKey || "").trim() };
     const next = { ...current, ...partial };
     const hasAnyVisibleKey = Boolean(next.torboxApiKey || next.premiumizeApiKey);
@@ -627,7 +683,12 @@ export const DebridSettingsStore = {
       partial.enabled = false;
     }
     partial.preferredResolverProviderId = normalizePreferredResolverProviderId(next);
-    return store.set(partial, options);
+    const saved = store.setForProfile(profileId, partial, options);
+    if (!options.silentCredentialSync && String(current[field] || "") !== partial[field]) {
+      queueProviderCredentialPush(profileId);
+    }
+    notifySettingsListeners(profileId, saved);
+    return saved;
   },
 
   setStreamMaxResults(maxResults, options = {}) {

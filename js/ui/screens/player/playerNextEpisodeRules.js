@@ -1,5 +1,41 @@
 const VALID_NEXT_EPISODE_THRESHOLD_MODES = new Set(["PERCENTAGE", "MINUTES_BEFORE_END"]);
 const OUTRO_SEGMENT_TYPES = new Set(["outro", "ed", "mixed-ed"]);
+const ISO_DATE_PATTERN = /\b\d{4}-\d{2}-\d{2}\b/;
+
+function parseEpisodeReleaseInstant(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
+  const parsed = Date.parse(dateOnly ? `${raw}T00:00:00.000Z` : raw);
+  if (Number.isFinite(parsed)) {
+    return parsed;
+  }
+
+  const embeddedDate = raw.match(ISO_DATE_PATTERN)?.[0] || "";
+  if (!embeddedDate) {
+    return null;
+  }
+  const embeddedParsed = Date.parse(`${embeddedDate}T00:00:00.000Z`);
+  return Number.isFinite(embeddedParsed) ? embeddedParsed : null;
+}
+
+function hasEpisodeAired(value, now = Date.now()) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return true;
+  }
+
+  const releaseTime = parseEpisodeReleaseInstant(raw);
+  if (!Number.isFinite(releaseTime)) {
+    return true;
+  }
+
+  const nowTime = Number(now);
+  return Number.isFinite(nowTime) ? releaseTime <= nowTime : true;
+}
 
 function normalizeNextEpisodeThresholdMode(value) {
   const mode = String(value || "")
@@ -104,6 +140,7 @@ function shouldEnterStillWatchingPrompt({
 }
 
 export {
+  hasEpisodeAired,
   normalizeNextEpisodeThresholdMode,
   normalizeThresholdMinutesBeforeEnd,
   normalizeThresholdPercent,

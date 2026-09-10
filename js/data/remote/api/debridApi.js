@@ -1,3 +1,5 @@
+import { fetchViaWebOsDebridAuthProxy } from "../../../platform/webos/webosSupabaseProxy.js";
+
 const TORBOX_BASE_URL = "https://api.torbox.app/";
 const PREMIUMIZE_BASE_URL = "https://www.premiumize.me/";
 const REAL_DEBRID_BASE_URL = "https://api.real-debrid.com/rest/1.0/";
@@ -9,12 +11,15 @@ function joinUrl(baseUrl, path) {
 async function requestJson(baseUrl, path, options = {}) {
   let response;
   try {
-    response = await fetch(joinUrl(baseUrl, path), {
+    const url = joinUrl(baseUrl, path);
+    const fetchOptions = {
       ...options,
       headers: {
         ...(options.headers || {})
       }
-    });
+    };
+    response =
+      (await fetchViaWebOsDebridAuthProxy(url, fetchOptions)) || (await fetch(url, fetchOptions));
   } catch (error) {
     return {
       ok: false,
@@ -41,6 +46,30 @@ async function requestJson(baseUrl, path, options = {}) {
   };
 }
 
+async function requestDebridAuthJson(baseUrl, path, options = {}) {
+  const url = joinUrl(baseUrl, path);
+  const fetchOptions = {
+    ...options,
+    headers: { ...(options.headers || {}) }
+  };
+  try {
+    const response =
+      (await fetchViaWebOsDebridAuthProxy(url, fetchOptions)) || (await fetch(url, fetchOptions));
+    const text = await response.text();
+    let data = null;
+    if (text.trim()) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+    }
+    return { ok: response.ok, status: response.status, data, text };
+  } catch (error) {
+    return { ok: false, status: 0, data: null, text: "", error };
+  }
+}
+
 function authHeaders(apiKey) {
   return {
     Authorization: `Bearer ${String(apiKey || "").trim()}`
@@ -60,6 +89,42 @@ function formBody(values = {}) {
 }
 
 export const DebridApi = {
+  async startTorboxDeviceAuthorization(appName = "Nuvio") {
+    const query = new URLSearchParams({ app: String(appName || "Nuvio") });
+    return requestDebridAuthJson(
+      TORBOX_BASE_URL,
+      `v1/api/user/auth/device/start?${query.toString()}`
+    );
+  },
+
+  async redeemTorboxDeviceAuthorization(deviceCode) {
+    return requestDebridAuthJson(TORBOX_BASE_URL, "v1/api/user/auth/device/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_code: String(deviceCode || "").trim() })
+    });
+  },
+
+  async startPremiumizeDeviceAuthorization(clientId) {
+    return requestDebridAuthJson(PREMIUMIZE_BASE_URL, "token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: formBody({ response_type: "device_code", client_id: clientId }).toString()
+    });
+  },
+
+  async redeemPremiumizeDeviceAuthorization(deviceCode, clientId) {
+    return requestDebridAuthJson(PREMIUMIZE_BASE_URL, "token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: formBody({
+        grant_type: "device_code",
+        code: deviceCode,
+        client_id: clientId
+      }).toString()
+    });
+  },
+
   async validateTorboxApiKey(apiKey) {
     const response = await requestJson(TORBOX_BASE_URL, "v1/api/user/me", {
       headers: authHeaders(apiKey)
@@ -138,6 +203,31 @@ export const DebridApi = {
     });
   },
 
+  async torboxListCloudItems(apiKey, path) {
+    return requestJson(TORBOX_BASE_URL, path, { headers: authHeaders(apiKey) });
+  },
+
+  async torboxRequestCloudDownloadLink(apiKey, itemType, itemId, fileId) {
+    const type = String(itemType || "");
+    const config =
+      type === "Usenet"
+        ? { path: "v1/api/usenet/requestdl", idKey: "usenet_id" }
+        : type === "WebDownload"
+          ? { path: "v1/api/webdl/requestdl", idKey: "web_id" }
+          : { path: "v1/api/torrents/requestdl", idKey: "torrent_id" };
+    const query = new URLSearchParams({
+      token: String(apiKey || "").trim(),
+      [config.idKey]: String(itemId),
+      zip_link: "false",
+      redirect: "false",
+      append_name: "false"
+    });
+    if (fileId != null) query.set("file_id", String(fileId));
+    return requestJson(TORBOX_BASE_URL, `${config.path}?${query.toString()}`, {
+      headers: authHeaders(apiKey)
+    });
+  },
+
   async premiumizeDirectDownload(apiKey, source) {
     return requestJson(PREMIUMIZE_BASE_URL, "api/transfer/directdl", {
       method: "POST",
@@ -160,6 +250,19 @@ export const DebridApi = {
       method: "POST",
       headers: authHeaders(apiKey),
       body
+    });
+  },
+
+  async premiumizeListCloudItems(apiKey) {
+    return requestJson(PREMIUMIZE_BASE_URL, "api/item/listall", {
+      headers: authHeaders(apiKey)
+    });
+  },
+
+  async premiumizeCloudItemDetails(apiKey, itemId) {
+    const query = new URLSearchParams({ id: String(itemId || "") });
+    return requestJson(PREMIUMIZE_BASE_URL, `api/item/details?${query.toString()}`, {
+      headers: authHeaders(apiKey)
     });
   },
 

@@ -1,9 +1,11 @@
 import { createProfileScopedStore } from "./profileScopedStore.js";
 import { LocalStore } from "../../core/storage/localStore.js";
+import { normalizeHomeImdbRatingsVisibility } from "../../core/util/imdbRatingVisibility.js";
 
 const KEY = "layoutPreferences";
 
 const DEFAULTS = {
+  hasChosenLayout: false,
   homeLayout: "modern",
   continueWatchingCardStyle: "card",
   heroSectionEnabled: true,
@@ -42,15 +44,24 @@ const DEFAULTS = {
   showFullReleaseDate: true,
   useEpisodeThumbnailsInCw: true,
   blurContinueWatchingNextUp: false,
+  continueWatchingEnabled: true,
   showUnairedNextUp: true,
   nextUpFromFurthestEpisode: true,
-  continueWatchingSortMode: "default"
+  continueWatchingSortMode: "default",
+  homeImdbRatingsVisibility: "SHOW_ALL"
 };
 
 function normalizeContinueWatchingSortMode(value) {
   const normalized = String(value || "default")
     .trim()
     .toLowerCase();
+  if (
+    normalized === "split_upcoming" ||
+    normalized === "split-upcoming" ||
+    normalized === "splitupcoming"
+  ) {
+    return "split_upcoming";
+  }
   return normalized === "streaming_style" ||
     normalized === "streaming-style" ||
     normalized === "streamingstyle"
@@ -73,6 +84,10 @@ function normalizeLayoutPreferences(value = {}) {
 
   return {
     ...merged,
+    hasChosenLayout:
+      typeof value?.hasChosenLayout === "boolean"
+        ? value.hasChosenLayout
+        : Object.keys(value || {}).length > 0,
     continueWatchingCardStyle: ["card", "wide", "poster"].includes(continueWatchingCardStyle)
       ? continueWatchingCardStyle
       : "card",
@@ -131,9 +146,11 @@ function normalizeLayoutPreferences(value = {}) {
     blurUnwatchedEpisodes: Boolean(merged.blurUnwatchedEpisodes),
     useEpisodeThumbnailsInCw: merged.useEpisodeThumbnailsInCw !== false,
     blurContinueWatchingNextUp: Boolean(merged.blurContinueWatchingNextUp),
+    continueWatchingEnabled: merged.continueWatchingEnabled !== false,
     showUnairedNextUp: merged.showUnairedNextUp !== false,
     nextUpFromFurthestEpisode: merged.nextUpFromFurthestEpisode !== false,
     continueWatchingSortMode: normalizeContinueWatchingSortMode(merged.continueWatchingSortMode),
+    homeImdbRatingsVisibility: normalizeHomeImdbRatingsVisibility(merged.homeImdbRatingsVisibility),
     collapseSidebar: modernSidebar ? false : Boolean(merged.collapseSidebar),
     modernSidebar,
     modernSidebarBlur: modernSidebar

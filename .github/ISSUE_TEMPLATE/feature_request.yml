@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an improvement or new feature for NuvioTV Web.
+description: Suggest an improvement or new feature for Nuvio TV.
 title: "[Feature]: "
 labels:
   - enhancement
@@ -46,7 +46,6 @@ body:
         - LG webOS / Luna media
         - Packaging / Build
         - Installer
-        - TizenBrew wrapper
         - webOS Homebrew wrapper
         - Browser development mode
         - Documentation
@@ -64,8 +63,7 @@ body:
         - Samsung Tizen
         - LG webOS
         - Browser development mode
-        - Nuvio WebTV Installer
-        - TizenBrew wrapper
+        - Nuvio TV Installer
         - webOS Homebrew wrapper
         - Shared web app
         - Not sure
@@ -88,7 +86,7 @@ body:
     id: proposed
     attributes:
       label: Proposed solution
-      description: What would you like NuvioTV Web to do?
+      description: What would you like Nuvio TV to do?
       placeholder: |
         I would like the app to...
         The expected behavior would be...

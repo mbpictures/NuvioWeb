@@ -43,19 +43,14 @@ function hasActiveModal() {
 }
 
 const BACK_DEBOUNCE_MS = 250;
-const TIZEN_PAIRED_BACK_EVENT_WINDOW_MS = 3000;
-
-function getBackInputChannel(event) {
-  return String(event?.type || "").toLowerCase() === "tizenhwkey" ? "tizenhwkey" : "keydown";
-}
 
 export const FocusEngine = {
   lastBackHandledAt: 0,
-  lastBackHandledChannel: "",
   lastPointerFocusTarget: null,
   pointerMoveFrame: null,
   pendingPointerMoveEvent: null,
   activeKeyDownStartedAt: new Map(),
+  activeBackKeyIdentities: new Set(),
 
   init() {
     this.boundHandleKey = this.handleKey.bind(this);
@@ -99,14 +94,7 @@ export const FocusEngine = {
   handleBack(event, normalizedEvent = buildNormalizedEvent(event)) {
     const now = Date.now();
     const elapsedSinceHandled = now - Number(this.lastBackHandledAt || 0);
-    const inputChannel = getBackInputChannel(event);
-    const isPairedTizenEvent = Boolean(
-      Platform.isTizen() &&
-      this.lastBackHandledChannel &&
-      this.lastBackHandledChannel !== inputChannel &&
-      elapsedSinceHandled < TIZEN_PAIRED_BACK_EVENT_WINDOW_MS
-    );
-    if (normalizedEvent.repeat || elapsedSinceHandled < BACK_DEBOUNCE_MS || isPairedTizenEvent) {
+    if (normalizedEvent.repeat || elapsedSinceHandled < BACK_DEBOUNCE_MS) {
       normalizedEvent.preventDefault();
       normalizedEvent.stopPropagation();
       normalizedEvent.stopImmediatePropagation();
@@ -114,7 +102,6 @@ export const FocusEngine = {
       return;
     }
     this.lastBackHandledAt = now;
-    this.lastBackHandledChannel = inputChannel;
 
     normalizedEvent.preventDefault();
     normalizedEvent.stopPropagation();
@@ -130,6 +117,11 @@ export const FocusEngine = {
       if (consumeResult === "history") {
         return;
       }
+      Router.suppressNextPopstate?.();
+      return;
+    }
+
+    if (hasActiveModal()) {
       Router.suppressNextPopstate?.();
       return;
     }
@@ -162,6 +154,20 @@ export const FocusEngine = {
         originalKeyCode: normalizedEvent.originalKeyCode
       })
     ) {
+      // Samsung TV delivers the mandatory Back key through keydown/keyup. A
+      // held remote key can emit another keydown after the 250 ms timing
+      // debounce, while the first Player -> Sources transition is still
+      // mounting. Treat one keydown/keyup cycle as one Android-style Back
+      // action; a later press is released first and therefore remains valid.
+      const backKeyIdentity = keyIdentity || "back";
+      if (this.activeBackKeyIdentities.has(backKeyIdentity)) {
+        normalizedEvent.preventDefault();
+        normalizedEvent.stopPropagation();
+        normalizedEvent.stopImmediatePropagation();
+        Router.consumeRouteReturnBackGuard?.();
+        return;
+      }
+      this.activeBackKeyIdentities.add(backKeyIdentity);
       this.handleBack(event, normalizedEvent);
       return;
     }
@@ -176,10 +182,21 @@ export const FocusEngine = {
   },
 
   handleKeyUp(event) {
-    if (event?.target && !document.contains(event.target)) return;
-
     const normalizedEvent = buildNormalizedEvent(event);
     const keyIdentity = this.getKeyIdentity(normalizedEvent);
+    if (
+      Platform.isBackEvent({
+        target: normalizedEvent.target,
+        key: normalizedEvent.key,
+        code: normalizedEvent.code,
+        keyName: normalizedEvent.keyName,
+        keyCode: normalizedEvent.keyCode,
+        originalKeyCode: normalizedEvent.originalKeyCode
+      })
+    ) {
+      this.activeBackKeyIdentities.delete(keyIdentity || "back");
+    }
+    if (event?.target && !document.contains(event.target)) return;
     if (hasActiveModal()) {
       if (keyIdentity) {
         this.activeKeyDownStartedAt.delete(keyIdentity);
@@ -212,7 +229,11 @@ export const FocusEngine = {
   },
 
   getPointerFocusable(event) {
-    const target = event?.target?.closest?.(".focusable");
+    const target =
+      event?.target?.closest?.(".focusable") ||
+      event?.target?.closest?.(
+        "button, [role='button'], a[href], input, textarea, select, [data-action], [data-action-id]"
+      );
     if (!target || !(target instanceof HTMLElement) || !document.contains(target)) {
       return null;
     }
@@ -248,7 +269,7 @@ export const FocusEngine = {
     }
 
     const focusRoot = screenContainer || document;
-    focusRoot.querySelectorAll?.(".focusable.focused")?.forEach((node) => {
+    focusRoot.querySelectorAll?.(".focused")?.forEach((node) => {
       if (node !== target) {
         node.classList.remove("focused");
       }
@@ -303,26 +324,44 @@ export const FocusEngine = {
     this.focusPointerTarget(target, event);
   },
 
-  async handlePointerClick(event) {
+  handlePointerClick(event) {
     if (!Platform.isWebOS()) {
       return;
     }
     const target = this.getPointerFocusable(event);
+    const currentScreen = Router.getCurrentScreen();
     if (!target) {
+      const handled = currentScreen?.onPointerSurfaceActivate?.(event?.target, event);
+      if (handled && typeof handled.then === "function") {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        event?.stopImmediatePropagation?.();
+        handled.catch((error) => console.warn("Screen pointer surface handler failed", error));
+      } else if (handled) {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        event?.stopImmediatePropagation?.();
+      }
       return;
     }
     if (hasActiveModal() && !target.closest?.(".nuvio-dialog-backdrop")) {
       return;
     }
     this.focusPointerTarget(target, event);
-    const currentScreen = Router.getCurrentScreen();
     if (hasActiveModal()) {
       return;
     }
     if (typeof currentScreen?.onPointerActivate !== "function") {
       return;
     }
-    const handled = await currentScreen.onPointerActivate(target, event);
+    const handled = currentScreen.onPointerActivate(target, event);
+    if (handled && typeof handled.then === "function") {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      event?.stopImmediatePropagation?.();
+      handled.catch((error) => console.warn("Screen pointer activation failed", error));
+      return;
+    }
     if (handled) {
       event?.preventDefault?.();
       event?.stopPropagation?.();

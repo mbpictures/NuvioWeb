@@ -1,9 +1,11 @@
 import { LocalStore } from "../storage/localStore.js";
 import { AuthManager } from "../auth/authManager.js";
 import { SupabaseApi } from "../../data/remote/supabase/supabaseApi.js";
-import { ThemeStore } from "../../data/local/themeStore.js";
+import { accentColorForTheme, ThemeStore } from "../../data/local/themeStore.js";
 import { LayoutPreferences } from "../../data/local/layoutPreferences.js";
-import { HomeCatalogStore } from "../../data/local/homeCatalogStore.js";
+import { ExperienceModeStore } from "../../data/local/experienceModeStore.js";
+import { TrackPreferencesStore } from "../../data/local/trackPreferencesStore.js";
+import { ContinueWatchingPreferences } from "../../data/local/continueWatchingPreferences.js";
 import { PlayerSettingsStore } from "../../data/local/playerSettingsStore.js";
 import { TmdbSettingsStore } from "../../data/local/tmdbSettingsStore.js";
 import { MdbListSettingsStore } from "../../data/local/mdbListSettingsStore.js";
@@ -13,7 +15,6 @@ import {
 } from "../../data/local/traktSettingsStore.js";
 import { AnimeSkipSettingsStore } from "../../data/local/animeSkipSettingsStore.js";
 import { StreamBadgeSettingsStore } from "../../data/local/streamBadgeSettingsStore.js";
-import { TorrentSettingsStore } from "../../data/local/torrentSettingsStore.js";
 import {
   ANDROID_DEBRID_STREAM_DESCRIPTION_TEMPLATE,
   DebridSettingsStore,
@@ -26,17 +27,46 @@ import {
 import { ProfileManager } from "./profileManager.js";
 import {
   clearProfileSettingsCloudSyncPending,
+  getProfileSettingsCloudSyncPendingVersion,
   hasProfileSettingsCloudSyncPending
 } from "../../data/local/profileScopedStore.js";
+import { isSyncBackoffActive } from "../sync/syncBackoffPolicy.js";
 import { normalizeSubtitleVerticalOffset } from "../player/subtitleVerticalOffset.js";
+import {
+  androidColorIntToSubtitleTextOpacity,
+  normalizeSubtitleTextOpacity
+} from "../player/subtitleTextOpacity.js";
 import { isFastHorizontalNavigationEnabled } from "../../platform/sharedKeys.js";
 
 const PULL_RPC = "sync_pull_profile_settings_blob";
 const PUSH_RPC = "sync_push_profile_settings_blob";
 const SETTINGS_SYNC_PLATFORM = "tv";
 const CACHE_KEY = "profileSettingsSyncCache";
-const EXPERIENCE_SETTINGS_FEATURE = "experience_settings";
-const WEB_EXPERIENCE_MODE = "ADVANCED";
+const syncInFlightByProfile = new Map();
+const EXCLUDED_PROFILE_KEYS = {
+  layout_settings: new Set(["search_discover_enabled"]),
+  player_settings: new Set(["audio_amplification_db", "persist_audio_amplification"]),
+  mdblist_settings: new Set(["mdblist_api_key"]),
+  debrid_settings: new Set([
+    "torbox_api_key",
+    "premiumize_api_key",
+    "real_debrid_api_key",
+    "stream_badges_enabled",
+    "stream_show_badges",
+    "show_stream_badges"
+  ]),
+  animeskip_settings: new Set(["animeskip_client_id"])
+};
+
+export function profileSettingsExcludedKeys(featureName) {
+  return Array.from(EXCLUDED_PROFILE_KEYS[String(featureName || "").trim()] || []).sort();
+}
+
+export function withoutExcludedProfileSettingsKeys(featureName, featurePayload = {}) {
+  const sanitized = cloneValue(featurePayload) || {};
+  EXCLUDED_PROFILE_KEYS[featureName]?.forEach((key) => delete sanitized[key]);
+  return sanitized;
+}
 
 function resolveProfileId(profileId = null) {
   const raw = Number(profileId ?? ProfileManager.getActiveProfileId() ?? 1);
@@ -44,6 +74,25 @@ function resolveProfileId(profileId = null) {
     return Math.trunc(raw);
   }
   return 1;
+}
+
+async function withProfileSettingsSyncLock(profileId, task) {
+  const key = String(resolveProfileId(profileId));
+  const previous = syncInFlightByProfile.get(key) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  syncInFlightByProfile.set(key, current);
+  await previous.catch(() => false);
+  try {
+    return await task();
+  } finally {
+    release();
+    if (syncInFlightByProfile.get(key) === current) {
+      syncInFlightByProfile.delete(key);
+    }
+  }
 }
 
 function cloneValue(value) {
@@ -84,33 +133,6 @@ function normalizeFeaturePayload(value) {
   }, {});
 }
 
-function normalizeStringArray(value) {
-  if (Array.isArray(value)) {
-    return Array.from(new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean)));
-  }
-  if (typeof value === "string") {
-    return Array.from(
-      new Set(
-        value
-          .split(",")
-          .map((entry) => entry.trim())
-          .filter(Boolean)
-      )
-    );
-  }
-  return [];
-}
-
-function firstStringArrayFromRaw(raw = {}, keys = []) {
-  for (const key of keys) {
-    if (!Object.prototype.hasOwnProperty.call(raw, key)) {
-      continue;
-    }
-    return normalizeStringArray(raw[key]);
-  }
-  return null;
-}
-
 function normalizeBlob(blob = {}) {
   const features = isPlainObject(blob?.features) ? blob.features : {};
   return {
@@ -123,39 +145,6 @@ function normalizeBlob(blob = {}) {
       accumulator[normalizedFeatureName] = cloneValue(featureValue) || {};
       return accumulator;
     }, {})
-  };
-}
-
-function readEncodedPreferenceValue(featurePayload = {}, key = "") {
-  const entry = featurePayload?.[key];
-  return isEncodedPreferenceValue(entry) ? entry.value : entry;
-}
-
-function hasValidExperienceMode(blob = {}) {
-  const mode = String(
-    readEncodedPreferenceValue(blob?.features?.[EXPERIENCE_SETTINGS_FEATURE], "mode") || ""
-  ).toUpperCase();
-  return mode === "ESSENTIAL" || mode === "ADVANCED";
-}
-
-function ensureExperienceSettingsContract(blob = {}) {
-  const normalized = normalizeBlob(blob);
-  if (hasValidExperienceMode(normalized)) {
-    return normalized;
-  }
-  return {
-    ...normalized,
-    features: {
-      ...normalized.features,
-      [EXPERIENCE_SETTINGS_FEATURE]: {
-        ...(normalized.features[EXPERIENCE_SETTINGS_FEATURE] || {}),
-        mode: { type: "string", value: WEB_EXPERIENCE_MODE }
-      },
-      layout_settings: {
-        ...(normalized.features.layout_settings || {}),
-        has_chosen_layout: { type: "boolean", value: true }
-      }
-    }
   };
 }
 
@@ -217,10 +206,6 @@ function encodeFeaturePayload(featurePayload = {}, featureName = "") {
     }
     return accumulator;
   }, {});
-}
-
-function hasObjectEntries(value) {
-  return isPlainObject(value) && Object.keys(value).length > 0;
 }
 
 function readCache() {
@@ -550,6 +535,13 @@ function normalizeContinueWatchingSortModeForAndroid(value) {
   const normalized = String(value || "default")
     .trim()
     .toLowerCase();
+  if (
+    normalized === "split_upcoming" ||
+    normalized === "split-upcoming" ||
+    normalized === "splitupcoming"
+  ) {
+    return "SPLIT_UPCOMING";
+  }
   return normalized === "streaming_style" ||
     normalized === "streaming-style" ||
     normalized === "streamingstyle"
@@ -561,6 +553,13 @@ function normalizeContinueWatchingSortModeForWeb(value) {
   const normalized = String(value || "default")
     .trim()
     .toLowerCase();
+  if (
+    normalized === "split_upcoming" ||
+    normalized === "split-upcoming" ||
+    normalized === "splitupcoming"
+  ) {
+    return "split_upcoming";
+  }
   return normalized === "streaming_style" ||
     normalized === "streaming-style" ||
     normalized === "streamingstyle"
@@ -605,7 +604,7 @@ function normalizeTmdbLanguageForWeb(value) {
   }
 }
 
-function hexToAndroidColorInt(value, fallback = "#ffffff") {
+function hexToAndroidColorInt(value, fallback = "#ffffff", alphaPercent = 100) {
   const match = String(value || fallback)
     .trim()
     .match(/^#([0-9a-f]{6})$/i);
@@ -613,7 +612,8 @@ function hexToAndroidColorInt(value, fallback = "#ffffff") {
   const red = parseInt(hex.slice(0, 2), 16);
   const green = parseInt(hex.slice(2, 4), 16);
   const blue = parseInt(hex.slice(4, 6), 16);
-  return (0xff << 24) | (red << 16) | (green << 8) | blue;
+  const alpha = Math.round((normalizeSubtitleTextOpacity(alphaPercent) / 100) * 0xff);
+  return (alpha << 24) | (red << 16) | (green << 8) | blue;
 }
 
 function androidColorIntToHex(value, fallback = "#ffffff") {
@@ -676,7 +676,9 @@ const FEATURE_ADAPTERS = {
       const raw = normalizeFeaturePayload(rawFeature);
       const partial = {};
       if (stringOrNull(raw.selected_theme)) {
-        partial.themeName = String(raw.selected_theme).toUpperCase();
+        const selectedTheme = String(raw.selected_theme).toUpperCase();
+        partial.themeName = selectedTheme;
+        partial.accentColor = accentColorForTheme(selectedTheme);
       }
       if (stringOrNull(raw.selected_font)) {
         partial.fontFamily = String(raw.selected_font).toUpperCase();
@@ -701,14 +703,13 @@ const FEATURE_ADAPTERS = {
       const layout = LayoutPreferences.getForProfile(profileId);
       return {
         selected_layout: normalizeHomeLayoutForAndroid(layout.homeLayout),
-        has_chosen_layout: true,
+        has_chosen_layout: Boolean(layout.hasChosenLayout),
         sidebar_collapsed_by_default: Boolean(layout.collapseSidebar),
         modern_sidebar_enabled: Boolean(layout.modernSidebar),
         modern_sidebar_blur_enabled: Boolean(layout.modernSidebarBlur),
         modern_landscape_posters_enabled: Boolean(layout.modernLandscapePostersEnabled),
         modern_hero_full_screen_backdrop: Boolean(layout.modernHeroFullScreenBackdropEnabled),
         hero_section_enabled: Boolean(layout.heroSectionEnabled),
-        search_discover_enabled: Boolean(layout.searchDiscoverEnabled),
         discover_location: normalizeDiscoverLocationForAndroid(layout.discoverLocation),
         hero_catalog_keys: Array.isArray(layout.heroCatalogKeys) ? layout.heroCatalogKeys : [],
         poster_labels_enabled: Boolean(layout.posterLabelsEnabled),
@@ -718,7 +719,7 @@ const FEATURE_ADAPTERS = {
         focused_poster_backdrop_expand_enabled: Boolean(layout.focusedPosterBackdropExpandEnabled),
         focused_poster_backdrop_expand_delay_seconds: Math.max(
           0,
-          Number(layout.focusedPosterBackdropExpandDelaySeconds ?? 3) || 0
+          Math.trunc(Number(layout.focusedPosterBackdropExpandDelaySeconds ?? 3) || 0)
         ),
         focused_poster_backdrop_trailer_enabled: Boolean(
           layout.focusedPosterBackdropTrailerEnabled
@@ -727,19 +728,31 @@ const FEATURE_ADAPTERS = {
         focused_poster_backdrop_trailer_playback_target: normalizeTrailerTargetForAndroid(
           layout.focusedPosterBackdropTrailerPlaybackTarget
         ),
-        poster_card_width_dp: Math.max(72, Number(layout.posterCardWidthDp ?? 126) || 126),
+        poster_card_width_dp: Math.max(
+          72,
+          Math.trunc(Number(layout.posterCardWidthDp ?? 126) || 126)
+        ),
         poster_card_height_dp: Math.max(
           108,
-          Math.trunc((Number(layout.posterCardWidthDp ?? 126) || 126) * 1.5)
+          Math.trunc((Math.trunc(Number(layout.posterCardWidthDp ?? 126) || 126) * 3) / 2)
         ),
         poster_card_corner_radius_dp: Math.max(
           0,
-          Number(layout.posterCardCornerRadiusDp ?? 12) || 12
+          Math.trunc(Number(layout.posterCardCornerRadiusDp ?? 12) || 12)
         ),
         card_depth_enabled: Boolean(layout.cardDepthEnabled),
-        card_depth_edge_strength: Number(layout.cardDepthEdgeStrength ?? 28),
-        card_depth_sheen_strength: Number(layout.cardDepthSheenStrength ?? 10),
-        card_depth_edge_coverage: Number(layout.cardDepthEdgeCoverage ?? 0),
+        card_depth_edge_strength: Math.min(
+          100,
+          Math.max(0, Math.trunc(Number(layout.cardDepthEdgeStrength ?? 28) || 0))
+        ),
+        card_depth_sheen_strength: Math.min(
+          100,
+          Math.max(0, Math.trunc(Number(layout.cardDepthSheenStrength ?? 10) || 0))
+        ),
+        card_depth_edge_coverage: Math.min(
+          100,
+          Math.max(0, Math.trunc(Number(layout.cardDepthEdgeCoverage ?? 0) || 0))
+        ),
         card_depth_posters_enabled: layout.cardDepthPostersEnabled !== false,
         card_depth_continue_watching_enabled: layout.cardDepthContinueWatchingEnabled !== false,
         card_depth_episode_cards_enabled: layout.cardDepthEpisodeCardsEnabled !== false,
@@ -760,6 +773,9 @@ const FEATURE_ADAPTERS = {
         continue_watching_sort_mode: normalizeContinueWatchingSortModeForAndroid(
           layout.continueWatchingSortMode
         ),
+        home_imdb_ratings_visibility: String(
+          layout.homeImdbRatingsVisibility || "SHOW_ALL"
+        ).toUpperCase(),
         fast_horizontal_navigation_enabled: isFastHorizontalNavigationEnabled()
       };
     },
@@ -814,9 +830,7 @@ const FEATURE_ADAPTERS = {
       }
       if (stringOrNull(raw.discover_location)) {
         projected.discover_location = String(raw.discover_location).trim().toUpperCase();
-        projected.search_discover_enabled = String(raw.discover_location).toUpperCase() !== "OFF";
       } else if (booleanOrNull(raw.search_discover_enabled) != null) {
-        projected.search_discover_enabled = Boolean(raw.search_discover_enabled);
         projected.discover_location = normalizeDiscoverLocationForAndroid(
           raw.search_discover_enabled === false ? "OFF" : "IN_SEARCH"
         );
@@ -862,6 +876,11 @@ const FEATURE_ADAPTERS = {
           raw.fast_horizontal_navigation_enabled
         );
       }
+      if (stringOrNull(raw.home_imdb_ratings_visibility)) {
+        projected.home_imdb_ratings_visibility = String(raw.home_imdb_ratings_visibility)
+          .trim()
+          .toUpperCase();
+      }
       return projected;
     },
     import(profileId, rawFeature = {}) {
@@ -869,6 +888,9 @@ const FEATURE_ADAPTERS = {
       const partial = {};
       if (stringOrNull(raw.selected_layout)) {
         partial.homeLayout = normalizeHomeLayoutForWeb(raw.selected_layout);
+      }
+      if (booleanOrNull(raw.has_chosen_layout) != null) {
+        partial.hasChosenLayout = Boolean(raw.has_chosen_layout);
       }
       if (booleanOrNull(raw.sidebar_collapsed_by_default) != null) {
         partial.collapseSidebar = Boolean(raw.sidebar_collapsed_by_default);
@@ -993,6 +1015,11 @@ const FEATURE_ADAPTERS = {
           raw.continue_watching_sort_mode
         );
       }
+      if (stringOrNull(raw.home_imdb_ratings_visibility)) {
+        partial.homeImdbRatingsVisibility = String(raw.home_imdb_ratings_visibility)
+          .trim()
+          .toUpperCase();
+      }
       if (!Object.keys(partial).length) {
         return false;
       }
@@ -1000,64 +1027,39 @@ const FEATURE_ADAPTERS = {
       return true;
     }
   },
-  home_catalog_settings: {
+  experience_settings: {
     export(profileId) {
-      const prefs = HomeCatalogStore.getForProfile(profileId);
+      const settings = ExperienceModeStore.getForProfile(profileId);
       return {
-        catalog_order_keys: prefs.order,
-        disabled_catalog_keys: prefs.disabled
+        ...(settings.mode ? { mode: settings.mode } : {}),
+        addon_setup_skipped: Boolean(settings.addonSetupSkipped)
       };
     },
     project(rawFeature = {}) {
       const raw = normalizeFeaturePayload(rawFeature);
-      const projected = {};
-      const order = firstStringArrayFromRaw(raw, [
-        "catalog_order_keys",
-        "home_catalog_order",
-        "catalog_order",
-        "order"
-      ]);
-      const disabled = firstStringArrayFromRaw(raw, [
-        "disabled_catalog_keys",
-        "hidden_catalog_keys",
-        "catalog_disabled_keys",
-        "home_catalog_disabled",
-        "disabled"
-      ]);
-      if (order) {
-        projected.catalog_order_keys = order;
-      }
-      if (disabled) {
-        projected.disabled_catalog_keys = disabled;
-      }
-      return projected;
+      const mode = String(raw.mode || "")
+        .trim()
+        .toUpperCase();
+      return {
+        ...(mode === "ESSENTIAL" || mode === "ADVANCED" ? { mode } : {}),
+        ...(booleanOrNull(raw.addon_setup_skipped) != null
+          ? { addon_setup_skipped: Boolean(raw.addon_setup_skipped) }
+          : {})
+      };
     },
     import(profileId, rawFeature = {}) {
-      const raw = normalizeFeaturePayload(rawFeature);
-      const partial = {};
-      const order = firstStringArrayFromRaw(raw, [
-        "catalog_order_keys",
-        "home_catalog_order",
-        "catalog_order",
-        "order"
-      ]);
-      const disabled = firstStringArrayFromRaw(raw, [
-        "disabled_catalog_keys",
-        "hidden_catalog_keys",
-        "catalog_disabled_keys",
-        "home_catalog_disabled",
-        "disabled"
-      ]);
-      if (order) {
-        partial.order = order;
-      }
-      if (disabled) {
-        partial.disabled = disabled;
-      }
-      if (!Object.keys(partial).length) {
-        return false;
-      }
-      HomeCatalogStore.setForProfile(profileId, partial, { silentSync: true });
+      const projected = this.project(rawFeature);
+      if (!Object.keys(projected).length) return false;
+      ExperienceModeStore.setForProfile(
+        profileId,
+        {
+          ...(projected.mode ? { mode: projected.mode } : {}),
+          ...(Object.prototype.hasOwnProperty.call(projected, "addon_setup_skipped")
+            ? { addonSetupSkipped: projected.addon_setup_skipped }
+            : {})
+        },
+        { silentSync: true }
+      );
       return true;
     }
   },
@@ -1080,7 +1082,11 @@ const FEATURE_ADAPTERS = {
           settings.subtitleStyle?.verticalOffset
         ),
         subtitle_bold: Boolean(settings.subtitleStyle?.bold),
-        subtitle_text_color: hexToAndroidColorInt(settings.subtitleStyle?.textColor, "#ffffff"),
+        subtitle_text_color: hexToAndroidColorInt(
+          settings.subtitleStyle?.textColor,
+          "#ffffff",
+          settings.subtitleStyle?.textOpacity
+        ),
         subtitle_background_color: cssColorToAndroidColorInt(
           settings.subtitleStyle?.backgroundColor
         ),
@@ -1101,11 +1107,6 @@ const FEATURE_ADAPTERS = {
           ? settings.autoSkipSegmentTypes
           : [],
         addon_subtitle_startup_mode: String(settings.addonSubtitleStartupMode || "ALL_SUBTITLES"),
-        audio_amplification_db: Math.max(
-          0,
-          Math.trunc(Number(settings.audioAmplificationDb ?? 0) || 0)
-        ),
-        persist_audio_amplification: Boolean(settings.persistAudioAmplification),
         skip_intro_enabled: Boolean(settings.skipIntroEnabled),
         stream_auto_play_next_episode_enabled: Boolean(settings.autoplayNextEpisode),
         stream_auto_play_prefer_bingegroup_next_episode: Boolean(
@@ -1183,7 +1184,6 @@ const FEATURE_ADAPTERS = {
         "subtitle_bold",
         "subtitle_use_forced_subtitles",
         "subtitle_outline_enabled",
-        "persist_audio_amplification",
         "skip_intro_enabled",
         "stream_auto_play_next_episode_enabled",
         "stream_auto_play_prefer_bingegroup_next_episode",
@@ -1205,8 +1205,7 @@ const FEATURE_ADAPTERS = {
         "subtitle_size",
         "subtitle_text_color",
         "subtitle_background_color",
-        "subtitle_outline_color",
-        "audio_amplification_db"
+        "subtitle_outline_color"
       ].forEach((key) => {
         if (numberOrNull(raw[key]) != null) {
           projected[key] = Math.trunc(Number(raw[key]));
@@ -1320,7 +1319,9 @@ const FEATURE_ADAPTERS = {
       }
       if (subtitleLanguage) {
         partial.subtitleLanguage = subtitleLanguage;
-        partial.subtitlesEnabled = subtitleLanguage !== "off";
+        // Android's "None" still permits forced-only selection when that flag
+        // is enabled, so the removed Web-only master switch must stay enabled.
+        partial.subtitlesEnabled = true;
         subtitleStyle.preferredLanguage = subtitleLanguage;
       }
       if (secondarySubtitleLanguage) {
@@ -1348,6 +1349,7 @@ const FEATURE_ADAPTERS = {
       }
       if (numberOrNull(raw.subtitle_text_color) != null) {
         subtitleStyle.textColor = androidColorIntToHex(raw.subtitle_text_color, "#ffffff");
+        subtitleStyle.textOpacity = androidColorIntToSubtitleTextOpacity(raw.subtitle_text_color);
       }
       if (numberOrNull(raw.subtitle_background_color) != null) {
         subtitleStyle.backgroundColor = androidColorIntToCss(raw.subtitle_background_color);
@@ -1357,12 +1359,6 @@ const FEATURE_ADAPTERS = {
       }
       if (numberOrNull(raw.subtitle_outline_color) != null) {
         subtitleStyle.outlineColor = androidColorIntToHex(raw.subtitle_outline_color, "#000000");
-      }
-      if (numberOrNull(raw.audio_amplification_db) != null) {
-        partial.audioAmplificationDb = Math.max(0, Math.trunc(Number(raw.audio_amplification_db)));
-      }
-      if (booleanOrNull(raw.persist_audio_amplification) != null) {
-        partial.persistAudioAmplification = Boolean(raw.persist_audio_amplification);
       }
       if (booleanOrNull(raw.skip_intro_enabled) != null) {
         partial.skipIntroEnabled = Boolean(raw.skip_intro_enabled);
@@ -1706,6 +1702,7 @@ const FEATURE_ADAPTERS = {
         continue_watching_days_cap: normalizeTraktContinueWatchingDaysCap(
           settings.continueWatchingDaysCap
         ),
+        dismissed_next_up_keys: ContinueWatchingPreferences.getDismissedNextUpKeys(profileId),
         show_meta_comments: settings.showMetaComments !== false,
         watch_progress_source: normalizeTraktWatchProgressSourceForAndroid(
           settings.watchProgressSource
@@ -1722,6 +1719,9 @@ const FEATURE_ADAPTERS = {
         projected.continue_watching_days_cap = normalizeTraktContinueWatchingDaysCap(
           raw.continue_watching_days_cap
         );
+      }
+      if (Array.isArray(raw.dismissed_next_up_keys)) {
+        projected.dismissed_next_up_keys = raw.dismissed_next_up_keys.map(String).filter(Boolean);
       }
       if (booleanOrNull(raw.show_meta_comments) != null) {
         projected.show_meta_comments = Boolean(raw.show_meta_comments);
@@ -1750,6 +1750,13 @@ const FEATURE_ADAPTERS = {
       if (numberOrNull(raw.continue_watching_days_cap) != null) {
         partial.continueWatchingDaysCap = normalizeTraktContinueWatchingDaysCap(
           raw.continue_watching_days_cap
+        );
+      }
+      if (Array.isArray(raw.dismissed_next_up_keys)) {
+        ContinueWatchingPreferences.replaceDismissedNextUpKeys(
+          raw.dismissed_next_up_keys,
+          profileId,
+          { silentSync: true }
         );
       }
       if (booleanOrNull(raw.show_meta_comments) != null) {
@@ -1867,42 +1874,18 @@ const FEATURE_ADAPTERS = {
       return true;
     }
   },
-  torrent_settings: {
+  track_preference: {
     export(profileId) {
-      const settings = TorrentSettingsStore.getForProfile(profileId);
-      return {
-        p2p_enabled: Boolean(settings.p2pEnabled),
-        enable_upload: Boolean(settings.enableUpload),
-        hide_torrent_stats: Boolean(settings.hideTorrentStats)
-      };
+      return TrackPreferencesStore.exportFeaturePayload(profileId);
     },
     project(rawFeature = {}) {
-      const raw = normalizeFeaturePayload(rawFeature);
-      const projected = {};
-      ["p2p_enabled", "enable_upload", "hide_torrent_stats"].forEach((key) => {
-        if (booleanOrNull(raw[key]) != null) {
-          projected[key] = Boolean(raw[key]);
-        }
-      });
-      return projected;
+      return normalizeFeaturePayload(rawFeature);
     },
     import(profileId, rawFeature = {}) {
-      const raw = normalizeFeaturePayload(rawFeature);
-      const partial = {};
-      if (booleanOrNull(raw.p2p_enabled) != null) {
-        partial.p2pEnabled = Boolean(raw.p2p_enabled);
-      }
-      if (booleanOrNull(raw.enable_upload) != null) {
-        partial.enableUpload = Boolean(raw.enable_upload);
-      }
-      if (booleanOrNull(raw.hide_torrent_stats) != null) {
-        partial.hideTorrentStats = Boolean(raw.hide_torrent_stats);
-      }
-      if (!Object.keys(partial).length) {
-        return false;
-      }
-      TorrentSettingsStore.setForProfile(profileId, partial, { silentSync: true });
-      return true;
+      return TrackPreferencesStore.importFeaturePayload(
+        normalizeFeaturePayload(rawFeature),
+        profileId
+      );
     }
   },
   debrid_settings: {
@@ -1928,7 +1911,6 @@ const FEATURE_ADAPTERS = {
         stream_dolby_vision_filter: String(settings.streamDolbyVisionFilter || "ANY").toUpperCase(),
         stream_hdr_filter: String(settings.streamHdrFilter || "ANY").toUpperCase(),
         stream_codec_filter: String(settings.streamCodecFilter || "ANY").toUpperCase(),
-        stream_badges_enabled: settings.streamBadgesEnabled !== false,
         stream_preferences: JSON.stringify(
           normalizeDebridStreamPreferences(settings.streamPreferences)
         ),
@@ -1946,14 +1928,6 @@ const FEATURE_ADAPTERS = {
           projected[key] = Boolean(raw[key]);
         }
       });
-      const streamBadgesEnabled = booleanFromAnyKey(raw, [
-        "stream_badges_enabled",
-        "stream_show_badges",
-        "show_stream_badges"
-      ]);
-      if (streamBadgesEnabled != null) {
-        projected.stream_badges_enabled = streamBadgesEnabled;
-      }
       [
         "torbox_api_key",
         "premiumize_api_key",
@@ -2044,14 +2018,6 @@ const FEATURE_ADAPTERS = {
           .trim()
           .toUpperCase();
       }
-      const streamBadgesEnabled = booleanFromAnyKey(raw, [
-        "stream_badges_enabled",
-        "stream_show_badges",
-        "show_stream_badges"
-      ]);
-      if (streamBadgesEnabled != null) {
-        partial.streamBadgesEnabled = streamBadgesEnabled;
-      }
       if (raw.stream_preferences != null) {
         partial.streamPreferences = normalizeDebridStreamPreferences(
           String(raw.stream_preferences || "").trim()
@@ -2076,9 +2042,11 @@ const SUPPORTED_FEATURE_NAMES = Object.keys(FEATURE_ADAPTERS);
 
 function buildComparableFeaturesFromBlob(blob = {}) {
   return SUPPORTED_FEATURE_NAMES.reduce((accumulator, featureName) => {
-    accumulator[featureName] = FEATURE_ADAPTERS[featureName].project(
+    const featurePayload = withoutExcludedProfileSettingsKeys(
+      featureName,
       blob?.features?.[featureName] || {}
     );
+    accumulator[featureName] = FEATURE_ADAPTERS[featureName].project(featurePayload);
     return accumulator;
   }, {});
 }
@@ -2086,7 +2054,8 @@ function buildComparableFeaturesFromBlob(blob = {}) {
 function buildComparableFeaturesFromLocal(profileId) {
   return SUPPORTED_FEATURE_NAMES.reduce((accumulator, featureName) => {
     const exported = FEATURE_ADAPTERS[featureName].export(profileId);
-    accumulator[featureName] = FEATURE_ADAPTERS[featureName].project(exported);
+    const featurePayload = withoutExcludedProfileSettingsKeys(featureName, exported);
+    accumulator[featureName] = FEATURE_ADAPTERS[featureName].project(featurePayload);
     return accumulator;
   }, {});
 }
@@ -2103,10 +2072,10 @@ function buildOutgoingBlob(profileId, baseBlob = null) {
   const normalizedBase = normalizeBlob(baseBlob || {});
   const nextFeatures = Object.entries(normalizedBase.features).reduce(
     (accumulator, [featureName, featurePayload]) => {
+      if (!SUPPORTED_FEATURE_NAMES.includes(featureName)) return accumulator;
       const encodedPayload = encodeFeaturePayload(featurePayload, featureName);
-      if (hasObjectEntries(encodedPayload) || SUPPORTED_FEATURE_NAMES.includes(featureName)) {
-        accumulator[featureName] = encodedPayload;
-      }
+      EXCLUDED_PROFILE_KEYS[featureName]?.forEach((key) => delete encodedPayload[key]);
+      accumulator[featureName] = encodedPayload;
       return accumulator;
     },
     {}
@@ -2117,9 +2086,10 @@ function buildOutgoingBlob(profileId, baseBlob = null) {
       ...(nextFeatures[featureName] || {}),
       ...encodeFeaturePayload(FEATURE_ADAPTERS[featureName].export(profileId), featureName)
     };
+    EXCLUDED_PROFILE_KEYS[featureName]?.forEach((key) => delete nextFeatures[featureName][key]);
   });
 
-  return ensureExperienceSettingsContract({
+  return normalizeBlob({
     version: 1,
     features: nextFeatures
   });
@@ -2150,10 +2120,11 @@ async function pullRemoteBlob(profileId) {
 function applyRemoteBlob(profileId, blob) {
   let applied = false;
   SUPPORTED_FEATURE_NAMES.forEach((featureName) => {
-    const didApply = FEATURE_ADAPTERS[featureName].import(
-      profileId,
+    const featurePayload = withoutExcludedProfileSettingsKeys(
+      featureName,
       blob?.features?.[featureName] || {}
     );
+    const didApply = FEATURE_ADAPTERS[featureName].import(profileId, featurePayload);
     if (didApply) {
       applied = true;
     }
@@ -2161,81 +2132,87 @@ function applyRemoteBlob(profileId, blob) {
   return applied;
 }
 
-export const ProfileSettingsSyncService = {
-  async pull(profileId = null) {
-    try {
-      if (!AuthManager.isAuthenticated) {
-        return false;
-      }
-      const resolvedProfileId = resolveProfileId(profileId);
-      if (hasProfileSettingsCloudSyncPending(resolvedProfileId)) {
-        await this.push(resolvedProfileId);
-        return false;
-      }
-      const blob = await pullRemoteBlob(resolvedProfileId);
-      if (!blob) {
-        return false;
-      }
-
-      if (!hasValidExperienceMode(blob)) {
-        const repairedBlob = ensureExperienceSettingsContract(blob);
-        await SupabaseApi.rpc(
-          PUSH_RPC,
-          {
-            p_profile_id: resolvedProfileId,
-            p_settings_json: repairedBlob,
-            p_platform: SETTINGS_SYNC_PLATFORM
-          },
-          true
-        );
-        setCachedBlob(resolvedProfileId, repairedBlob);
-        blob.features = repairedBlob.features;
-      }
-
-      setCachedBlob(resolvedProfileId, blob);
-
-      const remoteSignature = buildComparableSignatureFromBlob(blob);
-      const localSignature = buildComparableSignatureFromLocal(resolvedProfileId);
-      if (remoteSignature === localSignature) {
-        return false;
-      }
-
-      return applyRemoteBlob(String(resolvedProfileId), blob);
-    } catch (error) {
-      if (shouldTreatAsMissingResource(error)) {
-        return false;
-      }
-      console.warn("Profile settings sync pull failed", error);
+async function pullProfileSettingsUnlocked(resolvedProfileId) {
+  try {
+    if (!AuthManager.isAuthenticated || isSyncBackoffActive()) {
       return false;
     }
+    if (hasProfileSettingsCloudSyncPending(resolvedProfileId)) {
+      // Android keeps a local change authoritative until its debounced push
+      // succeeds. Never pull remote data over an unsynced local edit.
+      return false;
+    }
+    const blob = await pullRemoteBlob(resolvedProfileId);
+    if (
+      !blob ||
+      !AuthManager.isAuthenticated ||
+      isSyncBackoffActive() ||
+      hasProfileSettingsCloudSyncPending(resolvedProfileId)
+    ) {
+      return false;
+    }
+
+    setCachedBlob(resolvedProfileId, blob);
+
+    const remoteSignature = buildComparableSignatureFromBlob(blob);
+    const localSignature = buildComparableSignatureFromLocal(resolvedProfileId);
+    if (remoteSignature === localSignature) {
+      return false;
+    }
+
+    return applyRemoteBlob(String(resolvedProfileId), blob);
+  } catch (error) {
+    if (shouldTreatAsMissingResource(error)) {
+      return false;
+    }
+    console.warn("Profile settings sync pull failed", error);
+    return false;
+  }
+}
+
+async function pushProfileSettingsUnlocked(resolvedProfileId) {
+  try {
+    if (!AuthManager.isAuthenticated || isSyncBackoffActive()) {
+      return false;
+    }
+    const pendingVersion = getProfileSettingsCloudSyncPendingVersion(resolvedProfileId);
+    const remoteBlob = await pullRemoteBlob(resolvedProfileId);
+    const blob = buildOutgoingBlob(String(resolvedProfileId), remoteBlob);
+    await SupabaseApi.rpc(
+      PUSH_RPC,
+      {
+        p_profile_id: resolvedProfileId,
+        p_settings_json: blob,
+        p_platform: SETTINGS_SYNC_PLATFORM
+      },
+      true
+    );
+    setCachedBlob(resolvedProfileId, blob);
+    if (pendingVersion != null) {
+      clearProfileSettingsCloudSyncPending(resolvedProfileId, pendingVersion);
+    }
+    return true;
+  } catch (error) {
+    if (shouldTreatAsMissingResource(error)) {
+      return false;
+    }
+    console.warn("Profile settings sync push failed", error);
+    return false;
+  }
+}
+
+export const ProfileSettingsSyncService = {
+  async pull(profileId = null) {
+    const resolvedProfileId = resolveProfileId(profileId);
+    return withProfileSettingsSyncLock(resolvedProfileId, () =>
+      pullProfileSettingsUnlocked(resolvedProfileId)
+    );
   },
 
   async push(profileId = null) {
-    try {
-      if (!AuthManager.isAuthenticated) {
-        return false;
-      }
-      const resolvedProfileId = resolveProfileId(profileId);
-      const remoteBlob = await pullRemoteBlob(resolvedProfileId);
-      const blob = buildOutgoingBlob(String(resolvedProfileId), remoteBlob);
-      await SupabaseApi.rpc(
-        PUSH_RPC,
-        {
-          p_profile_id: resolvedProfileId,
-          p_settings_json: blob,
-          p_platform: SETTINGS_SYNC_PLATFORM
-        },
-        true
-      );
-      setCachedBlob(resolvedProfileId, blob);
-      clearProfileSettingsCloudSyncPending(resolvedProfileId);
-      return true;
-    } catch (error) {
-      if (shouldTreatAsMissingResource(error)) {
-        return false;
-      }
-      console.warn("Profile settings sync push failed", error);
-      return false;
-    }
+    const resolvedProfileId = resolveProfileId(profileId);
+    return withProfileSettingsSyncLock(resolvedProfileId, () =>
+      pushProfileSettingsUnlocked(resolvedProfileId)
+    );
   }
 };

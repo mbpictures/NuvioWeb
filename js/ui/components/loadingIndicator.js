@@ -1,4 +1,5 @@
-const APP_LOADING_LOGO_SRC = "assets/brand/app_logo_wordmark.png";
+import { renderBrandWordmarkImage } from "./brandWordmark.js";
+
 const LOADING_INDICATOR_SPOKE_COUNT = 12;
 
 function escapeAttribute(value = "") {
@@ -14,7 +15,7 @@ export function renderLogoLoadingMarkup(options = {}) {
   const label = String(options?.label || "Loading").trim() || "Loading";
   return `
     <div class="app-loading-screen${className ? ` ${escapeAttribute(className)}` : ""}" aria-label="${escapeAttribute(label)}">
-      <img src="${APP_LOADING_LOGO_SRC}" class="app-loading-logo" alt="Nuvio" />
+      ${renderBrandWordmarkImage({ className: "app-loading-logo" })}
     </div>
   `;
 }

@@ -1,11 +1,3 @@
-import { LocalStore } from "../../core/storage/localStore.js";
-
-const STRICT_DPAD_GRID_KEY = "strictDpadGridNavigation";
-
-function shouldUseStrictDpadGrid() {
-  return Boolean(LocalStore.get(STRICT_DPAD_GRID_KEY, true));
-}
-
 export const ScreenUtils = {
   show(container) {
     if (!container) {
@@ -119,7 +111,6 @@ export const ScreenUtils = {
     const currentRect = current.getBoundingClientRect();
     const cx = currentRect.left + currentRect.width / 2;
     const cy = currentRect.top + currentRect.height / 2;
-    const strictDpadGrid = shouldUseStrictDpadGrid();
 
     const candidates = list
       .filter((node) => node !== current)
@@ -161,63 +152,47 @@ export const ScreenUtils = {
     let target = null;
 
     if (direction === "up" || direction === "down") {
-      if (strictDpadGrid) {
-        const nearestPrimary = candidates.reduce((min, entry) => {
-          const primary = Math.abs(entry.dy);
-          return Math.min(min, primary);
-        }, Number.POSITIVE_INFINITY);
-        const rowTolerance = Math.max(currentRect.height * 0.9, 42);
-        const nearestRow = candidates.filter((entry) => {
-          const primary = Math.abs(entry.dy);
-          return primary <= nearestPrimary + rowTolerance;
-        });
-        const alignedInRow = nearestRow
-          .filter((entry) => entry.aligned)
-          .sort((left, right) => Math.abs(left.dx) - Math.abs(right.dx));
-        const rowSorted = nearestRow.sort((left, right) => {
-          const sec = Math.abs(left.dx) - Math.abs(right.dx);
-          if (sec !== 0) {
-            return sec;
-          }
-          return Math.abs(left.dy) - Math.abs(right.dy);
-        });
-        target = alignedInRow[0]?.node || rowSorted[0]?.node || null;
-      } else {
-        const alignedCandidates = candidates
-          .filter((entry) => entry.aligned)
-          .sort((left, right) => left.score - right.score);
-        const sortedCandidates = candidates.sort((left, right) => left.score - right.score);
-        target = alignedCandidates[0]?.node || sortedCandidates[0]?.node || null;
-      }
+      const nearestPrimary = candidates.reduce((min, entry) => {
+        const primary = Math.abs(entry.dy);
+        return Math.min(min, primary);
+      }, Number.POSITIVE_INFINITY);
+      const rowTolerance = Math.max(currentRect.height * 0.9, 42);
+      const nearestRow = candidates.filter((entry) => {
+        const primary = Math.abs(entry.dy);
+        return primary <= nearestPrimary + rowTolerance;
+      });
+      const alignedInRow = nearestRow
+        .filter((entry) => entry.aligned)
+        .sort((left, right) => Math.abs(left.dx) - Math.abs(right.dx));
+      const rowSorted = nearestRow.sort((left, right) => {
+        const sec = Math.abs(left.dx) - Math.abs(right.dx);
+        if (sec !== 0) {
+          return sec;
+        }
+        return Math.abs(left.dy) - Math.abs(right.dy);
+      });
+      target = alignedInRow[0]?.node || rowSorted[0]?.node || null;
     } else {
-      if (strictDpadGrid) {
-        const nearestPrimary = candidates.reduce((min, entry) => {
-          const primary = Math.abs(entry.dx);
-          return Math.min(min, primary);
-        }, Number.POSITIVE_INFINITY);
-        const columnTolerance = Math.max(currentRect.width * 0.9, 42);
-        const nearestColumn = candidates.filter((entry) => {
-          const primary = Math.abs(entry.dx);
-          return primary <= nearestPrimary + columnTolerance;
-        });
-        const alignedInColumn = nearestColumn
-          .filter((entry) => entry.aligned)
-          .sort((left, right) => Math.abs(left.dy) - Math.abs(right.dy));
-        const columnSorted = nearestColumn.sort((left, right) => {
-          const sec = Math.abs(left.dy) - Math.abs(right.dy);
-          if (sec !== 0) {
-            return sec;
-          }
-          return Math.abs(left.dx) - Math.abs(right.dx);
-        });
-        target = alignedInColumn[0]?.node || columnSorted[0]?.node || null;
-      } else {
-        const alignedCandidates = candidates
-          .filter((entry) => entry.aligned)
-          .sort((left, right) => left.score - right.score);
-        const sortedCandidates = candidates.sort((left, right) => left.score - right.score);
-        target = alignedCandidates[0]?.node || sortedCandidates[0]?.node || null;
-      }
+      const nearestPrimary = candidates.reduce((min, entry) => {
+        const primary = Math.abs(entry.dx);
+        return Math.min(min, primary);
+      }, Number.POSITIVE_INFINITY);
+      const columnTolerance = Math.max(currentRect.width * 0.9, 42);
+      const nearestColumn = candidates.filter((entry) => {
+        const primary = Math.abs(entry.dx);
+        return primary <= nearestPrimary + columnTolerance;
+      });
+      const alignedInColumn = nearestColumn
+        .filter((entry) => entry.aligned)
+        .sort((left, right) => Math.abs(left.dy) - Math.abs(right.dy));
+      const columnSorted = nearestColumn.sort((left, right) => {
+        const sec = Math.abs(left.dy) - Math.abs(right.dy);
+        if (sec !== 0) {
+          return sec;
+        }
+        return Math.abs(left.dx) - Math.abs(right.dx);
+      });
+      target = alignedInColumn[0]?.node || columnSorted[0]?.node || null;
     }
     if (!target) {
       return;

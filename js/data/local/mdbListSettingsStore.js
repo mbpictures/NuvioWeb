@@ -37,6 +37,21 @@ const store = createProfileScopedStore({
   normalize: normalizeMdbListSettings
 });
 
+function queueProviderCredentialPush(profileId) {
+  void import("../../core/profile/providerCredentialSyncService.js")
+    .then(({ ProviderCredentialSyncService }) => ProviderCredentialSyncService.queuePush(profileId))
+    .catch((error) => console.warn("MDBList credential sync enqueue failed", error));
+}
+
+function queueIfCredentialChanged(profileId, previous, next, options = {}) {
+  if (
+    !options.silentCredentialSync &&
+    String(previous?.apiKey || "") !== String(next?.apiKey || "")
+  ) {
+    queueProviderCredentialPush(profileId);
+  }
+}
+
 export const MdbListSettingsStore = {
   getForProfile(profileId) {
     return store.getForProfile(profileId);
@@ -47,14 +62,20 @@ export const MdbListSettingsStore = {
   },
 
   replaceForProfile(profileId, nextValue, options = {}) {
-    return store.replaceForProfile(profileId, nextValue, options);
+    const previous = store.getForProfile(profileId);
+    const saved = store.replaceForProfile(profileId, nextValue, options);
+    queueIfCredentialChanged(profileId, previous, saved, options);
+    return saved;
   },
 
   setForProfile(profileId, partial, options = {}) {
-    return store.setForProfile(profileId, partial, options);
+    const previous = store.getForProfile(profileId);
+    const saved = store.setForProfile(profileId, partial, options);
+    queueIfCredentialChanged(profileId, previous, saved, options);
+    return saved;
   },
 
   set(partial, options = {}) {
-    return store.set(partial, options);
+    return this.setForProfile(options.profileId, partial, options);
   }
 };

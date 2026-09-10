@@ -9,10 +9,27 @@ import {
 } from "../../../core/player/audioTrackCodecMetadata.js";
 import {
   canReleasePlayingNativeStartupAudioGate,
-  selectStartupAudioFallbackOption
+  hasOnlyImplicitStartupAudioOptions,
+  selectStartupAudioFallbackOption,
+  shouldAllowNativePlaybackDuringStartupAudioGate
 } from "../../../core/player/startupAudioGatePolicy.js";
+import {
+  isRecoverableHlsFragmentTimeout,
+  isExpiredStreamUrl,
+  isTerminalHlsHttpStatus
+} from "../../../core/player/hlsNetworkErrorPolicy.js";
+import { deltaMsForKeyRepeat } from "../../../core/player/playerScrubRates.js";
+import {
+  ASPECT_MODE_DEFINITIONS,
+  aspectModeIndex,
+  normalizeAspectMode,
+  parseAspectRatio,
+  resolveAspectRender
+} from "../../../core/player/playerAspect.js";
 import { buildClockFormatOptions, resolveSystemHour12 } from "../../../core/player/clockFormat.js";
+import { calculateRemainingPlaybackMilliseconds } from "../../../core/player/playbackEndTime.js";
 import { resolveSubtitleStyleControlAvailability } from "../../../core/player/subtitlePresentationCapabilities.js";
+import { shouldTreatAsNaturalPlaybackCompletion } from "../../../core/player/naturalPlaybackCompletion.js";
 import {
   ensureWebOsImageProxyReady,
   normalizeImageUrl,
@@ -28,24 +45,32 @@ import {
 import { localMediaTracksRepository } from "../../../data/repository/localMediaTracksRepository.js";
 import { localMediaSubtitleRepository } from "../../../data/repository/localMediaSubtitleRepository.js";
 import { localMediaBitmapSubtitleRepository } from "../../../data/repository/localMediaBitmapSubtitleRepository.js";
+import { localMediaEmbeddedSubtitleRepository } from "../../../data/repository/localMediaEmbeddedSubtitleRepository.js";
 import { subtitleRepository } from "../../../data/repository/subtitleRepository.js";
 import { streamRepository } from "../../../data/repository/streamRepository.js";
 import { addonRepository } from "../../../data/repository/addonRepository.js";
 import { parentalGuideRepository } from "../../../data/repository/parentalGuideRepository.js";
 import { skipIntroRepository } from "../../../data/repository/skipIntroRepository.js";
 import { PlayerSettingsStore } from "../../../data/local/playerSettingsStore.js";
+import { DeviceLocalPlayerPreferences } from "../../../data/local/deviceLocalPlayerPreferences.js";
 import { StreamBadgeSettingsStore } from "../../../data/local/streamBadgeSettingsStore.js";
 import { TorrentSettingsStore } from "../../../data/local/torrentSettingsStore.js";
 import { WebOsAudioCompatibilityStore } from "../../../data/local/webOsAudioCompatibilityStore.js";
 import { matchStreamBadges } from "../../../core/streams/streamBadgeRules.js";
 import { hasReleaseToken } from "../../../core/streams/releaseToken.js";
-import { selectAutoPlayStream } from "../../../core/streams/streamAutoPlaySelector.js";
+import {
+  isAutoPlayEffectivelyEnabled,
+  selectAutoPlayStream
+} from "../../../core/streams/streamAutoPlaySelector.js";
+import { orderStreamsByAddonOrder } from "../../../core/streams/streamOrdering.js";
 import { metaRepository } from "../../../data/repository/metaRepository.js";
 import { I18n } from "../../../i18n/index.js";
 import { Environment } from "../../../platform/environment.js";
+import { TizenCapabilities } from "../../../platform/tizen/tizenCapabilities.js";
 import { Router } from "../../navigation/router.js";
 import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
 import { DirectDebridResolver } from "../../../core/debrid/directDebridResolver.js";
+import { DebridStreamPresentation } from "../../../core/debrid/directDebridStreamPresentation.js";
 import { TrackingScrobbleService } from "../../../data/repository/trackingScrobbleService.js";
 import { WebOsEngineFsResolver } from "../../../core/p2p/webosEngineFsResolver.js";
 import { TizenStreamingServerResolver } from "../../../core/p2p/tizenStreamingServerResolver.js";
@@ -58,10 +83,37 @@ import { WebOsLunaService } from "../../../platform/webos/webosLunaService.js";
 import { StreamPreferencesStore } from "../../../data/local/streamPreferencesStore.js";
 import { buildStreamResumeIdentity } from "../../../core/streams/streamResumeIdentity.js";
 import { TrackPreferencesStore } from "../../../data/local/trackPreferencesStore.js";
+import { SubtitleDelayPreferencesStore } from "../../../data/local/subtitleDelayPreferencesStore.js";
 import {
+  SUBTITLE_AUTO_SYNC_MARGIN_MS,
+  SUBTITLE_AUTO_SYNC_MAX_VISIBLE_CUES,
+  SUBTITLE_DELAY_MAX_MS,
+  SUBTITLE_DELAY_MIN_MS,
+  SUBTITLE_DELAY_OVERLAY_TIMEOUT_MS,
+  SUBTITLE_DELAY_STEP_MS,
+  calculateSubtitleAutoSyncDelayMs,
+  formatSubtitleAutoSyncDelay,
+  formatSubtitleAutoSyncTimestamp,
+  sanitizeSubtitleAutoSyncCueText,
+  selectSubtitleAutoSyncVisibleCues
+} from "../../../core/player/subtitleAutoSync.js";
+import {
+  hasEpisodeAired as hasEpisodeAiredRule,
   shouldEnterStillWatchingPrompt,
   shouldShowNextEpisodeCard as shouldShowNextEpisodeCardRule
 } from "./playerNextEpisodeRules.js";
+import { normalizePlaybackDisplayLineBreaks } from "./playbackDisplayText.js";
+import { formatHeroRuntime } from "../detail/episodeCardMetadata.js";
+import { localizedGenreLabel } from "../../../i18n/genreLabels.js";
+import {
+  buildInlineYoutubePlayerUrl,
+  PostPlayRecommendationController,
+  POST_PLAY_IN_APP_TRAILER_PLAYBACK_ENABLED
+} from "./postPlayRecommendationController.js";
+import {
+  normalizePlayerEpisodeMetadata,
+  resolvePostPlayEpisodeMetadataResolved
+} from "../../../core/player/playerEpisodeMetadata.js";
 import {
   buildHtmlSubtitleCue,
   getSubtitleAssAlignment,
@@ -72,14 +124,35 @@ import {
   SUBTITLE_VERTICAL_OFFSET_DEFAULT,
   SUBTITLE_VERTICAL_OFFSET_PLAYER_STEP,
   formatSubtitleVerticalOffset,
+  getSubtitleVerticalOffsetVh,
+  getSubtitleVerticalResidualOffsetVh,
   normalizeSubtitleVerticalOffset,
   splitSubtitleVerticalOffset
 } from "../../../core/player/subtitleVerticalOffset.js";
 import {
+  SUBTITLE_TEXT_OPACITY_STEP,
+  normalizeSubtitleTextOpacity,
+  subtitleTextColorWithOpacity
+} from "../../../core/player/subtitleTextOpacity.js";
+import {
   BitmapSubtitleDecoder,
+  normalizeBitmapSubtitleFormat,
   supportsBitmapSubtitleDecoding,
   warmBitmapSubtitleDecoder
 } from "../../../core/player/bitmapSubtitleDecoder.js";
+import { isAssSubtitle, convertAssBodyToVtt } from "../../../core/player/assSubtitle.js";
+import { createAssRenderer } from "../../../core/player/assRenderer.js";
+import { decodeSubtitleResponseBody } from "../../../core/player/subtitleCharsetDetector.js";
+import { sanitizeSubtitleMojibake } from "../../../core/player/subtitleMojibakeSanitizer.js";
+import {
+  SUBTITLE_VIRTUALIZATION_DEFAULT_ROW_EXTENT,
+  SUBTITLE_VIRTUALIZATION_MIN_WINDOW,
+  SUBTITLE_VIRTUALIZATION_OVERSCAN_PX,
+  SUBTITLE_VIRTUALIZATION_THRESHOLD,
+  buildSubtitleVirtualModel,
+  getSubtitleScrollTopForIndex,
+  getSubtitleVirtualWindow
+} from "./subtitleVirtualizer.js";
 
 const CLOCK_FORMATTER_CACHE = new Map();
 const LANGUAGE_DISPLAY_NAME_CACHE = new Map();
@@ -89,10 +162,23 @@ const BUFFERING_SPINNER_STALL_MS = 0;
 const LOADING_LOGO_FILL_TARGET_LERP = 0.22;
 const LOADING_LOGO_FILL_IDLE_STEP = 0.006;
 const LOADING_LOGO_FILL_FRAME_MS = 80;
-const NEXT_EPISODE_SOURCE_RESOLVE_TIMEOUT_MS = 45000;
+// Keep next-episode source resolution within Android's 120-second hard limit.
+const NEXT_EPISODE_SOURCE_RESOLVE_TIMEOUT_MS = 120000;
 const STARTUP_AUDIO_PREFERENCE_RETRY_WINDOW_MS = 6000;
 const STARTUP_AUDIO_PREFERENCE_RETRY_INTERVAL_MS = 250;
 const WEBOS_REMOTE_MKV_AUDIO_GATE_MAX_WAIT_MS = 30000;
+const WEBOS_NATIVE_STARTUP_LOADING_EXTENSION_MS = 120000;
+const WEBOS_HLS_STARTUP_STALL_TIMEOUT_MS = 120000;
+const WEBOS_HLS_REBUFFER_STALL_TIMEOUT_MS = 15000;
+const WEBOS_HLS_PLAYBACK_RECOVERY_MAX_ATTEMPTS = 2;
+// A transient window fetch must not change the renderer, but a persistent
+// extractor failure still needs a stable native fallback.
+const WEBOS_EMBEDDED_TEXT_SUBTITLE_MAX_TRANSIENT_FAILURES = 3;
+const TIZEN_NATIVE_HLS_STARTUP_STALL_TIMEOUT_MS = 22000;
+const PLAYBACK_ENGINE_VALIDATION_WINDOW_MS = 30000;
+const PLAYBACK_ENGINE_VALIDATION_MAX_PROGRESS_GAP_SECONDS = 15;
+const POST_VALIDATION_SAME_ENGINE_RECOVERY_MAX_ATTEMPTS = 1;
+const SOURCE_NAVIGATION_REPEAT_THROTTLE_MS = 112;
 const EPISODE_PANEL_TRANSITION_MS = 220;
 const activeEngineFsPlaybackClaims = new Map();
 const deferredEngineFsRemovalTimers = new Map();
@@ -109,6 +195,39 @@ function logEngineFsDebug(...args) {
   if (globalThis.__NUVIO_DEBUG_ENGINEFS__) {
     console.info(...args);
   }
+}
+
+function isLocalEngineFsUrl(value = "") {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return parsed.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function getP2pInfoHash(stream = {}) {
+  const values = [
+    stream?.infoHash,
+    stream?.raw?.infoHash,
+    stream?.clientResolve?.infoHash,
+    stream?.raw?.clientResolve?.infoHash,
+    stream?.torrentMagnetUri,
+    stream?.magnetUri,
+    stream?.url,
+    stream?.externalUrl,
+    stream?.raw?.url,
+    stream?.raw?.externalUrl,
+    stream?.raw?.clientResolve?.magnetUri
+  ];
+  for (const value of values) {
+    const match = String(value || "").match(/(?:xt=urn:btih:)?([0-9a-f]{40})/i);
+    if (match?.[1]) {
+      return match[1].toLowerCase();
+    }
+  }
+  return "";
 }
 
 function buildPendingPlaybackRestore(params = {}) {
@@ -246,6 +365,11 @@ const AUDIO_TRACK_LANGUAGE_KEY_BY_CODE = {
   tr: "common.turkish",
   vi: "common.vietnamese",
   zh: "common.chinese"
+};
+const LANGUAGE_DISPLAY_OVERRIDES = {
+  id: "Indonesia",
+  in: "Indonesia",
+  ind: "Indonesia"
 };
 // Maps ISO 639-2 (bibliographic + terminologic) and a few legacy codes to
 // the ISO 639-1 / app language ids, so subtitle and audio tracks labelled
@@ -415,9 +539,6 @@ const SUBTITLE_LANGUAGE_OFF_KEY = "__off__";
 const SUBTITLE_LANGUAGE_UNKNOWN_KEY = "__unknown__";
 const SUBTITLE_TEXT_COLORS = ["#FFFFFF", "#D9D9D9", "#FFD700", "#00E5FF", "#FF5C5C", "#00FF88"];
 const SUBTITLE_OUTLINE_COLORS = ["#000000", "#FFFFFF", "#00E5FF", "#FF5C5C"];
-const SUBTITLE_DELAY_MIN_MS = -60000;
-const SUBTITLE_DELAY_MAX_MS = 60000;
-const SUBTITLE_DELAY_STEP_MS = 100;
 const SUBTITLE_FONT_STEP = 10;
 const SUBTITLE_VERTICAL_OFFSET_STEP = SUBTITLE_VERTICAL_OFFSET_PLAYER_STEP;
 const AUDIO_AMPLIFICATION_MIN_DB = 0;
@@ -429,6 +550,9 @@ const SKIP_INTERVAL_SEEK_SUPPRESSION_MS = 12000;
 const BITMAP_SUBTITLE_WINDOW_SECONDS = 120;
 const BITMAP_SUBTITLE_PREFETCH_SECONDS = 20;
 const BITMAP_SUBTITLE_WINDOW_BUCKET_SECONDS = 90;
+const EMBEDDED_TEXT_SUBTITLE_WINDOW_SECONDS = 120;
+const EMBEDDED_TEXT_SUBTITLE_PREFETCH_SECONDS = 20;
+const EMBEDDED_TEXT_SUBTITLE_WINDOW_BUCKET_SECONDS = 90;
 const PARENTAL_GUIDE_ROW_HEIGHT = 36;
 const PARENTAL_GUIDE_ROW_GAP = 4;
 const PAUSE_OVERLAY_DELAY_MS = 5000;
@@ -452,6 +576,7 @@ const PARENTAL_GUIDE_LINE_OUT_MS = 300;
 const PARENTAL_GUIDE_CONTAINER_OUT_DELAY_MS = 200;
 const PARENTAL_GUIDE_CONTAINER_OUT_MS = 200;
 const SKIP_INTRO_COUNTDOWN_MS = 10000;
+const SUBTITLE_VIRTUAL_ROW_GAP = 8;
 
 function t(key, params = {}, fallback = key) {
   return I18n.t(key, params, { fallback });
@@ -473,6 +598,23 @@ function cleanDisplayText(value) {
   return String(value ?? "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeWebOsHtmlSubtitleText(value) {
+  const text = String(value ?? "");
+  // LG webOS renders U+2026 at the mid-line in the HTML subtitle overlay. Keep the
+  // source cue unchanged and use the verified baseline-safe equivalent only here.
+  return Environment.isWebOS() ? text.replace(/\u2026/g, "...") : text;
+}
+
+function stableSubtitleTextKey(value = "") {
+  const text = String(value ?? "");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 function normalizeSubtitleRenderMode(value) {
@@ -636,6 +778,260 @@ function normalizeTrackCodecText(value) {
   return cleanDisplayText(value).toUpperCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function isTx3gSubtitleCodec(value) {
+  const normalized = normalizeTrackCodecText(value);
+  return ["TX3G", "MOV TEXT", "MPEG 4 TIMED TEXT", "MPEG-4 TIMED TEXT"].includes(normalized);
+}
+
+function getTx3gSubtitleCodecValue(track = {}) {
+  return (
+    track?.codec ||
+    track?.subtitleCodec ||
+    track?.codec_name ||
+    track?.codec_id ||
+    track?.format ||
+    track?.raw?.codec ||
+    track?.raw?.codec_name ||
+    track?.raw?.codec_id ||
+    track?.raw?.format ||
+    ""
+  );
+}
+
+function isTx3gSubtitleTrack(track = {}) {
+  return isTx3gSubtitleCodec(getTx3gSubtitleCodecValue(track));
+}
+
+function isSubRipSubtitleCodec(value) {
+  const normalized = cleanDisplayText(value)
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+  return [
+    "subrip",
+    "srt",
+    "stext/utf8",
+    "stext/srt",
+    "text/utf8",
+    "text/srt",
+    "text/xsubrip",
+    "application/xsubrip"
+  ].includes(normalized);
+}
+
+const SUBTITLE_CODEC_DISPLAY_LABELS = new Map([
+  ["application/pgs", "PGS"],
+  ["hdmv/pgs", "PGS"],
+  ["hdmvpgs", "PGS"],
+  ["pgs", "PGS"],
+  ["application/dvbsubs", "DVB"],
+  ["application/dvbsubtitle", "DVB"],
+  ["dvb", "DVB"],
+  ["dvbsub", "DVB"],
+  ["dvbsubs", "DVB"],
+  ["application/ttml+xml", "TTML"],
+  ["application/ttml", "TTML"],
+  ["text/ttml", "TTML"],
+  ["ttml", "TTML"],
+  ["application/tx3g", "TX3G"],
+  ["text/tx3g", "TX3G"],
+  ["tx3g", "TX3G"],
+  ["application/xvobsub", "VobSub"],
+  ["vobsub", "VobSub"],
+  ["application/xwebvtt", "VTT"],
+  ["text/vtt", "VTT"],
+  ["text/webvtt", "VTT"],
+  ["vtt", "VTT"],
+  ["webvtt", "VTT"]
+]);
+
+function formatSubtitleCodecLabel(value) {
+  const raw = cleanDisplayText(value);
+  if (!raw) {
+    return "";
+  }
+  const normalized = raw.toLowerCase().replace(/[\s_-]+/g, "");
+  if (normalized === "text/utf8" || isSubRipSubtitleCodec(raw)) {
+    return "SRT";
+  }
+  if (
+    [
+      "stext/ass",
+      "stext/ssa",
+      "text/ass",
+      "text/ssa",
+      "text/xass",
+      "application/ass",
+      "application/ssa",
+      "application/xass",
+      "text/xssa",
+      "application/xssa",
+      "ass",
+      "ssa",
+      "advancedsubstationalpha",
+      "substationalpha"
+    ].includes(normalized)
+  ) {
+    return "SSA";
+  }
+  if (["application/tx3g", "text/tx3g", "tx3g", "movtext", "mpeg4timedtext"].includes(normalized)) {
+    return "TX3G";
+  }
+  return SUBTITLE_CODEC_DISPLAY_LABELS.get(normalized) || raw;
+}
+
+function getSubtitleCodecDisplayLabel(track = {}) {
+  return formatSubtitleCodecLabel(
+    track?.codec || track?.codecs || track?.codec_name || track?.format
+  );
+}
+
+function getSubRipSubtitleCodecValue(track = {}) {
+  return (
+    track?.codec ||
+    track?.subtitleCodec ||
+    track?.codec_name ||
+    track?.codecId ||
+    track?.codec_id ||
+    track?.format ||
+    track?.raw?.codec ||
+    track?.raw?.codec_name ||
+    track?.raw?.codecId ||
+    track?.raw?.codec_id ||
+    track?.raw?.format ||
+    ""
+  );
+}
+
+function isSubRipSubtitleTrack(track = {}) {
+  return isSubRipSubtitleCodec(getSubRipSubtitleCodecValue(track));
+}
+
+function getBitmapSubtitleFormatLabel(track = {}) {
+  const format = getEmbeddedBitmapSubtitleFormat(track);
+  if (format === "pgs") {
+    return "PGS";
+  }
+  if (format === "vobsub") {
+    return "VobSub";
+  }
+  return "bitmap";
+}
+
+function getBitmapSubtitleSupportState(track = {}) {
+  if (!getEmbeddedBitmapSubtitleFormat(track) || !Environment.isWebOS()) {
+    return { supported: true, unsupportedReason: null };
+  }
+
+  if (
+    track?.supported === false &&
+    ["webos-bitmap", "webos-bitmap-runtime"].includes(track?.unsupportedReason)
+  ) {
+    return {
+      supported: false,
+      unsupportedReason: track.unsupportedReason
+    };
+  }
+
+  if (!canUseWebOsBitmapSubtitles()) {
+    return { supported: false, unsupportedReason: "webos-bitmap" };
+  }
+  return { supported: true, unsupportedReason: null };
+}
+
+function getTx3gSubtitleSupportState(track = {}) {
+  if (!isTx3gSubtitleTrack(track) || !Environment.isTizen()) {
+    return { supported: true, unsupportedReason: null };
+  }
+
+  const capabilities = TizenCapabilities.get();
+  if (
+    (capabilities.tizenVersionKnown && capabilities.tizenMajorVersion < 4) ||
+    !capabilities.engineFsServicePackaged ||
+    capabilities.webServiceSupported === false
+  ) {
+    return { supported: false, unsupportedReason: "tizen-tx3g" };
+  }
+  return { supported: true, unsupportedReason: null };
+}
+
+function getEmbeddedSubtitleSupportState(track = {}) {
+  const bitmapSupport = getBitmapSubtitleSupportState(track);
+  if (bitmapSupport.supported === false) {
+    return bitmapSupport;
+  }
+  if (isTx3gSubtitleTrack(track) && track?.supported === false) {
+    return {
+      supported: false,
+      unsupportedReason: track?.unsupportedReason || "tx3g-runtime"
+    };
+  }
+  return getTx3gSubtitleSupportState(track);
+}
+
+function getTx3gSubtitleSupportMessage(reason = "") {
+  return reason === "tx3g-runtime"
+    ? t("player_subtitle_tizen_advanced_unavailable_short", {}, "Not fully supported on this TV")
+    : t("settings_p2p_unsupported_subtitle", {}, "Not supported on this TV.");
+}
+
+function getBitmapSubtitleSupportMessage() {
+  return t("settings_p2p_unsupported_subtitle", {}, "Not supported on this TV.");
+}
+
+function isBitmapSubtitleSupportError(error) {
+  const errorText = [error?.code, error?.errorCode, error?.message, error?.errorText]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return /unsupported|not supported|decoder|invalid[_ ](?:pgs|vobsub)|laced[_ ]bitmap/.test(
+    errorText
+  );
+}
+
+function isTizenTx3gEmbeddedSubtitleTrack(track = {}) {
+  return Environment.isTizen() && isTx3gSubtitleTrack(track);
+}
+
+function isTizenSubRipEmbeddedSubtitleTrack(track = {}) {
+  return Environment.isTizen() && isSubRipSubtitleTrack(track);
+}
+
+function isTizenEmbeddedTextSubtitleFallbackTrack(track = {}) {
+  return isTizenTx3gEmbeddedSubtitleTrack(track) || isTizenSubRipEmbeddedSubtitleTrack(track);
+}
+
+function isAssSubtitleCodec(value) {
+  const text = cleanDisplayText(value);
+  if (!text) {
+    return false;
+  }
+  // Matroska codec id (S_TEXT/ASS|SSA), MIME aliases, and short codec names
+  // (ass|ssa) reported by ffprobe / the companion tracks endpoint.
+  return (
+    /^S_TEXT\/(?:ASS|SSA)$/i.test(text) ||
+    /^(?:text\/x-ass|application\/x-ass|text\/x-ssa|application\/x-ssa)$/i.test(text) ||
+    /^(?:ass|ssa|advanced substation alpha|substation alpha)$/i.test(text)
+  );
+}
+
+function isEmbeddedTextSubtitleSourceTrack(track = {}) {
+  const codec = cleanDisplayText(
+    track?.codec ||
+      track?.subtitleCodec ||
+      track?.codec_name ||
+      track?.codecId ||
+      track?.codec_id ||
+      track?.format ||
+      ""
+  );
+  return (
+    /^S_TEXT\//i.test(codec) ||
+    /^TEXT\//i.test(codec) ||
+    isSubRipSubtitleCodec(codec) ||
+    isAssSubtitleCodec(codec)
+  );
+}
+
 function isUnsupportedEmbeddedSubtitleTrack(track = {}) {
   const codecText = normalizeTrackCodecText(
     track?.codec || track?.subtitleCodec || track?.codec_name || track?.format || ""
@@ -647,16 +1043,18 @@ function isUnsupportedEmbeddedSubtitleTrack(track = {}) {
   return UNSUPPORTED_EMBEDDED_SUBTITLE_CODEC_PATTERNS.some((pattern) => pattern.test(searchText));
 }
 
-function isVobSubEmbeddedSubtitleTrack(track = {}) {
-  const codecText = normalizeTrackCodecText(
+function getEmbeddedBitmapSubtitleFormat(track = {}) {
+  const explicitFormat = normalizeBitmapSubtitleFormat(track?.bitmapSubtitleFormat);
+  if (explicitFormat) {
+    return explicitFormat;
+  }
+  const primaryFormat = normalizeBitmapSubtitleFormat(
     track?.codec || track?.subtitleCodec || track?.codec_name || track?.format || ""
   );
-  if (codecText === "VOBSUB" || codecText === "S VOBSUB") {
-    return true;
+  if (primaryFormat) {
+    return primaryFormat;
   }
-  return /\bvob[ /_-]*sub\b|\bdvd[ /_-]*sub(?:title)?\b/i.test(
-    getTrackMetadataStrings(track).join(" ")
-  );
+  return normalizeBitmapSubtitleFormat(getTrackMetadataStrings(track).join(" "));
 }
 
 function canUseWebOsBitmapSubtitles() {
@@ -787,6 +1185,24 @@ function getTrackLanguageValue(track = {}) {
   return knownLanguage || candidates.find((value) => value) || "";
 }
 
+function isUnknownAudioTrackLanguageValue(value) {
+  const normalized = cleanDisplayText(value).toLowerCase().replace(/_/g, "-");
+  if (!normalized) {
+    return false;
+  }
+  const normalizedCode = normalizeTrackLanguageCode(normalized);
+  const baseCode = String(normalizedCode || "").split("-")[0];
+  return (
+    ["und", "unk", "zxx"].includes(baseCode) ||
+    ["unknown", "unknown language", "undetermined", "undefined"].includes(normalized)
+  );
+}
+
+function getUsableAudioTrackLanguageValue(track = {}) {
+  const value = getTrackLanguageValue(track);
+  return isUnknownAudioTrackLanguageValue(value) ? "" : value;
+}
+
 function inferAudioTrackDisplayLanguageCode(track = {}, entry = {}) {
   const candidates = [track?.name, track?.label, track?.title, entry?.label];
   for (const candidate of candidates) {
@@ -799,7 +1215,7 @@ function inferAudioTrackDisplayLanguageCode(track = {}, entry = {}) {
 }
 
 function inferAudioTrackLanguageKey(track = {}, entry = {}) {
-  const explicit = detectTrackLanguageVariant(track, getTrackLanguageValue(track));
+  const explicit = detectTrackLanguageVariant(track, getUsableAudioTrackLanguageValue(track));
   const displayCode = inferAudioTrackDisplayLanguageCode(track, entry);
   if (
     displayCode &&
@@ -826,7 +1242,7 @@ function inferAudioTrackLanguageKey(track = {}, entry = {}) {
   ];
   for (const candidate of candidates) {
     const normalizedCode = normalizeTrackLanguageCode(candidate);
-    if (normalizedCode) {
+    if (normalizedCode && !isUnknownAudioTrackLanguageValue(normalizedCode)) {
       return normalizedCode;
     }
     const inferredCode = inferTrackLanguageCodeFromText(candidate);
@@ -839,7 +1255,9 @@ function inferAudioTrackLanguageKey(track = {}, entry = {}) {
 
 function getAudioTrackLanguageLabel(track = {}, entry = {}) {
   const languageKey = inferAudioTrackLanguageKey(track, entry);
-  return languageKey ? getTrackLanguageLabel({ language: languageKey }) : "";
+  return languageKey && !isUnknownAudioTrackLanguageValue(languageKey)
+    ? getTrackLanguageLabel({ language: languageKey })
+    : "";
 }
 
 function getTrackLanguageLabel(track = {}) {
@@ -850,6 +1268,12 @@ function getTrackLanguageLabel(track = {}) {
 
   const normalizedCode = normalizeTrackLanguageCode(rawLanguage);
   const displayCode = normalizedCode ? normalizedCode.split("-")[0] : "";
+  const displayOverride =
+    LANGUAGE_DISPLAY_OVERRIDES[rawLanguage.toLowerCase()] ||
+    LANGUAGE_DISPLAY_OVERRIDES[displayCode];
+  if (displayOverride) {
+    return displayOverride;
+  }
   const locale = typeof I18n.getLocale === "function" ? I18n.getLocale() : "en";
   if (displayCode) {
     const cacheKey = `${locale}::${displayCode}`;
@@ -1209,7 +1633,7 @@ function formatAudioChannelLayout(value) {
 
 function formatAudioTrackDisplay(track = {}, index = 0) {
   const rawLabel = getMeaningfulTrackLabel(track);
-  const rawLanguage = cleanDisplayText(getTrackLanguageValue(track));
+  const rawLanguage = cleanDisplayText(getUsableAudioTrackLanguageValue(track));
   const languageLabel = capitalizeDisplayLabel(getAudioTrackLanguageLabel(track));
   const rawLanguageLabel = capitalizeDisplayLabel(rawLanguage);
   const authoritativeCodecValue = getAuthoritativeAudioCodecValue(track);
@@ -1284,19 +1708,30 @@ function formatClock(date = new Date(), webOsLocaleInfo = null) {
   }
 }
 
-function formatEndsAt(currentSeconds, durationSeconds, webOsLocaleInfo = null) {
-  const current = Number(currentSeconds || 0);
-  const duration = Number(durationSeconds || 0);
-  if (!Number.isFinite(duration) || duration <= 0) {
+function formatEndsAt(currentSeconds, durationSeconds, webOsLocaleInfo = null, playbackSpeed = 1) {
+  const remainingMs = calculateRemainingPlaybackMilliseconds(
+    currentSeconds,
+    durationSeconds,
+    playbackSpeed
+  );
+  if (remainingMs == null) {
     return "--:--";
   }
-  const remainingMs = Math.max(0, (duration - current) * 1000);
   const endDate = new Date(Date.now() + remainingMs);
   return formatClock(endDate, webOsLocaleInfo);
 }
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function hasExplicitSubtitleVerticalPosition(snapshot) {
+  const rawLine = snapshot?.line;
+  if (rawLine == null || String(rawLine).trim().toLowerCase() === "auto") {
+    return false;
+  }
+  const line = Number(rawLine);
+  return Number.isFinite(line) && line !== -1;
 }
 
 function trackListToArray(trackList) {
@@ -1353,8 +1788,14 @@ function trackListToArray(trackList) {
 }
 
 function normalizeItemType(value) {
-  const normalized = String(value || "movie").toLowerCase();
+  const normalized = String(value || "movie")
+    .trim()
+    .toLowerCase();
   return normalized || "movie";
+}
+
+function isSeriesItemType(value) {
+  return ["series", "tv", "show", "tvshow"].includes(normalizeItemType(value));
 }
 
 function escapeHtml(value) {
@@ -1369,6 +1810,48 @@ function escapeHtml(value) {
 function escapeAttribute(value) {
   return escapeHtml(value);
 }
+
+function postPlayFastOutSlowIn(progress) {
+  const target = Math.max(0, Math.min(1, Number(progress) || 0));
+  let low = 0;
+  let high = 1;
+  // Android's default tween easing is FastOutSlowIn (0.4, 0, 0.2, 1).
+  // Solve the cubic-bezier x component so the native AVPlay rectangle follows
+  // the same curve as the CSS/Compose player-surface transition.
+  for (let index = 0; index < 12; index += 1) {
+    const time = (low + high) / 2;
+    const x = 3 * (1 - time) ** 2 * time * 0.4 + 3 * (1 - time) * time ** 2 * 0.2 + time ** 3;
+    if (x < target) {
+      low = time;
+    } else {
+      high = time;
+    }
+  }
+  const time = (low + high) / 2;
+  return 3 * (1 - time) * time ** 2 + time ** 3;
+}
+
+function interpolatePostPlayRect(from = {}, to = {}, progress = 1) {
+  const eased = postPlayFastOutSlowIn(progress);
+  return {
+    x: Math.round(Number(from.x || 0) + (Number(to.x || 0) - Number(from.x || 0)) * eased),
+    y: Math.round(Number(from.y || 0) + (Number(to.y || 0) - Number(from.y || 0)) * eased),
+    width: Math.max(
+      1,
+      Math.round(
+        Number(from.width || 1) + (Number(to.width || 1) - Number(from.width || 1)) * eased
+      )
+    ),
+    height: Math.max(
+      1,
+      Math.round(
+        Number(from.height || 1) + (Number(to.height || 1) - Number(from.height || 1)) * eased
+      )
+    )
+  };
+}
+
+const POST_PLAY_LONG_PRESS_DELAY_MS = 500;
 
 function cleanPlaybackDiagnosticValue(value, maxLength = 320) {
   const text = String(value ?? "")
@@ -1705,6 +2188,7 @@ function formatSubtitleTrackDisplay(track = {}, index = 0) {
   const descriptors = getTrackDescriptorLabels(track).filter(
     (detail) => !isSubtitleLanguageOnlyDetail(detail, languageLabel, languageKey)
   );
+  pushUniqueText(descriptors, getSubtitleCodecDisplayLabel(track));
   const rawLabel = getMeaningfulTrackLabel(track);
   const label =
     languageKey !== SUBTITLE_LANGUAGE_UNKNOWN_KEY && languageLabel
@@ -1768,6 +2252,18 @@ function createTrackDialogCache() {
     embeddedAudioByEmbeddedIndex: null,
     embeddedSubtitleByNativeIndex: null,
     embeddedSubtitleByEmbeddedIndex: null
+  };
+}
+
+function createSubtitleOptionVirtualState() {
+  return {
+    languageKey: "",
+    keys: [],
+    measuredExtents: new Map(),
+    model: null,
+    window: null,
+    scrollTop: 0,
+    initialized: false
   };
 }
 
@@ -1882,6 +2378,10 @@ function flattenStreamGroups(streamResult) {
       const streamOrigin = {
         ...(group.streamOrigin || {}),
         ...(stream.streamOrigin || {}),
+        kind:
+          group.streamOrigin?.kind ||
+          stream.streamOrigin?.kind ||
+          (group.sourceProviderId || stream.sourceProviderId ? "plugin" : "addon"),
         addonId:
           stream.addonId ||
           group.addonId ||
@@ -2159,6 +2659,7 @@ function uniqueNonEmptyValues(values = []) {
 
 export const PlayerScreen = {
   async mount(params = {}) {
+    streamRepository.setLocalPluginSearchPaused(false);
     this.container = document.getElementById("player");
     this.container.style.display = "block";
     this.container.classList.toggle("player-platform-webos", Environment.isWebOS());
@@ -2198,6 +2699,7 @@ export const PlayerScreen = {
     }
     this.params = params;
     this.trackPreferenceContentId = this.getTrackPreferenceContentId();
+    this.subtitleDelayPreferenceVideoId = this.getSubtitleDelayPreferenceVideoId();
     this.rememberedAudioTrackPreference = TrackPreferencesStore.getAudio(
       this.trackPreferenceContentId
     );
@@ -2222,11 +2724,10 @@ export const PlayerScreen = {
       void ensureWebOsImageProxyReady();
     }
 
-    this.aspectModes = [
-      { objectFit: "contain", label: t("player_aspect_fit", {}, "Fit") },
-      { objectFit: "cover", label: t("player_aspect_fill", {}, "Fill") },
-      { objectFit: "fill", label: t("player_aspect_stretch", {}, "Stretch") }
-    ];
+    this.aspectModes = ASPECT_MODE_DEFINITIONS.map((definition) => ({
+      ...definition,
+      label: t(definition.labelKey, {}, definition.fallbackLabel)
+    }));
 
     this.streamCandidates = this.normalizeStreamCandidates(
       Array.isArray(params.streamCandidates) ? params.streamCandidates : []
@@ -2290,6 +2791,20 @@ export const PlayerScreen = {
     this.embeddedSubtitleTracks = [];
     this.nextEpisodeTransitionMeta = null;
     this.subtitleDialogVisible = false;
+    this.subtitleDelayOverlayVisible = false;
+    this.subtitleDelayFocusTarget = "slider";
+    this.subtitleDelayOverlayStatus = "";
+    this.subtitleDelayOverlayTimer = null;
+    this.subtitleTimingDialogVisible = false;
+    this.subtitleTimingStage = "wait";
+    this.subtitleAutoSyncCues = [];
+    this.subtitleAutoSyncCapturedVideoMs = null;
+    this.subtitleAutoSyncStatus = "";
+    this.subtitleAutoSyncError = "";
+    this.subtitleAutoSyncLoading = false;
+    this.subtitleAutoSyncLoadedTrackKey = "";
+    this.subtitleAutoSyncLoadToken = 0;
+    this.subtitleAutoSyncCueFocusIndex = 0;
     this.subtitleDialogTab = "builtIn";
     this.subtitleDialogIndex = 0;
     this.subtitleLanguageRailIndex = 0;
@@ -2297,8 +2812,14 @@ export const PlayerScreen = {
     this.subtitleStyleRailIndex = 0;
     this.subtitleStyleControlSide = "minus";
     this.subtitleFocusedRail = "language";
+    this.subtitleFocusedLanguageKey = SUBTITLE_LANGUAGE_OFF_KEY;
     this.subtitleDialogScrollMode = "nearest";
     this.subtitleDialogScrollTimer = null;
+    this.subtitleDialogSession = null;
+    this.subtitleOptionFocusMemory = new Map();
+    this.subtitleOptionVirtualState = createSubtitleOptionVirtualState();
+    this.subtitleOptionVirtualMeasureTimer = null;
+    this.renderedSubtitleDialogMarkup = "";
     this.selectedSubtitleTrackIndex = -1;
     this.selectedEmbeddedSubtitleTrackIndex = -1;
     this.selectedAddonSubtitleId = null;
@@ -2324,6 +2845,7 @@ export const PlayerScreen = {
     this.webOsEmbeddedHtmlSubtitleTrack = null;
     this.webOsEmbeddedHtmlSubtitleCueCount = 0;
     this.webOsEmbeddedHtmlSubtitleActivationKey = "";
+    this.assSubtitleRenderer = null;
     this.bitmapSubtitleDecoder = null;
     this.bitmapSubtitleTrack = null;
     this.bitmapSubtitleLoadToken = 0;
@@ -2333,6 +2855,18 @@ export const PlayerScreen = {
     this.bitmapSubtitleLastFrameKey = "";
     this.bitmapSubtitleLastErrorAt = 0;
     this.bitmapSubtitleScratchCanvas = null;
+    this.webOsEmbeddedTextSubtitleTrack = null;
+    this.webOsEmbeddedTextSubtitleLoadToken = 0;
+    this.webOsEmbeddedTextSubtitleLoading = false;
+    this.webOsEmbeddedTextSubtitleUsingHtml = false;
+    this.webOsEmbeddedTextSubtitleUsingAss = false;
+    this.webOsEmbeddedTextSubtitleWindowStart = 0;
+    this.webOsEmbeddedTextSubtitleWindowEnd = 0;
+    this.webOsEmbeddedTextSubtitleWindowFailureCount = 0;
+    this.webOsEmbeddedTextSubtitleLastErrorAt = 0;
+    this.webOsEmbeddedTextSubtitleFallbackUnavailable = false;
+    this.embeddedTextSubtitleSupportNotice = "";
+    this.embeddedBitmapSubtitleSupportNotice = "";
     this.subtitleCueStyleBindings = new Map();
     this.subtitleCueOriginalState = new WeakMap();
     this.embeddedSubtitleCueRefreshTimers = new Set();
@@ -2356,15 +2890,29 @@ export const PlayerScreen = {
     this.sourcesFocus = { zone: "filter", index: 0 };
     this.sourceLoadToken = 0;
     this.completedSourceRequestKey = "";
+    this.sourcePanelRenderFrame = null;
+    this.sourcePanelRenderFrameType = null;
+    this.sourcesLastNavigationRepeatAt = 0;
+    this.renderedSourcesMarkup = null;
     this.streamCandidatesByVideoId = new Map();
     this.streamCandidatesLoadPromises = new Map();
 
-    this.aspectModeIndex = 0;
+    this.aspectModeIndex = aspectModeIndex(DeviceLocalPlayerPreferences.getAspectMode());
     this.aspectToastTimer = null;
     this.speedDialogVisible = false;
     this.speedDialogIndex = Math.max(0, PLAYER_SPEEDS.indexOf(1));
 
-    this.episodes = Array.isArray(params.episodes) ? params.episodes : [];
+    this.postPlayEpisodeMetadataProvided = Array.isArray(params.episodes);
+    this.episodes = isSeriesItemType(params?.itemType || "movie")
+      ? normalizePlayerEpisodeMetadata(params.episodes, { fallbackSeason: params?.season })
+      : this.postPlayEpisodeMetadataProvided
+        ? params.episodes
+        : [];
+    this.postPlayEpisodeMetadataResolved = resolvePostPlayEpisodeMetadataResolved({
+      explicitResolution: params.nextEpisodeMetadataResolved,
+      episodes: this.episodes,
+      nextEpisodeVideoId: params.nextEpisodeVideoId
+    });
     this.episodePanelVisible = false;
     const explicitEpisodeIndex = this.episodes.findIndex((entry) => entry.id === params.videoId);
     const fallbackEpisodeIndex = this.episodes.findIndex((entry) => {
@@ -2406,6 +2954,7 @@ export const PlayerScreen = {
     this.nextEpisodeLaunching = false;
     this.nextEpisodeLaunchToken = Number(this.nextEpisodeLaunchToken || 0) + 1;
     this.nextEpisodeCardTriggered = false;
+    this.nextEpisodeCardRenderedKey = "";
     this.nextEpisodeCardSearching = false;
     this.nextEpisodeCardSourceName = "";
     this.nextEpisodeCardCountdownSec = null;
@@ -2422,6 +2971,45 @@ export const PlayerScreen = {
     this.playerBackNavigationInProgress = false;
     this.nextEpisodeCardDismissed = false;
     this.nextEpisodeBackExitArmed = false;
+    this.postPlayPlaybackEnded = false;
+    this.postPlayNaturalEndPending = false;
+    this.postPlayNaturalCompletionPrepared = false;
+    this.postPlayDescriptionTruncated = false;
+    this.postPlayFocusedAction = "primary";
+    this.postPlayPendingSelect = false;
+    this.postPlayPendingSelectAction = "";
+    this.postPlayLastRecommendationIndex = -1;
+    this.postPlayLastVisible = false;
+    this.postPlayLastTrailerPlaying = false;
+    this.postPlayRenderedSignature = "";
+    this.postPlayBackdropTransitionTimer = null;
+    this.postPlaySummaryTransitionTimer = null;
+    this.postPlayTrailerActionTransitionFrame = null;
+    this.postPlayTrailerLabelTimer = null;
+    this.postPlayNativeSurfaceStateKey = "";
+    this.postPlayNativeSurfaceAnimationFrame = null;
+    this.postPlayNativeSurfaceAnimationUsesRaf = false;
+    this.postPlayNativeSurfaceRect = null;
+    this.postPlayTrailerMedia = null;
+    this.postPlayTrailerMessageHandler = null;
+    this.postPlayTrailerGeneration = 0;
+    this.postPlayTrailerExitTimer = null;
+    this.postPlayFocusTimer = null;
+    this.postPlayDescriptionMeasureFrame = null;
+    this.postPlayManualDialogVisible = false;
+    this.postPlaySynopsisVisible = false;
+    this.postPlaySynopsisScrollFrame = null;
+    this.postPlaySynopsisScrollTarget = null;
+    this.postPlaySynopsisScrollPreviousFrameAt = 0;
+    this.postPlayLongPressTimer = null;
+    this.postPlayLongPressTriggered = false;
+    this.postPlayRecommendationController?.stop?.();
+    this.postPlayRecommendationController = new PostPlayRecommendationController({
+      onStateChange: (state) => this.onPostPlayRecommendationStateChange(state),
+      onStartTrailer: (recommendation, options) =>
+        this.startPostPlayTrailer(recommendation, options),
+      onStopTrailer: () => this.stopPostPlayTrailer()
+    });
 
     this.parentalWarnings = normalizeParentalWarnings(
       params.parentalWarnings || params.parentalGuide
@@ -2484,9 +3072,21 @@ export const PlayerScreen = {
     this.failedPlaybackUrls = new Set();
     this.failedPlaybackStreamIds = new Set();
     this.playbackStallTimer = null;
+    this.playbackEngineValidationEngine = "";
+    this.playbackEngineValidationStartedAt = 0;
+    this.playbackEngineValidationStartSeconds = null;
+    this.playbackEngineValidationLastSeconds = null;
+    this.playbackEngineValidationProgressSeconds = 0;
+    this.playbackEngineValidated = false;
+    this.postValidationRecoveryValidationActive = false;
+    this.postValidationSameEngineRecoveryAttempts = 0;
     this.engineFsStartupRetryTimer = null;
     this.engineFsStartupErrorRetries = 0;
     this.engineFsStallExtensions = 0;
+    this.webOsNativeStartupLoadingExtended = false;
+    this.webOsNativeReadyStartupRetries = 0;
+    this.playbackRecoveryActive = false;
+    this.playbackRecoveryAttempts = 0;
     this.lastEngineFsStallStats = null;
     this.lastEngineFsStartupErrorStats = null;
     this.engineFsKeepAliveHandle = null;
@@ -2504,6 +3104,7 @@ export const PlayerScreen = {
     this.paused = false;
     this.controlsVisible = true;
     this.loadingVisible = true;
+    this.bufferingActive = false;
     this.loadingProgress = null;
     this.loadingLogoFillActive = false;
     this.loadingLogoFillProgress = 0;
@@ -2537,7 +3138,7 @@ export const PlayerScreen = {
 
     const playerSettings = PlayerSettingsStore.get();
     this.subtitleRenderMode = normalizeSubtitleRenderMode(playerSettings.subtitleRenderMode);
-    this.subtitleDelayMs = 0;
+    this.subtitleDelayMs = SubtitleDelayPreferencesStore.get(this.subtitleDelayPreferenceVideoId);
     this.subtitleStyleSettings = {
       ...playerSettings.subtitleStyle,
       preferredLanguage: extractSubtitleLanguageSetting(
@@ -2573,6 +3174,7 @@ export const PlayerScreen = {
       void this.fetchParentalGuide();
       void this.fetchSkipIntervals();
       void this.hydratePauseOverlayMeta();
+      void this.loadPostPlayEpisodeMetadata(mountToken);
     }
     this.renderEpisodePanel();
     this.applyAspectMode({ showToast: false });
@@ -2589,6 +3191,11 @@ export const PlayerScreen = {
         Environment.isWebOS() &&
         !this.currentEngineFsStream &&
         this.isCurrentSourceLikelyMkv(initialStreamUrl, sourceCandidate);
+      const allowNativePlaybackDuringStartupAudioGate =
+        shouldAllowNativePlaybackDuringStartupAudioGate({
+          isHlsPlayback: this.isCurrentSourceLikelyHls(initialStreamUrl, sourceCandidate),
+          isPrioritizedWebOsRemoteMkvPlayback: prioritizeWebOsRemoteMkvPlayback
+        });
       if (prioritizeWebOsRemoteMkvPlayback) {
         // The probe must start only after webOS has accepted the media request,
         // but startup preference checks must already know discovery is pending.
@@ -2601,7 +3208,7 @@ export const PlayerScreen = {
       } else {
         this.engineFsPlaybackToken = "";
         this.enableStartupAudioGate({
-          allowNativePlayback: prioritizeWebOsRemoteMkvPlayback,
+          allowNativePlayback: allowNativePlaybackDuringStartupAudioGate,
           maxWaitMs: prioritizeWebOsRemoteMkvPlayback ? WEBOS_REMOTE_MKV_AUDIO_GATE_MAX_WAIT_MS : 0
         });
       }
@@ -2653,6 +3260,1452 @@ export const PlayerScreen = {
       this.updateLoadingVisibility();
       this.setControlsVisible(false);
     }
+  },
+
+  getPostPlayState() {
+    return (
+      this.postPlayRecommendationController?.getState?.() || {
+        recommendation: null,
+        recommendations: [],
+        recommendationIndex: 0,
+        recommendationCount: 0,
+        isLoadingRecommendation: false,
+        isChangingRecommendation: false,
+        isLoadingTrailer: false,
+        isVisible: false,
+        hasReturnedToPlayer: false,
+        countdownSeconds: null,
+        countdownKind: "",
+        isTrailerPlaying: false,
+        hasAutoPlayedTrailer: false,
+        canNavigatePrevious: false,
+        canNavigateNext: false,
+        canReturnToPlayer: false,
+        blocksNaturalCompletion: false
+      }
+    );
+  },
+
+  isPostPlayVisible() {
+    return Boolean(this.getPostPlayState().isVisible);
+  },
+
+  isPostPlayLoading() {
+    return Boolean(this.getPostPlayState().isLoadingRecommendation);
+  },
+
+  getPostPlayCurrentTitle() {
+    return (
+      String(
+        this.params?.playerTitle ||
+          this.params?.itemTitle ||
+          this.params?.title ||
+          this.params?.itemId ||
+          ""
+      ).trim() || ""
+    );
+  },
+
+  getPostPlaySourceAddonBaseUrl() {
+    return String(
+      this.activePlaybackSourceContext?.addonBaseUrl ||
+        this.activePlaybackSourceContext?.baseUrl ||
+        this.params?.addonBaseUrl ||
+        this.params?.sourceAddonBaseUrl ||
+        ""
+    ).trim();
+  },
+
+  isPostPlayManualPlayOptionEnabled() {
+    return isAutoPlayEffectivelyEnabled(PlayerSettingsStore.get());
+  },
+
+  isPostPlayEpisodeMetadataResolved() {
+    if (!isSeriesItemType(this.params?.itemType || "movie")) {
+      return true;
+    }
+    return Boolean(this.postPlayEpisodeMetadataResolved);
+  },
+
+  async loadPostPlayEpisodeMetadata(mountToken = null) {
+    const itemType = normalizeItemType(this.params?.itemType || "movie");
+    if (
+      !isSeriesItemType(itemType) ||
+      this.isExternalFrameMode() ||
+      this.isPostPlayEpisodeMetadataResolved() ||
+      !this.isActiveMountToken(mountToken)
+    ) {
+      return;
+    }
+
+    const itemId = String(this.params?.itemId || this.params?.contentId || "").trim();
+    if (!itemId) {
+      return;
+    }
+
+    try {
+      // Match Android's player-runtime ownership: resolve the canonical series
+      // metadata independently of whatever extras the stream route carried.
+      const result = await metaRepository.getMetaFromAllAddons(itemType, itemId);
+      if (
+        !this.isActiveMountToken(mountToken) ||
+        Router.getCurrent() !== "player" ||
+        result?.status !== "success" ||
+        !result?.data
+      ) {
+        return;
+      }
+
+      this.episodes = normalizePlayerEpisodeMetadata(result.data.videos, {
+        fallbackSeason: this.params?.season
+      });
+      this.postPlayEpisodeMetadataProvided = true;
+      this.postPlayEpisodeMetadataResolved = true;
+
+      const currentVideoId = String(this.params?.videoId || "").trim();
+      const currentEpisodeIndex = currentVideoId
+        ? this.episodes.findIndex((episode) => String(episode?.id || "") === currentVideoId)
+        : -1;
+      if (currentEpisodeIndex >= 0) {
+        this.episodePanelIndex = currentEpisodeIndex;
+      } else {
+        const currentSeason = this.params?.season == null ? null : Number(this.params.season);
+        const currentEpisode = Number(this.params?.episode || 0);
+        const positionIndex = this.episodes.findIndex(
+          (episode) =>
+            (currentSeason == null || Number(episode?.season) === currentSeason) &&
+            Number(episode?.episode) === currentEpisode
+        );
+        if (positionIndex >= 0) {
+          this.episodePanelIndex = positionIndex;
+        }
+      }
+
+      if (this.episodePanelVisible) {
+        this.syncEpisodePanelSeasonToIndex();
+        this.renderEpisodePanel();
+      }
+      this.evaluatePostPlayRecommendation();
+    } catch (error) {
+      // Android keeps the metadata gate unresolved on failure. Failing closed
+      // prevents a missing next-episode decision from changing post-play
+      // behavior or competing with autoplay.
+      if (this.isActiveMountToken(mountToken)) {
+        console.warn("Player episode metadata load failed", error);
+      }
+    }
+  },
+
+  blocksPostPlayRecommendation() {
+    return Boolean(
+      this.seekOverlayVisible ||
+      this.seekPreviewSeconds != null ||
+      this.pauseOverlayVisible ||
+      this.pauseOverlayTimer ||
+      this.sourcesPanelVisible ||
+      this.episodePanelVisible ||
+      this.subtitleDialogVisible ||
+      this.audioDialogVisible ||
+      this.speedDialogVisible ||
+      this.moreActionsVisible ||
+      this.stillWatchingPromptVisible ||
+      this.parentalGuideVisible
+    );
+  },
+
+  buildPostPlayRecommendationSnapshot({ playbackEnded = this.postPlayPlaybackEnded } = {}) {
+    const settings = PlayerSettingsStore.get();
+    const rawContentType = normalizeItemType(this.params?.itemType || "movie");
+    const contentType = isSeriesItemType(rawContentType) ? "series" : rawContentType;
+    const current = Number(this.getPlaybackCurrentSeconds() || 0);
+    const duration = Number(this.getPlaybackDurationSeconds() || 0);
+    const nextEpisode = this.resolveNextEpisodeInfo();
+    const positionMs = Number.isFinite(current) && current > 0 ? Math.round(current * 1000) : 0;
+    const durationMs = Number.isFinite(duration) && duration > 0 ? Math.round(duration * 1000) : 0;
+    const nextEpisodeThresholdReached = isSeriesItemType(rawContentType)
+      ? this.getNextEpisodeCardThresholdReached(current, duration)
+      : false;
+    return {
+      contentType,
+      contentId: this.params?.itemId || this.params?.contentId || this.params?.videoId || "",
+      videoId: this.params?.videoId || "",
+      season: this.params?.season ?? null,
+      episode: this.params?.episode ?? null,
+      currentTitle: this.getPostPlayCurrentTitle(),
+      poster: this.params?.playerPosterUrl || this.params?.poster || "",
+      backdrop: this.params?.playerBackdropUrl || this.params?.backdrop || "",
+      imdbId: this.params?.imdbId || this.params?.imdb_id || "",
+      tmdbId: this.params?.tmdbId || this.params?.tmdb_id || "",
+      traktId: this.params?.traktId || this.params?.trakt_id || "",
+      sourceAddonBaseUrl: this.getPostPlaySourceAddonBaseUrl(),
+      contentLanguage: this.contentLanguage || this.params?.contentLanguage || "",
+      enabled: settings.postPlayRecommendationsEnabled !== false,
+      movieThresholdPercent: settings.postPlayMovieThresholdPercent,
+      nextEpisodeMetadataResolved: this.isPostPlayEpisodeMetadataResolved(),
+      nextEpisodeHasAired: nextEpisode?.hasAired ?? null,
+      seriesThresholdReached: nextEpisodeThresholdReached,
+      hasFatalError: this.hasFatalPlaybackError(),
+      hasBlockingInteraction: this.blocksPostPlayRecommendation(),
+      playbackEnded: Boolean(playbackEnded),
+      positionMs,
+      durationMs,
+      hasActiveAutoPlay: Boolean(this.nextEpisodeLaunching || this.switchingEpisode),
+      nextEpisodeVideoId: nextEpisode?.videoId || null
+    };
+  },
+
+  evaluatePostPlayRecommendation({ playbackEnded = false } = {}) {
+    if (playbackEnded) {
+      this.postPlayPlaybackEnded = true;
+    }
+    if (!this.postPlayRecommendationController || this.isExternalFrameMode()) {
+      return this.getPostPlayState();
+    }
+    return this.postPlayRecommendationController.update(
+      this.buildPostPlayRecommendationSnapshot({
+        playbackEnded: playbackEnded || this.postPlayPlaybackEnded
+      })
+    );
+  },
+
+  onPostPlayRecommendationStateChange(state = this.getPostPlayState()) {
+    const wasVisible = Boolean(this.postPlayLastVisible);
+    const wasTrailerPlaying = Boolean(this.postPlayLastTrailerPlaying);
+    const previousIndex = Number(this.postPlayLastRecommendationIndex);
+    const currentIndex = Number(state.recommendationIndex ?? -1);
+    const becameVisible = Boolean(state.isVisible) && !wasVisible;
+    const changedTrailerPlaying = wasTrailerPlaying !== Boolean(state.isTrailerPlaying);
+    const changedIndex =
+      Boolean(state.isVisible) &&
+      previousIndex >= 0 &&
+      currentIndex >= 0 &&
+      currentIndex !== previousIndex;
+    this.postPlayLastVisible = Boolean(state.isVisible);
+    this.postPlayLastTrailerPlaying = Boolean(state.isTrailerPlaying);
+    this.postPlayLastRecommendationIndex = currentIndex;
+    if (changedIndex) {
+      this.postPlayDescriptionTruncated = false;
+    }
+    this.renderPostPlayRecommendation();
+    this.syncPlayerOverlayLayoutState();
+
+    if (becameVisible) {
+      this.schedulePostPlayFocus("primary", 420);
+    } else if (changedIndex) {
+      const directionalAction = currentIndex > previousIndex ? "next" : "previous";
+      this.clearPostPlayFocusTimer();
+      const focusAfterTransition = () => {
+        if (this.isPostPlayVisible()) {
+          this.focusPostPlayAction(directionalAction);
+        }
+      };
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => requestAnimationFrame(focusAfterTransition));
+      } else {
+        this.schedulePostPlayFocus(directionalAction, 32);
+      }
+    } else if (changedTrailerPlaying && state.isVisible) {
+      // Android re-requests the primary action 420ms after either side of the
+      // trailer takeover transition, so focus never remains on a button that
+      // has just been removed from the action row.
+      this.postPlayFocusedAction = "primary";
+      this.schedulePostPlayFocus("primary", 420);
+    }
+
+    if (this.postPlayNaturalEndPending && !state.blocksNaturalCompletion) {
+      this.postPlayNaturalEndPending = false;
+      void this.finishNaturalPlaybackEnded();
+    }
+  },
+
+  renderPostPlayStandardRatings(recommendation = {}) {
+    const items = [];
+    const parsePositiveRating = (value) => {
+      const parsed = Number(
+        String(value ?? "")
+          .trim()
+          .replace(",", ".")
+      );
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    };
+    const imdbRating = recommendation.showStandardRatings
+      ? parsePositiveRating(recommendation.imdbRating)
+      : null;
+    const tmdbRating = recommendation.showStandardRatings
+      ? parsePositiveRating(recommendation.tmdbRating)
+      : null;
+    if (imdbRating != null) {
+      items.push(`
+        <span class="player-post-play-rating player-post-play-standard-rating">
+          <img src="assets/icons/imdb_logo_2016.svg" alt="IMDb" />
+          <span>${escapeHtml(imdbRating.toFixed(1))}</span>
+        </span>
+      `);
+    }
+    if (tmdbRating != null) {
+      items.push(`
+        <span class="player-post-play-rating player-post-play-standard-rating">
+          <img src="assets/icons/mdblist_tmdb.svg" alt="TMDB" />
+          <span>${escapeHtml(String(Math.trunc(tmdbRating * 10)))}</span>
+        </span>
+      `);
+    }
+    return items.length
+      ? `<div class="player-post-play-standard-ratings">${items.join('<span class="player-post-play-rating-separator">•</span>')}</div>`
+      : "";
+  },
+
+  renderPostPlayMdbListRatings(recommendation = {}) {
+    const ratings = recommendation.mdbListRatings || {};
+    const items = [];
+    const formatRating = (provider, value) => {
+      const raw = String(value ?? "").trim();
+      if (!raw) {
+        return "";
+      }
+      const parsed = Number(raw.replace(",", "."));
+      if (!Number.isFinite(parsed)) {
+        return raw.replace(",", ".");
+      }
+      const fixed = parsed.toFixed(1);
+      return ["imdb", "tmdb", "letterboxd"].includes(provider) ? fixed : fixed.replace(/\.0$/, "");
+    };
+    const external = [
+      ["trakt", "assets/icons/mdblist_trakt.svg"],
+      ["imdb", "assets/icons/imdb_logo_2016.svg"],
+      ["tmdb", "assets/icons/mdblist_tmdb.svg"],
+      ["letterboxd", "assets/icons/mdblist_letterboxd.svg"],
+      ["mal", "assets/icons/mdblist_mal.svg"],
+      ["tomatoes", "assets/icons/mdblist_tomatoes.svg"],
+      ["audience", "assets/icons/mdblist_audience.png"],
+      ["metacritic", "assets/icons/mdblist_metacritic.png"]
+    ];
+    external.forEach(([provider, icon]) => {
+      const value = ratings[provider];
+      if (value == null || String(value).trim() === "") {
+        return;
+      }
+      items.push(`
+        <span class="player-post-play-rating player-post-play-external-rating">
+          <img src="${escapeAttribute(icon)}" alt="${escapeAttribute(provider)}" />
+          <span>${escapeHtml(formatRating(provider, value))}</span>
+        </span>
+      `);
+    });
+    return items.length
+      ? `<div class="player-post-play-mdblist-ratings" aria-label="Ratings">${items.join("")}</div>`
+      : "";
+  },
+
+  renderPostPlayManualDialog(recommendation = {}) {
+    if (!this.postPlayManualDialogVisible) {
+      return "";
+    }
+    return `
+      <div class="nuvio-dialog-backdrop nuvio-dialog-backdrop-enter" data-player-post-play-modal="manual">
+        <section class="nuvio-dialog-panel nuvio-dialog-panel-enter player-post-play-manual-dialog" role="dialog" aria-modal="true" aria-label="${escapeAttribute(recommendation.title || "")}" style="max-width:54.2vw">
+          <div class="nuvio-dialog-title">${escapeHtml(recommendation.title || "")}</div>
+          <div class="nuvio-dialog-subtitle">${escapeHtml(t("hero_play", {}, { fallback: "Play" }))}</div>
+          <div class="nuvio-dialog-actions">
+            <button class="nuvio-dialog-button focusable focused" type="button" tabindex="-1" data-player-post-play-action="manualPlay">
+              <span class="nuvio-dialog-button-label">${escapeHtml(t("player_post_play_play_manually", {}, "Play manually"))}</span>
+            </button>
+          </div>
+        </section>
+      </div>
+    `;
+  },
+
+  renderPostPlaySynopsisDialog(recommendation = {}) {
+    if (!this.postPlaySynopsisVisible) {
+      return "";
+    }
+    return `
+      <section class="player-post-play-synopsis-overlay" data-player-post-play-modal="synopsis" role="dialog" aria-modal="true" aria-label="${escapeAttribute(recommendation.title || "Description")}">
+        <h2 class="player-post-play-synopsis-title">${escapeHtml(recommendation.title || "")}</h2>
+        <div class="player-post-play-synopsis-scroll" tabindex="-1" data-player-post-play-synopsis-content>
+          <p class="player-post-play-synopsis-full-text">${escapeHtml(recommendation.description || "")}</p>
+        </div>
+        <div class="player-post-play-synopsis-hint">${escapeHtml(t("hero_synopsis_dismiss_hint", {}, "Press back to close"))}</div>
+      </section>
+    `;
+  },
+
+  clearPostPlaySynopsisScrollAnimation() {
+    if (this.postPlaySynopsisScrollFrame) {
+      if (typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(this.postPlaySynopsisScrollFrame);
+      }
+      this.postPlaySynopsisScrollFrame = null;
+    }
+    this.postPlaySynopsisScrollTarget = null;
+    this.postPlaySynopsisScrollPreviousFrameAt = 0;
+  },
+
+  focusPostPlaySynopsisContent() {
+    const content = this.uiRefs?.postPlay?.querySelector?.(
+      "[data-player-post-play-synopsis-content]"
+    );
+    if (!content) {
+      return false;
+    }
+    this.clearPostPlaySynopsisScrollAnimation();
+    content.scrollTop = 0;
+    this.uiRefs?.postPlay?.querySelectorAll?.(".focusable.focused")?.forEach?.((node) => {
+      node.classList.remove("focused");
+    });
+    const focus = () => {
+      if (!this.postPlaySynopsisVisible || !content.isConnected) {
+        return;
+      }
+      try {
+        content.focus({ preventScroll: true });
+      } catch (_) {
+        content.focus?.();
+      }
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => requestAnimationFrame(focus));
+    } else {
+      setTimeout(focus, 0);
+    }
+    return true;
+  },
+
+  scrollPostPlaySynopsis(direction = 1) {
+    const content = this.uiRefs?.postPlay?.querySelector?.(
+      "[data-player-post-play-synopsis-content]"
+    );
+    if (!content) {
+      return false;
+    }
+    const maxScroll = Math.max(
+      0,
+      Number(content.scrollHeight || 0) - Number(content.clientHeight || 0)
+    );
+    if (maxScroll <= 0) {
+      return true;
+    }
+    const current = Number(content.scrollTop || 0);
+    const baseTarget = Number.isFinite(this.postPlaySynopsisScrollTarget)
+      ? this.postPlaySynopsisScrollTarget
+      : current;
+    const target = Math.max(
+      0,
+      Math.min(maxScroll, baseTarget + (Number(direction) >= 0 ? 260 : -260))
+    );
+    this.postPlaySynopsisScrollTarget = target;
+    if (this.postPlaySynopsisScrollFrame || target === current) {
+      return true;
+    }
+    if (typeof requestAnimationFrame !== "function") {
+      content.scrollTop = target;
+      return true;
+    }
+    this.postPlaySynopsisScrollPreviousFrameAt = 0;
+    const animate = (timestamp) => {
+      this.postPlaySynopsisScrollFrame = null;
+      if (!this.postPlaySynopsisVisible || !content.isConnected) {
+        this.clearPostPlaySynopsisScrollAnimation();
+        return;
+      }
+      const elapsedSeconds = this.postPlaySynopsisScrollPreviousFrameAt
+        ? Math.min(
+            0.05,
+            Math.max(0, (timestamp - this.postPlaySynopsisScrollPreviousFrameAt) / 1000)
+          )
+        : 0;
+      this.postPlaySynopsisScrollPreviousFrameAt = timestamp;
+      const requestedTarget = Number(this.postPlaySynopsisScrollTarget ?? content.scrollTop);
+      const distance = requestedTarget - Number(content.scrollTop || 0);
+      if (Math.abs(distance) < 0.5) {
+        content.scrollTop = requestedTarget;
+        this.postPlaySynopsisScrollPreviousFrameAt = 0;
+        return;
+      }
+      const smoothing = elapsedSeconds > 0 ? 1 - Math.exp(-12 * elapsedSeconds) : 0.16;
+      content.scrollTop += distance * smoothing;
+      this.postPlaySynopsisScrollFrame = requestAnimationFrame(animate);
+    };
+    this.postPlaySynopsisScrollFrame = requestAnimationFrame(animate);
+    return true;
+  },
+
+  clearPostPlayBackdropTransition() {
+    if (this.postPlayBackdropTransitionTimer) {
+      clearTimeout(this.postPlayBackdropTransitionTimer);
+      this.postPlayBackdropTransitionTimer = null;
+    }
+  },
+
+  clearPostPlaySummaryTransition() {
+    if (this.postPlaySummaryTransitionTimer) {
+      clearTimeout(this.postPlaySummaryTransitionTimer);
+      this.postPlaySummaryTransitionTimer = null;
+    }
+    this.uiRefs?.postPlay?.querySelector?.(".player-post-play-summary-previous")?.remove?.();
+  },
+
+  syncPostPlaySummaryTransition(
+    mount,
+    previousSummary,
+    previousRecommendationId,
+    recommendationId
+  ) {
+    const content = mount?.querySelector?.(".player-post-play-content");
+    const currentSummary = content?.querySelector?.(
+      ".player-post-play-summary:not(.player-post-play-summary-previous)"
+    );
+    if (
+      !content ||
+      !currentSummary ||
+      !previousSummary ||
+      !previousRecommendationId ||
+      previousRecommendationId === recommendationId
+    ) {
+      return;
+    }
+
+    this.clearPostPlaySummaryTransition();
+    const previousLayer = previousSummary.cloneNode(true);
+    previousLayer.className = "player-post-play-summary player-post-play-summary-previous";
+    previousLayer.setAttribute("aria-hidden", "true");
+    previousLayer.querySelectorAll?.("[data-player-post-play-action]")?.forEach?.((node) => {
+      node.removeAttribute("data-player-post-play-action");
+      node.setAttribute("tabindex", "-1");
+    });
+    content.insertBefore(previousLayer, currentSummary);
+    currentSummary.classList.add("is-recommendation-changing");
+
+    const reveal = () => {
+      currentSummary.classList.add("is-recommendation-visible");
+      previousLayer.classList.add("is-recommendation-exiting");
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(reveal);
+    } else {
+      setTimeout(reveal, 0);
+    }
+    this.postPlaySummaryTransitionTimer = setTimeout(() => {
+      previousLayer.remove?.();
+      currentSummary.classList.remove("is-recommendation-changing", "is-recommendation-visible");
+      this.postPlaySummaryTransitionTimer = null;
+    }, 350);
+  },
+
+  clearPostPlayTrailerActionTransition() {
+    if (this.postPlayTrailerActionTransitionFrame != null) {
+      if (typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(this.postPlayTrailerActionTransitionFrame);
+      } else {
+        clearTimeout(this.postPlayTrailerActionTransitionFrame);
+      }
+      this.postPlayTrailerActionTransitionFrame = null;
+    }
+    if (this.postPlayTrailerLabelTimer) {
+      clearTimeout(this.postPlayTrailerLabelTimer);
+      this.postPlayTrailerLabelTimer = null;
+    }
+  },
+
+  syncPostPlayTrailerLabel(node, nextText) {
+    if (!node) {
+      return;
+    }
+    const text = String(nextText || "");
+    if (node.textContent === text) {
+      return;
+    }
+    if (this.postPlayTrailerLabelTimer) {
+      clearTimeout(this.postPlayTrailerLabelTimer);
+      this.postPlayTrailerLabelTimer = null;
+    }
+    node.classList.add("is-changing");
+    this.postPlayTrailerLabelTimer = setTimeout(() => {
+      this.postPlayTrailerLabelTimer = null;
+      if (!node || node.isConnected === false) {
+        return;
+      }
+      node.textContent = text;
+      const reveal = () => node.classList.remove("is-changing");
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(reveal);
+      } else {
+        setTimeout(reveal, 0);
+      }
+    }, 100);
+  },
+
+  syncPostPlayIdentityAssets(mount) {
+    const logo = mount?.querySelector?.("[data-player-post-play-logo]");
+    const titleStates = mount?.querySelector?.("[data-player-post-play-title-states]");
+    if (!logo) {
+      if (titleStates) {
+        titleStates.hidden = false;
+      }
+      return;
+    }
+
+    const showTitleFallback = () => {
+      logo.hidden = true;
+      logo.classList.remove("is-loaded");
+      if (titleStates) {
+        titleStates.hidden = false;
+      }
+    };
+    const showLogo = () => {
+      logo.hidden = false;
+      logo.classList.add("is-loaded");
+      if (titleStates) {
+        titleStates.hidden = true;
+      }
+    };
+    if (!logo.dataset.postPlayAssetBound) {
+      logo.dataset.postPlayAssetBound = "true";
+      logo.addEventListener("load", showLogo, { once: true });
+      logo.addEventListener("error", showTitleFallback, { once: true });
+    }
+    if (logo.complete) {
+      if (Number(logo.naturalWidth || 0) > 0) {
+        showLogo();
+      } else {
+        showTitleFallback();
+      }
+    }
+  },
+
+  syncPostPlayDynamicState(
+    mount,
+    state,
+    recommendation,
+    { animateTrailerTransition = false, initialTrailerVisible = false } = {}
+  ) {
+    const actions = mount?.querySelector?.(".player-post-play-actions");
+    const trailerSlot = mount?.querySelector?.(".player-post-play-trailer-slot");
+    const trailerButton = trailerSlot?.querySelector?.('[data-player-post-play-action="trailer"]');
+    const trailerLabelNode = trailerButton?.querySelector?.(
+      "[data-player-post-play-trailer-label]"
+    );
+    const targetTrailerVisible = Boolean(
+      POST_PLAY_IN_APP_TRAILER_PLAYBACK_ENABLED &&
+      !state.isTrailerPlaying &&
+      (recommendation?.trailerYtId || recommendation?.trailerVideoUrl)
+    );
+    this.clearPostPlayTrailerActionTransition();
+    const trailerLabel = state.isTrailerPlaying
+      ? t("player_post_play_trailer_playing", {}, "Trailer playing")
+      : state.countdownSeconds != null
+        ? t(
+            "player_post_play_trailer_countdown",
+            { seconds: state.countdownSeconds },
+            `Trailer in ${state.countdownSeconds}`
+          )
+        : t("player_post_play_trailer", {}, "Trailer");
+
+    this.syncPostPlayTrailerLabel(trailerLabelNode, trailerLabel);
+    this.syncPostPlayIdentityAssets(mount);
+    if (!actions || !trailerSlot || !trailerButton) {
+      return;
+    }
+
+    const applyVisibility = (visible, interactive = targetTrailerVisible) => {
+      actions.classList.toggle("has-trailer", Boolean(visible));
+      trailerSlot.classList.toggle("is-visible", Boolean(visible));
+      trailerSlot.setAttribute("aria-hidden", String(!visible));
+      trailerButton.disabled = !(interactive && visible);
+      trailerButton.setAttribute("aria-hidden", String(!(interactive && visible)));
+      trailerButton.setAttribute("aria-label", trailerLabel);
+    };
+
+    if (animateTrailerTransition && initialTrailerVisible !== targetTrailerVisible) {
+      applyVisibility(initialTrailerVisible, false);
+      const reveal = () => {
+        this.postPlayTrailerActionTransitionFrame = null;
+        applyVisibility(targetTrailerVisible, targetTrailerVisible);
+      };
+      if (typeof requestAnimationFrame === "function") {
+        this.postPlayTrailerActionTransitionFrame = requestAnimationFrame(reveal);
+      } else {
+        this.postPlayTrailerActionTransitionFrame = setTimeout(reveal, 0);
+      }
+      return;
+    }
+    applyVisibility(targetTrailerVisible, targetTrailerVisible);
+  },
+
+  syncPostPlayBackdropTransition(mount, previousImage, previousRecommendationId, recommendationId) {
+    const backdrop = mount?.querySelector?.(".player-post-play-backdrop");
+    const currentImage = backdrop?.querySelector?.(".player-post-play-backdrop-image.is-current");
+    if (!backdrop || !currentImage) {
+      return;
+    }
+    if (
+      !previousImage ||
+      !previousRecommendationId ||
+      previousRecommendationId === recommendationId
+    ) {
+      currentImage.classList.add("is-current");
+      return;
+    }
+    const oldImage = previousImage.cloneNode(true);
+    oldImage.className = "player-post-play-backdrop-image is-previous";
+    backdrop.appendChild(oldImage);
+    currentImage.classList.remove("is-current");
+    currentImage.classList.add("is-entering");
+    const reveal = () => currentImage.classList.add("is-loaded");
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(reveal);
+    } else {
+      setTimeout(reveal, 0);
+    }
+    this.postPlayBackdropTransitionTimer = setTimeout(() => {
+      oldImage.remove?.();
+      currentImage.classList.remove("is-entering", "is-loaded");
+      currentImage.classList.add("is-current");
+      this.postPlayBackdropTransitionTimer = null;
+    }, 350);
+  },
+
+  renderPostPlayRecommendation() {
+    const mount = this.uiRefs?.postPlay;
+    if (!mount) {
+      return;
+    }
+    const state = this.getPostPlayState();
+    const recommendation = state.recommendation;
+    if (!state.isVisible && !state.hasReturnedToPlayer) {
+      this.clearPostPlayTrailerActionTransition();
+      mount.classList.remove("is-rendered", "is-exiting", "is-loading");
+      mount.setAttribute("aria-hidden", "true");
+      mount.innerHTML = "";
+      this.postPlayRenderedSignature = "";
+      return;
+    }
+    if (!recommendation && !state.isVisible) {
+      this.clearPostPlayTrailerActionTransition();
+      mount.classList.add("is-exiting");
+      mount.classList.remove("is-rendered", "is-loading");
+      mount.setAttribute("aria-hidden", "true");
+      return;
+    }
+    if (!recommendation) {
+      this.clearPostPlayTrailerActionTransition();
+      mount.classList.add("is-loading", "is-rendered");
+      mount.classList.remove("is-exiting");
+      mount.setAttribute("aria-hidden", "false");
+      mount.innerHTML = `<div class="player-post-play-loading-content">${renderLoadingIndicator({ className: "player-post-play-loading-spinner" })}</div>`;
+      return;
+    }
+
+    const isSeries = recommendation.contentType === "series";
+    const backdrop = recommendation.backdrop || recommendation.background || recommendation.poster;
+    const currentTitle = this.getPostPlayCurrentTitle();
+    const header = currentTitle
+      ? t(
+          "player_post_play_because",
+          { title: currentTitle },
+          `Because you watched ${currentTitle}`
+        )
+      : t("player_post_play_recommended", {}, "Recommended for you");
+    const genres = (Array.isArray(recommendation.genres) ? recommendation.genres : [])
+      .map(localizedGenreLabel)
+      .filter(Boolean)
+      .slice(0, 2);
+    const details = [
+      ...genres,
+      recommendation.releaseInfo || "",
+      formatHeroRuntime(recommendation.runtime) || ""
+    ].filter(Boolean);
+    const standardRatings = this.renderPostPlayStandardRatings(recommendation);
+    const mdbListRatings = this.renderPostPlayMdbListRatings(recommendation);
+    const trailerFeatureEnabled = Boolean(POST_PLAY_IN_APP_TRAILER_PLAYBACK_ENABLED);
+    const trailerAvailable =
+      trailerFeatureEnabled &&
+      !state.isTrailerPlaying &&
+      Boolean(recommendation.trailerYtId || recommendation.trailerVideoUrl);
+    const trailerLabel = state.isTrailerPlaying
+      ? t("player_post_play_trailer_playing", {}, "Trailer playing")
+      : state.countdownSeconds != null
+        ? t(
+            "player_post_play_trailer_countdown",
+            { seconds: state.countdownSeconds },
+            `Trailer in ${state.countdownSeconds}`
+          )
+        : t("player_post_play_trailer", {}, "Trailer");
+    const primaryLabel = isSeries
+      ? t("tmdb_details_title", {}, "Details")
+      : t("player_post_play_play", {}, "Play");
+    const primaryActionIcon = isSeries
+      ? `<svg class="player-post-play-action-icon player-post-play-info-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 17h2v-6h-2v6zm1-15C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zM11 9h2V7h-2v2z" fill="currentColor" /></svg>`
+      : `<img class="player-post-play-action-icon" src="assets/icons/ic_player_play.svg" alt="" />`;
+    const signature = JSON.stringify([
+      recommendation.id,
+      recommendation.title,
+      recommendation.logo,
+      recommendation.backdrop,
+      recommendation.description,
+      recommendation.releaseInfo,
+      recommendation.runtime,
+      recommendation.imdbRating,
+      recommendation.tmdbRating,
+      recommendation.showStandardRatings,
+      JSON.stringify(recommendation.genres || []),
+      recommendation.country,
+      recommendation.language,
+      recommendation.status,
+      recommendation.ageRating,
+      recommendation.trailerYtId,
+      recommendation.trailerVideoUrl,
+      recommendation.detailsLoaded,
+      JSON.stringify(recommendation.mdbListRatings || null),
+      state.recommendationIndex,
+      state.isChangingRecommendation,
+      state.canReturnToPlayer,
+      this.postPlayManualDialogVisible,
+      this.postPlaySynopsisVisible,
+      this.postPlayFocusedAction
+    ]);
+    mount.classList.add("is-rendered");
+    mount.classList.remove("is-exiting", "is-loading");
+    mount.setAttribute("aria-hidden", "false");
+    if (signature === this.postPlayRenderedSignature) {
+      this.syncPostPlayDynamicState(mount, state, recommendation);
+      this.syncPostPlayTrailerMedia();
+      return;
+    }
+    this.clearPostPlayBackdropTransition();
+    const previousBackdrop = mount.querySelector(".player-post-play-backdrop");
+    const previousSummary = mount.querySelector(".player-post-play-summary");
+    const previousBackdropId = String(previousBackdrop?.dataset?.recommendationId || "");
+    const previousBackdropImage =
+      previousBackdrop?.querySelector?.(
+        ".player-post-play-backdrop-image.is-current, .player-post-play-backdrop-image.is-entering"
+      ) || previousBackdrop?.querySelector?.(".player-post-play-backdrop-image");
+    const previousTrailerSlot = mount.querySelector(".player-post-play-trailer-slot");
+    const previousTrailerVisible = Boolean(previousTrailerSlot?.classList.contains("is-visible"));
+    const initialTrailerVisible = previousTrailerSlot ? previousTrailerVisible : trailerAvailable;
+    const trailerVisibilityChanged =
+      Boolean(previousTrailerSlot) && initialTrailerVisible !== trailerAvailable;
+    this.postPlayRenderedSignature = signature;
+    mount.innerHTML = `
+      <div class="player-post-play-backdrop" data-recommendation-id="${escapeAttribute(recommendation.id)}" aria-hidden="true">
+        ${backdrop ? `<img class="player-post-play-backdrop-image is-current" src="${escapeAttribute(backdrop)}" alt="" decoding="async" />` : ""}
+      </div>
+      <div class="player-post-play-trailer-media" aria-hidden="true"></div>
+      <div class="player-post-play-scrim" aria-hidden="true"></div>
+      ${this.renderPostPlayPlayerWindow(state)}
+      <div class="player-post-play-content${state.isChangingRecommendation ? " is-changing" : ""}">
+        <div class="player-post-play-summary">
+          <div class="player-post-play-header-block">
+            <div class="player-post-play-header">${escapeHtml(header)}</div>
+          </div>
+          <div class="player-post-play-identity">
+            <div class="player-post-play-identity-content">
+              ${
+                recommendation.logo
+                  ? `<img class="player-post-play-logo is-loading" data-player-post-play-logo src="${escapeAttribute(recommendation.logo)}" alt="${escapeAttribute(recommendation.title)}" decoding="async" />`
+                  : ""
+              }
+              <div class="player-post-play-title-states${recommendation.logo ? " is-logo-pending" : ""}" data-player-post-play-title-states${recommendation.logo ? " hidden" : ""}>
+                <h1 class="player-post-play-title player-post-play-title-state player-post-play-title-state--normal" aria-hidden="true">${escapeHtml(recommendation.title)}</h1>
+                <h1 class="player-post-play-title player-post-play-title-state player-post-play-title-state--trailer" aria-hidden="true">${escapeHtml(recommendation.title)}</h1>
+              </div>
+            </div>
+          </div>
+          <div class="player-post-play-details-block">
+            ${details.length || standardRatings ? `<div class="player-post-play-meta-row">${details.length ? `<div class="player-post-play-details">${details.map((item) => `<span>${escapeHtml(item)}</span>`).join('<span class="player-post-play-detail-separator">  •  </span>')}</div>` : ""}${details.length && standardRatings ? '<span class="player-post-play-meta-separator">•</span>' : ""}${standardRatings}</div>` : ""}
+            ${mdbListRatings}
+            ${
+              recommendation.description
+                ? `<button class="player-post-play-synopsis focusable${this.postPlayDescriptionTruncated ? " is-truncated" : ""}" type="button" tabindex="-1" data-player-post-play-action="synopsis" aria-label="${escapeAttribute(t("hero_synopsis_read_more", {}, "Read more"))}"><span class="player-post-play-synopsis-text">${escapeHtml(recommendation.description)}</span><span class="player-post-play-synopsis-read-more">${escapeHtml(t("hero_synopsis_read_more", {}, "Read more"))}</span></button>`
+                : ""
+            }
+          </div>
+        </div>
+        <div class="player-post-play-actions${initialTrailerVisible ? " has-trailer" : ""}${state.recommendationCount > 1 ? " has-navigation" : ""}" role="group" aria-label="${escapeAttribute(t("player_post_play_recommended", {}, "Recommended for you"))}">
+          <button class="player-post-play-action player-post-play-primary focusable${this.postPlayFocusedAction === "primary" ? " focused" : ""}" type="button" tabindex="-1" data-player-post-play-action="primary">
+            ${primaryActionIcon}<span>${escapeHtml(primaryLabel)}</span>
+          </button>
+          ${
+            trailerFeatureEnabled
+              ? `<div class="player-post-play-trailer-slot${initialTrailerVisible ? " is-visible" : ""}" data-player-post-play-trailer-slot aria-hidden="${String(!initialTrailerVisible)}"><button class="player-post-play-action player-post-play-trailer-button focusable${this.postPlayFocusedAction === "trailer" ? " focused" : ""}" type="button" tabindex="-1" data-player-post-play-action="trailer"${trailerAvailable && initialTrailerVisible ? "" : " disabled"} aria-hidden="${String(!(trailerAvailable && initialTrailerVisible))}" aria-label="${escapeAttribute(trailerLabel)}"><img class="player-post-play-action-icon" src="assets/icons/trailer_play_button.svg" alt="" /><span class="player-post-play-trailer-label" data-player-post-play-trailer-label>${escapeHtml(trailerLabel)}</span></button></div>`
+              : ""
+          }
+          ${
+            state.recommendationCount > 1
+              ? `<button class="player-post-play-action player-post-play-nav focusable${this.postPlayFocusedAction === "previous" ? " focused" : ""}" type="button" tabindex="-1" data-player-post-play-action="previous"${state.canNavigatePrevious ? "" : " disabled"} aria-label="${escapeAttribute(t("player_post_play_previous_recommendation", {}, "Previous recommendation"))}"><img class="player-post-play-nav-icon player-post-play-nav-icon-previous" src="assets/icons/ic_chevron_compact_left.png" alt="" /></button>
+                 <button class="player-post-play-action player-post-play-nav focusable${this.postPlayFocusedAction === "next" ? " focused" : ""}" type="button" tabindex="-1" data-player-post-play-action="next"${state.canNavigateNext ? "" : " disabled"} aria-label="${escapeAttribute(t("player_post_play_next_recommendation", {}, "Next recommendation"))}"><img class="player-post-play-nav-icon player-post-play-nav-icon-next" src="assets/icons/ic_chevron_compact_left.png" alt="" /></button>`
+              : ""
+          }
+        </div>
+      </div>
+      ${this.renderPostPlayManualDialog(recommendation)}
+      ${this.renderPostPlaySynopsisDialog(recommendation)}
+    `;
+    this.syncPostPlayBackdropTransition(
+      mount,
+      previousBackdropImage,
+      previousBackdropId,
+      String(recommendation.id || "")
+    );
+    this.syncPostPlayDynamicState(mount, state, recommendation, {
+      animateTrailerTransition: trailerVisibilityChanged,
+      initialTrailerVisible
+    });
+    this.syncPostPlaySummaryTransition(
+      mount,
+      previousSummary,
+      previousBackdropId,
+      String(recommendation.id || "")
+    );
+    this.schedulePostPlayDescriptionMeasurement();
+    this.syncPostPlayTrailerMedia();
+  },
+
+  renderPostPlayPlayerWindow(state = this.getPostPlayState()) {
+    if (!state.canReturnToPlayer) {
+      return "";
+    }
+    return `
+      <button
+        class="player-post-play-player-window player-post-play-action focusable${this.postPlayFocusedAction === "playerWindow" ? " focused" : ""}"
+        type="button"
+        tabindex="-1"
+        data-player-post-play-action="playerWindow"
+        aria-label="${escapeAttribute(t("player_post_play_return_to_player", {}, "Return to player"))}"
+      ></button>
+    `;
+  },
+
+  schedulePostPlayDescriptionMeasurement() {
+    if (this.postPlayDescriptionMeasureFrame) {
+      cancelAnimationFrame(this.postPlayDescriptionMeasureFrame);
+      this.postPlayDescriptionMeasureFrame = null;
+    }
+    if (typeof requestAnimationFrame !== "function") {
+      return;
+    }
+    this.postPlayDescriptionMeasureFrame = requestAnimationFrame(() => {
+      this.postPlayDescriptionMeasureFrame = null;
+      const description = this.uiRefs?.postPlay?.querySelector(".player-post-play-synopsis");
+      const descriptionText =
+        description?.querySelector?.(".player-post-play-synopsis-text") || description;
+      if (!descriptionText || !descriptionText.isConnected) {
+        return;
+      }
+      const truncated = descriptionText.scrollHeight > descriptionText.clientHeight + 1;
+      this.postPlayDescriptionTruncated = truncated;
+      description.classList.toggle("is-truncated", truncated);
+    });
+  },
+
+  getPostPlayFocusableActions() {
+    return Array.from(
+      this.uiRefs?.postPlay?.querySelectorAll?.(
+        ".focusable[data-player-post-play-action]:not([disabled])"
+      ) || []
+    );
+  },
+
+  focusPostPlayAction(action = "primary") {
+    const mount = this.uiRefs?.postPlay;
+    if (!mount) {
+      return false;
+    }
+    const actions = this.getPostPlayFocusableActions();
+    const requestedAction = String(action || "primary");
+    const node =
+      actions.find((entry) => entry.dataset.playerPostPlayAction === requestedAction) ||
+      actions.find((entry) => entry.dataset.playerPostPlayAction === "primary") ||
+      actions[0];
+    if (!node || node.disabled) {
+      return false;
+    }
+    this.postPlayFocusedAction = String(node.dataset.playerPostPlayAction || action);
+    mount.querySelectorAll(".focusable.focused").forEach((entry) => {
+      entry.classList.toggle("focused", entry === node);
+    });
+    try {
+      node.focus({ preventScroll: true });
+    } catch (_) {
+      node.focus?.();
+    }
+    return true;
+  },
+
+  clearPostPlayFocusTimer() {
+    if (this.postPlayFocusTimer) {
+      clearTimeout(this.postPlayFocusTimer);
+      this.postPlayFocusTimer = null;
+    }
+  },
+
+  schedulePostPlayFocus(action = "primary", delayMs = 420) {
+    this.clearPostPlayFocusTimer();
+    this.postPlayFocusTimer = setTimeout(
+      () => {
+        this.postPlayFocusTimer = null;
+        if (this.isPostPlayVisible()) {
+          this.focusPostPlayAction(action);
+        }
+      },
+      Math.max(0, Number(delayMs) || 0)
+    );
+  },
+
+  clearPostPlayLongPressTimer() {
+    if (this.postPlayLongPressTimer) {
+      clearTimeout(this.postPlayLongPressTimer);
+      this.postPlayLongPressTimer = null;
+    }
+  },
+
+  triggerPostPlayLongPress() {
+    if (
+      !this.postPlayPendingSelect ||
+      this.postPlayPendingSelectAction !== "primary" ||
+      this.postPlayLongPressTriggered ||
+      this.getPostPlayState().recommendation?.contentType !== "movie" ||
+      !this.isPostPlayManualPlayOptionEnabled()
+    ) {
+      return false;
+    }
+    this.postPlayLongPressTriggered = true;
+    this.clearPostPlayLongPressTimer();
+    this.openPostPlayManualDialog();
+    return true;
+  },
+
+  schedulePostPlayLongPress() {
+    this.clearPostPlayLongPressTimer();
+    this.postPlayLongPressTriggered = false;
+    this.postPlayLongPressTimer = setTimeout(() => {
+      this.postPlayLongPressTimer = null;
+      this.triggerPostPlayLongPress();
+    }, POST_PLAY_LONG_PRESS_DELAY_MS);
+  },
+
+  syncPostPlayTrailerMedia() {
+    const mediaMount = this.uiRefs?.postPlay?.querySelector(".player-post-play-trailer-media");
+    if (!mediaMount || !this.postPlayTrailerMedia) {
+      return;
+    }
+    if (
+      this.postPlayTrailerMedia.node &&
+      this.postPlayTrailerMedia.node.parentElement !== mediaMount
+    ) {
+      mediaMount.replaceChildren(this.postPlayTrailerMedia.node);
+    }
+  },
+
+  clearPostPlayTrailerExitTimer() {
+    if (this.postPlayTrailerExitTimer) {
+      clearTimeout(this.postPlayTrailerExitTimer);
+      this.postPlayTrailerExitTimer = null;
+    }
+  },
+
+  startPostPlayTrailer(recommendation = {}, { auto = false } = {}) {
+    this.stopPostPlayTrailer();
+    this.clearPostPlayTrailerExitTimer();
+    try {
+      // Android releases the main player before TrailerPlayer takes over the
+      // full screen. Stop the active web/native session as well; keeping it
+      // merely paused can leave AVPlay or the HTML pipeline alive underneath
+      // the trailer during the pre-end autoplay path.
+      PlayerController.stop?.({
+        forceCloudSync: false,
+        allowCloudSync: false,
+        flushProgress: false
+      });
+    } catch (_) {}
+    const generation = ++this.postPlayTrailerGeneration;
+    const mediaMount = this.uiRefs?.postPlay?.querySelector(".player-post-play-trailer-media");
+    if (!mediaMount) {
+      this.postPlayRecommendationController?.onTrailerEnded?.();
+      return;
+    }
+    if (recommendation.trailerYtId) {
+      const frame = document.createElement("iframe");
+      frame.className = "player-post-play-trailer-frame is-loading";
+      frame.src = buildInlineYoutubePlayerUrl(recommendation.trailerYtId);
+      frame.title = recommendation.title || "Trailer";
+      frame.allow = "autoplay; encrypted-media; picture-in-picture";
+      frame.referrerPolicy = "strict-origin-when-cross-origin";
+      frame.allowFullscreen = true;
+      frame.addEventListener("load", () => frame.classList.add("is-ready"), { once: true });
+      mediaMount.replaceChildren(frame);
+      const handler = (event) => {
+        if (
+          generation !== this.postPlayTrailerGeneration ||
+          event?.source !== frame.contentWindow
+        ) {
+          return;
+        }
+        const data = event?.data;
+        if (!data || typeof data !== "object" || data.source !== "nuvio-youtube-proxy") {
+          return;
+        }
+        if (data.type === "ended" || (data.type === "state" && data.state?.ended)) {
+          this.postPlayRecommendationController?.onTrailerEnded?.();
+        }
+      };
+      this.postPlayTrailerMessageHandler = handler;
+      window.addEventListener("message", handler);
+      this.postPlayTrailerMedia = { kind: "youtube", node: frame, auto };
+      return;
+    }
+    if (recommendation.trailerVideoUrl) {
+      const video = document.createElement("video");
+      video.className = "player-post-play-trailer-video is-loading";
+      video.src = recommendation.trailerVideoUrl;
+      video.autoplay = true;
+      video.controls = false;
+      video.playsInline = true;
+      video.preload = "auto";
+      const markReady = () => video.classList.add("is-ready");
+      video.addEventListener("loadeddata", markReady, { once: true });
+      video.addEventListener("canplay", markReady, { once: true });
+      video.addEventListener("ended", () => {
+        if (generation === this.postPlayTrailerGeneration) {
+          this.postPlayRecommendationController?.onTrailerEnded?.();
+        }
+      });
+      mediaMount.replaceChildren(video);
+      this.postPlayTrailerMedia = { kind: "direct", node: video, auto };
+      const playPromise = video.play?.();
+      if (playPromise?.catch) {
+        playPromise.catch(() => {});
+      }
+      return;
+    }
+    this.postPlayRecommendationController?.onTrailerEnded?.();
+  },
+
+  stopPostPlayTrailer() {
+    this.clearPostPlayTrailerExitTimer();
+    this.postPlayTrailerGeneration += 1;
+    if (this.postPlayTrailerMessageHandler) {
+      window.removeEventListener("message", this.postPlayTrailerMessageHandler);
+      this.postPlayTrailerMessageHandler = null;
+    }
+    const node = this.postPlayTrailerMedia?.node;
+    const mediaMount = this.uiRefs?.postPlay?.querySelector(".player-post-play-trailer-media");
+    if (node && typeof node.pause === "function") {
+      try {
+        node.pause();
+      } catch (_) {}
+    }
+    if (node?.tagName === "IFRAME") {
+      try {
+        node.contentWindow?.postMessage(
+          {
+            source: "nuvio-detail-trailer",
+            type: "command",
+            command: "pause",
+            payload: {}
+          },
+          "*"
+        );
+      } catch (_) {}
+    }
+    const cleanupNode = () => {
+      if (node?.parentElement === mediaMount) {
+        node.remove();
+      }
+      if (node && node.tagName === "VIDEO") {
+        try {
+          node.removeAttribute("src");
+          node.load?.();
+        } catch (_) {}
+      }
+    };
+    if (node) {
+      // Android keeps TrailerPlayer mounted through its 500ms exit fade. Do
+      // the same here so the media layer can visibly fade below the scrim.
+      this.postPlayTrailerExitTimer = setTimeout(() => {
+        this.postPlayTrailerExitTimer = null;
+        cleanupNode();
+      }, 500);
+    }
+    // Keep the node mounted until the CSS exit transition completes. A new
+    // start clears the timer before replacing this node, preventing stale
+    // cleanup from touching a newly selected trailer.
+    this.postPlayTrailerMedia = null;
+  },
+
+  invokePostPlayAction(action = "") {
+    const state = this.getPostPlayState();
+    const recommendation = state.recommendation;
+    if (!recommendation) {
+      return false;
+    }
+    switch (String(action || "")) {
+      case "primary":
+        return this.navigateToPostPlayRecommendation(recommendation, {
+          openDetails: recommendation.contentType === "series"
+        });
+      case "trailer":
+        if (state.isTrailerPlaying) {
+          return Boolean(this.postPlayRecommendationController?.onTrailerEnded?.());
+        }
+        return Boolean(this.postPlayRecommendationController?.startTrailer?.({ auto: false }));
+      case "previous":
+        if (!state.canNavigatePrevious) {
+          return false;
+        }
+        return Boolean(
+          this.postPlayRecommendationController?.selectRecommendation?.(
+            state.recommendationIndex - 1
+          )
+        );
+      case "next":
+        if (!state.canNavigateNext) {
+          return false;
+        }
+        return Boolean(
+          this.postPlayRecommendationController?.selectRecommendation?.(
+            state.recommendationIndex + 1
+          )
+        );
+      case "return":
+      case "playerWindow":
+        return this.returnToPlayerFromPostPlay();
+      case "synopsis":
+        this.postPlaySynopsisVisible = true;
+        this.postPlayManualDialogVisible = false;
+        this.postPlayFocusedAction = "synopsis";
+        this.postPlayRenderedSignature = "";
+        this.renderPostPlayRecommendation();
+        this.focusPostPlaySynopsisContent();
+        return true;
+      case "synopsisClose":
+        this.postPlaySynopsisVisible = false;
+        this.clearPostPlaySynopsisScrollAnimation();
+        this.postPlayRenderedSignature = "";
+        this.renderPostPlayRecommendation();
+        this.focusPostPlayAction("primary");
+        return true;
+      case "manualPlay":
+        this.postPlayManualDialogVisible = false;
+        this.postPlayRenderedSignature = "";
+        this.renderPostPlayRecommendation();
+        return this.navigateToPostPlayRecommendation(recommendation, {
+          openDetails: false,
+          manualSelection: true
+        });
+      case "manualCancel":
+        this.postPlayManualDialogVisible = false;
+        this.postPlayRenderedSignature = "";
+        this.renderPostPlayRecommendation();
+        this.focusPostPlayAction("primary");
+        return true;
+      default:
+        return false;
+    }
+  },
+
+  openPostPlayManualDialog() {
+    const state = this.getPostPlayState();
+    if (
+      !state.isVisible ||
+      state.recommendation?.contentType !== "movie" ||
+      !this.isPostPlayManualPlayOptionEnabled()
+    ) {
+      return false;
+    }
+    this.postPlayManualDialogVisible = true;
+    this.postPlaySynopsisVisible = false;
+    this.postPlayRenderedSignature = "";
+    this.renderPostPlayRecommendation();
+    this.focusPostPlayAction("manualPlay");
+    return true;
+  },
+
+  handlePostPlayPointer(target) {
+    const actionNode = target?.closest?.("[data-player-post-play-action]");
+    const modalNode = target?.closest?.("[data-player-post-play-modal]");
+    if (modalNode && !actionNode && target === modalNode) {
+      if (this.postPlayManualDialogVisible) {
+        return this.invokePostPlayAction("manualCancel");
+      }
+      if (this.postPlaySynopsisVisible) {
+        return this.invokePostPlayAction("synopsisClose");
+      }
+    }
+    if (!actionNode) {
+      return false;
+    }
+    const action = String(actionNode.dataset.playerPostPlayAction || "");
+    this.postPlayFocusedAction = action;
+    if (action === "manualPlay" || action === "manualCancel" || action === "synopsisClose") {
+      return this.invokePostPlayAction(action);
+    }
+    if (this.postPlayManualDialogVisible || this.postPlaySynopsisVisible) {
+      return true;
+    }
+    const result = this.invokePostPlayAction(action);
+    if (action === "previous" || action === "next") {
+      this.schedulePostPlayFocus(action, 32);
+    }
+    return result;
+  },
+
+  handlePostPlayKey(event) {
+    const keyCode = Number(event?.keyCode || 0);
+    const mount = this.uiRefs?.postPlay;
+    if (!this.isPostPlayVisible()) {
+      return false;
+    }
+    const modalOpen = this.postPlayManualDialogVisible || this.postPlaySynopsisVisible;
+    if (modalOpen) {
+      if (this.postPlaySynopsisVisible) {
+        if (keyCode === 38) {
+          return this.scrollPostPlaySynopsis(-1);
+        }
+        if (keyCode === 40) {
+          return this.scrollPostPlaySynopsis(1);
+        }
+        // SynopsisOverlay has a single focusable scrolling surface. Select
+        // and horizontal navigation do not dismiss it; Back is handled by
+        // consumeBackRequest(), exactly like Android's Dialog.
+        return true;
+      }
+      if (keyCode === 37 || keyCode === 39) {
+        return true;
+      }
+      if (isSelectKeyCode(keyCode)) {
+        this.invokePostPlayAction("manualPlay");
+        return true;
+      }
+      return false;
+    }
+    if (this.getPostPlayState().isChangingRecommendation) {
+      return true;
+    }
+    if (keyCode === 18 || keyCode === 82) {
+      if (
+        this.getPostPlayState().recommendation?.contentType === "movie" &&
+        this.isPostPlayManualPlayOptionEnabled()
+      ) {
+        this.openPostPlayManualDialog();
+      }
+      return true;
+    }
+    if (keyCode === 37 || keyCode === 39) {
+      const state = this.getPostPlayState();
+      const sequence = ["primary"];
+      if (
+        !state.isTrailerPlaying &&
+        (state.recommendation?.trailerYtId || state.recommendation?.trailerVideoUrl)
+      ) {
+        sequence.push("trailer");
+      }
+      if (state.recommendationCount > 1) {
+        sequence.push("previous", "next");
+      }
+      const availableSequence = sequence.filter((action) =>
+        mount?.querySelector?.(`[data-player-post-play-action="${action}"]:not([disabled])`)
+      );
+      if (!availableSequence.length) {
+        return true;
+      }
+      const current = availableSequence.includes(this.postPlayFocusedAction)
+        ? availableSequence.indexOf(this.postPlayFocusedAction)
+        : 0;
+      const nextIndex = Math.max(
+        0,
+        Math.min(availableSequence.length - 1, current + (keyCode === 39 ? 1 : -1))
+      );
+      this.focusPostPlayAction(availableSequence[nextIndex]);
+      return true;
+    }
+    if (keyCode === 38) {
+      const state = this.getPostPlayState();
+      if (this.postPlayFocusedAction === "synopsis" && !state.hasAutoPlayedTrailer) {
+        this.focusPostPlayAction("playerWindow");
+      } else if (this.postPlayDescriptionTruncated) {
+        this.focusPostPlayAction("synopsis");
+      } else if (!state.hasAutoPlayedTrailer) {
+        this.focusPostPlayAction("playerWindow");
+      }
+      return true;
+    }
+    if (keyCode === 40) {
+      this.focusPostPlayAction("primary");
+      return true;
+    }
+    if (isSelectKeyCode(keyCode)) {
+      this.invokePostPlayAction(this.postPlayFocusedAction || "primary");
+      return true;
+    }
+    return false;
+  },
+
+  navigateToPostPlayRecommendation(
+    recommendation = {},
+    { openDetails = false, manualSelection = false } = {}
+  ) {
+    if (!recommendation?.id) {
+      return false;
+    }
+    this.stopPostPlayTrailer();
+    this.postPlayRecommendationController?.stop?.();
+    this.postPlayPlaybackEnded = false;
+    this.postPlayNaturalEndPending = false;
+    this.postPlayNaturalCompletionPrepared = false;
+    const itemType = recommendation.contentType === "series" ? "series" : "movie";
+    const detailParams = {
+      itemId: recommendation.id,
+      itemType,
+      fallbackTitle: recommendation.title || recommendation.name || recommendation.id,
+      fallbackPoster: recommendation.poster || "",
+      fallbackBackground:
+        recommendation.backdrop || recommendation.background || recommendation.poster || "",
+      addonBaseUrl: recommendation.sourceAddonBaseUrl || "",
+      imdbId: recommendation.imdbId || null,
+      tmdbId: recommendation.tmdbId || null,
+      traktId: recommendation.traktId || null,
+      contentLanguage: recommendation.contentLanguage || this.contentLanguage || "",
+      returnHomeOnBack: Boolean(this.params?.returnHomeOnBack || this.params?.returnToHomeOnBack),
+      returnToHomeOnBack: Boolean(this.params?.returnHomeOnBack || this.params?.returnToHomeOnBack),
+      returnToSearchOnBack: Boolean(this.params?.returnToSearchOnBack),
+      playOnLoad: !openDetails,
+      manualSelection: Boolean(manualSelection),
+      heroBackdropUrl: recommendation.backdrop || recommendation.background || ""
+    };
+    this.releaseCurrentEngineFsStreamBestEffort("post-play-recommendation", {
+      removeTorrent: true
+    });
+    void Router.navigateFromPostPlayRecommendation("detail", detailParams);
+    return true;
+  },
+
+  returnToPlayerFromPostPlay() {
+    const state = this.getPostPlayState();
+    if (!state.canReturnToPlayer) {
+      return false;
+    }
+    this.postPlayNaturalEndPending = false;
+    this.postPlayPlaybackEnded = false;
+    this.postPlayNaturalCompletionPrepared = false;
+    this.postPlayPendingSelect = false;
+    this.postPlayPendingSelectAction = "";
+    this.clearPostPlayLongPressTimer();
+    this.postPlayLongPressTriggered = false;
+    this.postPlayManualDialogVisible = false;
+    this.postPlaySynopsisVisible = false;
+    this.clearPostPlaySynopsisScrollAnimation();
+    this.postPlayRenderedSignature = "";
+    this.postPlayRecommendationController?.returnToPlayer?.();
+    this.paused = false;
+    try {
+      PlayerController.resume();
+    } catch (_) {}
+    this.updateMediaSessionPlaybackState();
+    this.setControlsVisible(false, { focus: false });
+    this.updateUiTick();
+    return true;
   },
 
   isExternalFrameMode() {
@@ -2715,6 +4768,9 @@ export const PlayerScreen = {
     return {
       itemId: this.params.itemId || null,
       itemType: normalizeItemType(this.params.itemType || "movie"),
+      imdbId: this.params.imdbId || this.params.imdb_id || null,
+      tmdbId: this.params.tmdbId || this.params.tmdb_id || null,
+      traktId: this.params.traktId || this.params.trakt_id || null,
       videoId: this.params.videoId || null,
       season: this.params.season == null ? null : Number(this.params.season),
       episode: this.params.episode == null ? null : Number(this.params.episode),
@@ -2724,6 +4780,7 @@ export const PlayerScreen = {
         this.params.playerBackdropUrl || this.params.backdrop || this.params.poster || null,
       logo: this.params.playerLogoUrl || this.params.logo || null,
       episodeTitle: this.params.episodeTitle || this.params.playerSubtitle || null,
+      cloudSessionToken: this.params.cloudSessionToken || null,
       requestHeaders,
       mediaSourceType,
       streamIdentity: streamCandidate
@@ -2756,7 +4813,10 @@ export const PlayerScreen = {
     const id = imdbItemId || baseItemId || rawItemId || "";
     const currentStream = this.getCurrentStreamCandidate();
     const rawStream = currentStream?.raw || currentStream || {};
-    const behaviorHints = rawStream?.behaviorHints || {};
+    const behaviorHints = {
+      ...(rawStream?.behaviorHints || {}),
+      ...(currentStream?.behaviorHints || {})
+    };
 
     let videoId = null;
     if (type === "series") {
@@ -2785,9 +4845,24 @@ export const PlayerScreen = {
       episode: this.params?.episode ?? null,
       title: this.params?.playerTitle || this.params?.itemTitle || null,
       year: this.params?.playerReleaseYear || this.params?.year || null,
-      videoHash: behaviorHints.videoHash || rawStream.videoHash || this.params?.videoHash || null,
-      videoSize: behaviorHints.videoSize || rawStream.videoSize || this.params?.videoSize || null,
-      filename: behaviorHints.filename || rawStream.filename || this.params?.filename || null
+      videoHash:
+        behaviorHints.videoHash ||
+        currentStream?.videoHash ||
+        rawStream.videoHash ||
+        this.params?.videoHash ||
+        null,
+      videoSize:
+        behaviorHints.videoSize ||
+        currentStream?.videoSize ||
+        rawStream.videoSize ||
+        this.params?.videoSize ||
+        null,
+      filename:
+        behaviorHints.filename ||
+        currentStream?.filename ||
+        rawStream.filename ||
+        this.params?.filename ||
+        null
     };
   },
 
@@ -2948,7 +5023,7 @@ export const PlayerScreen = {
     return {
       contentId: String(this.params?.itemId || identity.imdbId || ""),
       videoId: String(this.params?.videoId || this.params?.playerVideoId || ""),
-      contentType: identity.itemType === "series" ? "series" : "movie",
+      contentType: isSeriesItemType(identity.itemType) ? "series" : "movie",
       imdbId: identity.imdbId,
       tmdbId: identity.tmdbId || null,
       traktId: identity.traktId || null,
@@ -2992,7 +5067,7 @@ export const PlayerScreen = {
       return;
     }
     const response =
-      (itemType === "series" || itemType === "tv") && season && episode
+      isSeriesItemType(itemType) && season && episode
         ? await parentalGuideRepository.getTvGuide(imdbId, season, episode)
         : await parentalGuideRepository.getMovieGuide(imdbId);
     const warnings = buildLocalizedParentalWarnings(response?.parentalGuide || {});
@@ -3279,17 +5354,28 @@ export const PlayerScreen = {
     label?.style.setProperty("-webkit-text-fill-color", color, "important");
   },
 
-  isSkipIntroButtonFocusable() {
+  isSkipIntroButtonVisible() {
     const container = this.uiRefs?.skipIntro;
     const button = container?.querySelector(".player-skip-intro-btn");
+    const isConnected =
+      button?.isConnected === true ||
+      (button?.isConnected == null && globalThis.document?.contains?.(button) === true);
+    return Boolean(button && isConnected && !container.classList.contains("hidden"));
+  },
+
+  // Match Android TV's focus graph: a rendered Skip button is the source of
+  // truth for D-pad navigation. Playback readiness controls rendering and the
+  // action itself, but must not invalidate a still-visible focus target.
+  isSkipIntroButtonFocusable() {
     return Boolean(
-      button &&
-      button.isConnected &&
-      !container.classList.contains("hidden") &&
-      this.activeSkipInterval &&
-      !this.skipIntervalDismissed &&
-      this.isSkipIntroPlaybackReady()
+      this.isSkipIntroButtonVisible() && this.activeSkipInterval && !this.skipIntervalDismissed
     );
+  },
+
+  isNextEpisodeCardFocusable() {
+    const card = this.uiRefs?.nextEpisodeCard;
+    const target = card?.querySelector(".player-next-episode-card-inner");
+    return Boolean(target && target.isConnected && !card.classList.contains("hidden"));
   },
 
   syncSkipIntroFocusState() {
@@ -3320,6 +5406,46 @@ export const PlayerScreen = {
     this.syncSkipIntroButtonTheme(button);
   },
 
+  syncNextEpisodeCardFocusState() {
+    const card = this.uiRefs?.nextEpisodeCard;
+    const target = card?.querySelector(".player-next-episode-card-inner");
+    if (!target) {
+      return;
+    }
+    const focused =
+      this.controlFocusZone === "nextEpisode" &&
+      !card.classList.contains("hidden") &&
+      this.isNextEpisodeCardFocusable();
+    target.classList.toggle("is-selected", focused && !this.controlsVisible);
+    target.classList.toggle("focused", focused);
+    if (!focused) {
+      if (document.activeElement === target) {
+        target.blur?.();
+      }
+      return;
+    }
+    const activeElement = document.activeElement;
+    if (
+      activeElement &&
+      activeElement !== target &&
+      activeElement !== document.body &&
+      typeof activeElement.blur === "function"
+    ) {
+      activeElement.blur();
+    }
+    if (document.activeElement !== target && typeof target.focus === "function") {
+      try {
+        target.focus({ preventScroll: true });
+      } catch (_) {
+        try {
+          target.focus();
+        } catch (_) {
+          // Some TV runtimes can reject focus during DOM churn.
+        }
+      }
+    }
+  },
+
   focusSkipIntroButton() {
     if (!this.isSkipIntroButtonFocusable()) {
       return false;
@@ -3327,8 +5453,25 @@ export const PlayerScreen = {
     this.stickyProgressFocus = false;
     this.autoHideControlsAfterSeek = false;
     this.controlFocusZone = "skipIntro";
-    this.renderControlButtons();
+    this.syncControlFocusDom();
     this.syncSkipIntroFocusState();
+    this.resetControlsAutoHide();
+    return true;
+  },
+
+  focusNextEpisodeCard() {
+    if (!this.isNextEpisodeCardFocusable()) {
+      return false;
+    }
+    if (this.skipIntroFocusFrame != null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(this.skipIntroFocusFrame);
+      this.skipIntroFocusFrame = null;
+    }
+    this.stickyProgressFocus = false;
+    this.autoHideControlsAfterSeek = false;
+    this.controlFocusZone = "nextEpisode";
+    this.syncControlFocusDom();
+    this.syncNextEpisodeCardFocusState();
     this.resetControlsAutoHide();
     return true;
   },
@@ -3399,7 +5542,8 @@ export const PlayerScreen = {
       isVisible &&
       !this.controlsVisible &&
       !this.skipIntroAutoHidden &&
-      !this.skipIntervalDismissed
+      !this.skipIntervalDismissed &&
+      this.controlFocusZone !== "nextEpisode"
     ) {
       if (this.skipIntroFocusFrame != null && typeof cancelAnimationFrame === "function") {
         cancelAnimationFrame(this.skipIntroFocusFrame);
@@ -3409,6 +5553,9 @@ export const PlayerScreen = {
           this.skipIntroFocusFrame = null;
           const focusTarget = this.uiRefs?.skipIntro?.querySelector(".player-skip-intro-btn");
           if (!focusTarget || !focusTarget.isConnected) {
+            return;
+          }
+          if (this.controlFocusZone === "nextEpisode") {
             return;
           }
           if (document.activeElement === focusTarget) {
@@ -3509,6 +5656,12 @@ export const PlayerScreen = {
             stream.raw?.streamOrigin?.sourceProviderId ||
             null
         };
+        const rawAddonOrderIndex =
+          stream.addonOrderIndex ??
+          stream.raw?.addonOrderIndex ??
+          stream.streamOrigin?.addonOrderIndex ??
+          stream.raw?.streamOrigin?.addonOrderIndex;
+        const addonOrderIndex = rawAddonOrderIndex == null ? null : Number(rawAddonOrderIndex);
         const entry = {
           id: stream.id || `stream-${index}-${streamUrl}`,
           label: stream.name || stream.title || stream.label || `Source ${index + 1}`,
@@ -3526,6 +5679,7 @@ export const PlayerScreen = {
             stream.raw?.streamOrigin?.sourceProviderId ||
             null,
           streamOrigin,
+          addonOrderIndex: Number.isFinite(addonOrderIndex) ? addonOrderIndex : null,
           mimeType: stream.mimeType || stream.raw?.mimeType || stream.type || stream.source || null,
           sourceType: stream.sourceType || stream.mimeType || stream.type || stream.source || "",
           url: streamUrl,
@@ -3739,6 +5893,10 @@ export const PlayerScreen = {
       if (!match) {
         return null;
       }
+      const isLocalPlayback = isLocalEngineFsUrl(playbackUrl);
+      if ((Environment.isTizen() || Environment.isWebOS()) && !isLocalPlayback) {
+        return null;
+      }
       const fileIdx = Number(match[2]);
       return {
         kind: Environment.isTizen() ? "tizen-streaming-server" : "webos-enginefs",
@@ -3747,18 +5905,18 @@ export const PlayerScreen = {
         playbackUrl,
         mimeType:
           String(streamCandidate?.mimeType || streamCandidate?.sourceType || "").trim() || null,
-        baseUrlKind:
-          parsed.hostname === "127.0.0.1" ||
-          parsed.hostname === "localhost" ||
-          parsed.hostname === "::1"
-            ? "local-service"
-            : "public-service",
-        publicPlaybackUrl:
-          String(
-            streamCandidate?.engineFs?.publicPlaybackUrl ||
-              streamCandidate?.raw?.engineFs?.publicPlaybackUrl ||
-              ""
-          ).trim() || null,
+        baseUrlKind: isLocalPlayback ? "local-service" : "public-service",
+        publicPlaybackUrl: isLocalEngineFsUrl(
+          streamCandidate?.engineFs?.publicPlaybackUrl ||
+            streamCandidate?.raw?.engineFs?.publicPlaybackUrl ||
+            ""
+        )
+          ? String(
+              streamCandidate?.engineFs?.publicPlaybackUrl ||
+                streamCandidate?.raw?.engineFs?.publicPlaybackUrl ||
+                ""
+            ).trim()
+          : null,
         baseUrl: `${parsed.protocol}//${parsed.host}`
       };
     } catch (_) {
@@ -3944,7 +6102,6 @@ export const PlayerScreen = {
   },
 
   stopEngineFsKeepAlive() {
-    const token = String(this.engineFsKeepAliveToken || "").trim();
     if (this.engineFsKeepAliveHandle) {
       try {
         this.engineFsKeepAliveHandle.cancel?.();
@@ -3953,12 +6110,10 @@ export const PlayerScreen = {
       }
       this.engineFsKeepAliveHandle = null;
     }
-    if (token) {
-      requestWebOsCompanionService({
-        method: "enginefsKeepAliveStop",
-        parameters: { token }
-      }).catch(() => null);
-    }
+    // The Luna subscription cancellation is the authoritative stop signal.
+    // Do not send a second one-shot stop request here: if the service was
+    // already evicted, that request would start it again just to stop a token
+    // that no longer exists.
     this.engineFsKeepAliveToken = "";
   },
 
@@ -4079,6 +6234,44 @@ export const PlayerScreen = {
     );
   },
 
+  isCurrentSourceLikelyDash(
+    url = this.getTrackProbeUrl(),
+    streamCandidate = this.getCurrentStreamCandidate()
+  ) {
+    const isLikelyDashMimeType = PlayerController.isLikelyDashMimeType;
+    if (typeof isLikelyDashMimeType !== "function") {
+      return false;
+    }
+    const declaredSourceType = this.resolvePlaybackMediaSourceType(streamCandidate);
+    const inferredSourceType =
+      typeof PlayerController.guessMediaMimeType === "function"
+        ? PlayerController.guessMediaMimeType(url)
+        : null;
+    return Boolean(
+      isLikelyDashMimeType.call(PlayerController, declaredSourceType) ||
+      isLikelyDashMimeType.call(PlayerController, inferredSourceType)
+    );
+  },
+
+  isCurrentSourceLikelyHls(
+    url = this.getTrackProbeUrl(),
+    streamCandidate = this.getCurrentStreamCandidate()
+  ) {
+    const isLikelyHlsMimeType = PlayerController.isLikelyHlsMimeType;
+    if (typeof isLikelyHlsMimeType !== "function") {
+      return false;
+    }
+    const declaredSourceType = this.resolvePlaybackMediaSourceType(streamCandidate);
+    const inferredSourceType =
+      typeof PlayerController.guessMediaMimeType === "function"
+        ? PlayerController.guessMediaMimeType(url)
+        : null;
+    return Boolean(
+      isLikelyHlsMimeType.call(PlayerController, declaredSourceType) ||
+      isLikelyHlsMimeType.call(PlayerController, inferredSourceType)
+    );
+  },
+
   isCurrentSourceLikelyMkv(
     url = this.getTrackProbeUrl(),
     streamCandidate = this.getCurrentStreamCandidate()
@@ -4119,7 +6312,11 @@ export const PlayerScreen = {
     }
 
     if (Environment.isTizen()) {
-      return false;
+      const usingAvPlay =
+        typeof PlayerController.isUsingAvPlay === "function"
+          ? PlayerController.isUsingAvPlay()
+          : false;
+      return Boolean(usingAvPlay);
     }
 
     return typeof PlayerController.isLikelyDirectFileUrl === "function"
@@ -4128,6 +6325,20 @@ export const PlayerScreen = {
   },
 
   canDiscoverEmbeddedAudioTracks() {
+    if (Environment.isTizen()) {
+      const usingNativePlayback =
+        typeof PlayerController.isUsingNativePlayback === "function"
+          ? PlayerController.isUsingNativePlayback()
+          : false;
+      const usingAvPlay =
+        typeof PlayerController.isUsingAvPlay === "function"
+          ? PlayerController.isUsingAvPlay()
+          : false;
+      const probeUrl = this.getTrackProbeUrl();
+      return Boolean(
+        usingNativePlayback && usingAvPlay && probeUrl && !this.isCurrentSourceAdaptiveManifest()
+      );
+    }
     return this.canDiscoverEmbeddedSubtitleTracks();
   },
 
@@ -4136,24 +6347,62 @@ export const PlayerScreen = {
       return false;
     }
 
+    // On Tizen these tracks are metadata for the AVPlay entries above, not a
+    // second selection path. Keep native AVPlay as the only selectable source.
+    if (Environment.isTizen()) {
+      return false;
+    }
+
     return Environment.isWebOS() || this.getTextTracks().length <= 0;
   },
 
   normalizeEmbeddedSubtitleTracks(rawTracks = []) {
+    const isTizenAvPlayMetadata = Environment.isTizen();
     let nativeTrackIndex = 0;
+    let tizenEmbeddedTextTrackOrdinal = 0;
     return rawTracks
       .filter((track) => {
         const type = String(track?.type || track?.track || track?.codecType || "").toLowerCase();
         return type === "text" || type === "subtitle";
       })
-      .filter((track) =>
-        isVobSubEmbeddedSubtitleTrack(track)
-          ? canUseWebOsBitmapSubtitles()
-          : !isUnsupportedEmbeddedSubtitleTrack(track)
-      )
+      .filter((track) => {
+        // Tizen uses this list only to enrich AVPlay's native entries. Keep
+        // every text stream; sourceTrackOrdinal remains the local text
+        // ordinal used by the extractor, while nativeTrackIndex must retain
+        // AVPlayStreamInfo.index for native selection.
+        if (isTizenAvPlayMetadata) {
+          return true;
+        }
+        if (getEmbeddedBitmapSubtitleFormat(track)) {
+          // Keep WebOS bitmap tracks visible when the local decoder is
+          // unavailable so the user sees the reason instead of a missing
+          // subtitle entry. Other browser paths retain their existing filter.
+          return Environment.isWebOS() || canUseWebOsBitmapSubtitles();
+        }
+        return !isUnsupportedEmbeddedSubtitleTrack(track);
+      })
       .map((track, index) => {
-        const bitmapSubtitle = isVobSubEmbeddedSubtitleTrack(track);
+        const support = getEmbeddedSubtitleSupportState(track);
+        const bitmapSubtitleFormat = getEmbeddedBitmapSubtitleFormat(track);
+        const bitmapSubtitle = Boolean(bitmapSubtitleFormat);
+        const sequentialNativeTrackIndex = nativeTrackIndex;
+        if (isTizenAvPlayMetadata || !bitmapSubtitle) {
+          nativeTrackIndex += 1;
+        }
+        const rawAvPlayTrackIndex = Number(track?.index);
+        const currentNativeTrackIndex =
+          isTizenAvPlayMetadata && Number.isFinite(rawAvPlayTrackIndex) && rawAvPlayTrackIndex >= 0
+            ? rawAvPlayTrackIndex
+            : sequentialNativeTrackIndex;
         const sourceTrackId = Number(track?.id);
+        // Tizen's /tracks endpoint exposes id as the Matroska TrackNumber,
+        // while the embedded-text fallback accepts a zero-based ordinal among
+        // text tracks. Keep both identities separate.
+        const sourceTrackOrdinal = isTizenAvPlayMetadata
+          ? isEmbeddedTextSubtitleSourceTrack(track)
+            ? tizenEmbeddedTextTrackOrdinal++
+            : -1
+          : sourceTrackId;
         const rawLanguage = getTrackLanguageValue(track);
         const normalizedLanguage = normalizeTrackLanguageCode(rawLanguage);
         const languageKey = normalizeSubtitleLanguageKey(
@@ -4168,8 +6417,17 @@ export const PlayerScreen = {
           id: `embedded-subtitle-${index}`,
           embeddedTrackIndex: index,
           sourceTrackId: Number.isFinite(sourceTrackId) ? sourceTrackId : -1,
-          nativeTrackIndex: bitmapSubtitle ? -1 : nativeTrackIndex++,
+          sourceTrackOrdinal:
+            Number.isFinite(sourceTrackOrdinal) && sourceTrackOrdinal >= 0
+              ? sourceTrackOrdinal
+              : -1,
+          nativeTrackIndex: isTizenAvPlayMetadata
+            ? currentNativeTrackIndex
+            : bitmapSubtitle
+              ? -1
+              : currentNativeTrackIndex,
           bitmapSubtitle,
+          bitmapSubtitleFormat,
           label: getMeaningfulTrackLabel(track) || fallbackLabel,
           language:
             normalizedLanguage ||
@@ -4181,8 +6439,16 @@ export const PlayerScreen = {
             : String(normalizedLanguage || rawLanguage || "")
                 .trim()
                 .toUpperCase(),
+          supported: support.supported,
+          unsupportedReason: support.unsupportedReason,
           forced: isForcedSubtitleTrack(track),
-          codec: cleanDisplayText(track?.codec || track?.subtitleCodec || track?.codec_name),
+          codec: cleanDisplayText(
+            track?.codec ||
+              track?.subtitleCodec ||
+              track?.codec_name ||
+              track?.codecId ||
+              track?.codec_id
+          ),
           format: cleanDisplayText(track?.format || track?.format_name),
           raw: track
         };
@@ -4204,7 +6470,8 @@ export const PlayerScreen = {
 
   normalizeEmbeddedAudioTracks(rawTracks = []) {
     const audioTracks = rawTracks.filter(
-      (track) => String(track?.type || "").toLowerCase() === "audio"
+      (track) =>
+        String(track?.type || track?.track || track?.codecType || "").toLowerCase() === "audio"
     );
     const supportStates = audioTracks.map((track) => getAudioTrackSupportState(track));
     const nativeTrackIndexes = mapAudioTrackNativeIndexes(
@@ -4214,7 +6481,7 @@ export const PlayerScreen = {
     return audioTracks.map((track, index) => {
       const sourceTrackId = Number(track?.id);
       const support = supportStates[index];
-      const rawLanguage = getTrackLanguageValue(track);
+      const rawLanguage = getUsableAudioTrackLanguageValue(track);
       const inferredLanguage = inferAudioTrackLanguageKey(track);
       return {
         id: `embedded-audio-${index}`,
@@ -4384,15 +6651,97 @@ export const PlayerScreen = {
         : false;
     if (!usingAvPlay && this.isCurrentSourceLikelyMkv()) {
       if (kind === "subtitle") {
+        if (Environment.isTizen()) {
+          return t(
+            "player_tizen_mkv_subtitles_unavailable",
+            {},
+            "Embedded MKV subtitles are not exposed by this TV's web player."
+          );
+        }
         return Environment.isWebOS()
           ? "No embedded subtitle tracks detected."
-          : "MKV internal subtitles are not exposed by the webOS web player.";
+          : "MKV internal subtitles are not exposed by the web player.";
+      }
+      if (Environment.isTizen()) {
+        return t(
+          "player_tizen_mkv_audio_unavailable",
+          {},
+          "Embedded MKV audio tracks are not exposed by this TV's web player."
+        );
       }
       return Environment.isWebOS()
         ? "No embedded audio tracks detected."
-        : "MKV internal audio tracks are not exposed by the webOS web player.";
+        : "MKV internal audio tracks are not exposed by the web player.";
     }
     return kind === "subtitle" ? "No subtitle tracks available." : "No audio tracks available.";
+  },
+
+  isTizenDashAudioSwitchingUnsupported() {
+    return TizenCapabilities.isDashAudioSwitchingUnsupported({
+      dashManifest: this.isCurrentSourceLikelyDash(),
+      usingAvPlay:
+        typeof PlayerController.isUsingAvPlay === "function" && PlayerController.isUsingAvPlay()
+    });
+  },
+
+  isTizenDashSubtitleSwitchingUnsupported() {
+    return Boolean(
+      Environment.isTizen() &&
+      this.isCurrentSourceLikelyDash() &&
+      typeof PlayerController.isUsingAvPlay === "function" &&
+      PlayerController.isUsingAvPlay()
+    );
+  },
+
+  getAudioDialogSupportNotice() {
+    return this.isTizenDashAudioSwitchingUnsupported()
+      ? t(
+          "player_audio_tizen_dash_unsupported",
+          {},
+          "Changing DASH audio tracks is not supported on this TV."
+        )
+      : "";
+  },
+
+  getSubtitleDialogSupportNotice() {
+    const notices = [];
+    if (this.embeddedTextSubtitleSupportNotice) {
+      notices.push(this.embeddedTextSubtitleSupportNotice);
+    }
+    if (
+      !this.embeddedTextSubtitleSupportNotice &&
+      this.embeddedSubtitleTracks.some((track) => track?.unsupportedReason === "tizen-tx3g")
+    ) {
+      notices.push(getTx3gSubtitleSupportMessage("tizen-tx3g"));
+    }
+    if (this.embeddedBitmapSubtitleSupportNotice) {
+      notices.push(this.embeddedBitmapSubtitleSupportNotice);
+    } else if (
+      this.embeddedSubtitleTracks.some((track) =>
+        ["webos-bitmap", "webos-bitmap-runtime"].includes(track?.unsupportedReason)
+      )
+    ) {
+      notices.push(getBitmapSubtitleSupportMessage());
+    }
+    if (TizenCapabilities.isAdvancedSubtitleStylingLimited()) {
+      notices.push(
+        t(
+          "player_subtitle_tizen_advanced_unsupported",
+          {},
+          "Advanced subtitle styling may not be fully supported on this TV."
+        )
+      );
+    }
+    if (this.isTizenDashSubtitleSwitchingUnsupported()) {
+      notices.push(
+        t(
+          "player_subtitle_tizen_dash_unsupported",
+          {},
+          "Subtitle switching for DASH streams may not be supported by this TV."
+        )
+      );
+    }
+    return notices.join(" ");
   },
 
   getVideoTextTrackList() {
@@ -4744,40 +7093,16 @@ export const PlayerScreen = {
 
     try {
       const headers = this.getCurrentStreamRequestHeaders(currentCandidate);
-      const manifestFetchTimeoutMs = 5000;
       const fetchManifestText = async (url, requestHeaders = {}) => {
-        const requestController =
-          typeof AbortController === "function" ? new AbortController() : null;
-        let requestTimeoutId = null;
-        try {
-          const timeoutPromise = new Promise((_, reject) => {
-            requestTimeoutId = setTimeout(() => {
-              try {
-                requestController?.abort?.();
-              } catch (_) {
-                // Ignore abort failures.
-              }
-              reject(new Error("Manifest fetch timeout"));
-            }, manifestFetchTimeoutMs);
-          });
-          const response = await Promise.race([
-            fetch(url, {
-              method: "GET",
-              headers: requestHeaders,
-              signal: requestController?.signal
-            }),
-            timeoutPromise
-          ]);
-          const text = await response.text();
-          return {
-            text,
-            finalUrl: response.url || url
-          };
-        } finally {
-          if (requestTimeoutId) {
-            clearTimeout(requestTimeoutId);
-          }
-        }
+        const response = await fetch(url, {
+          method: "GET",
+          headers: requestHeaders
+        });
+        const text = await response.text();
+        return {
+          text,
+          finalUrl: response.url || url
+        };
       };
 
       const urlCandidates = uniqueNonEmptyValues([
@@ -5059,6 +7384,9 @@ export const PlayerScreen = {
     this.activePlaybackUrl = targetUrl;
     const currentStreamCandidate = this.getCurrentStreamCandidate();
     this.paused = false;
+    this.playbackRecoveryActive = false;
+    this.playbackRecoveryAttempts = 0;
+    this.resetPlaybackEngineValidation();
     this.hasPresentedPlaybackFrame = false;
     this.startupPlaybackBaselineSeconds = null;
     this.startupPlaybackHasAdvanced = false;
@@ -5157,6 +7485,7 @@ export const PlayerScreen = {
 
         <div id="playerHtmlSubtitles" class="player-html-subtitles hidden" aria-hidden="true"></div>
         <canvas id="playerBitmapSubtitles" class="player-bitmap-subtitles hidden" aria-hidden="true"></canvas>
+        <div id="playerAssSubtitles" class="player-ass-subtitles hidden" aria-hidden="true"></div>
 
         <div id="playerSeekOverlay" class="player-seek-overlay hidden">
           <div class="player-seek-overlay-track"><div id="playerSeekFill" class="player-seek-fill"></div></div>
@@ -5170,8 +7499,12 @@ export const PlayerScreen = {
 
         <div id="playerNextEpisodeCard" class="player-next-episode-card hidden"></div>
 
+        <div id="playerPostPlayRecommendation" class="player-post-play-recommendation" aria-hidden="true"></div>
+
         <div id="playerModalBackdrop" class="player-modal-backdrop hidden"></div>
         <div id="playerSubtitleDialog" class="player-modal player-subtitle-modal hidden"></div>
+        <div id="playerSubtitleDelayOverlay" class="player-subtitle-delay-overlay hidden"></div>
+        <div id="playerSubtitleTimingDialog" class="player-subtitle-timing-modal hidden"></div>
         <div id="playerAudioDialog" class="player-modal player-audio-modal hidden"></div>
         <div id="playerSpeedDialog" class="player-modal player-speed-modal hidden"></div>
         <div id="playerSourcesPanel" class="player-sources-panel hidden"></div>
@@ -5217,6 +7550,8 @@ export const PlayerScreen = {
     if (!this.isExternalFrameMode()) {
       this.renderControlButtons();
       this.renderSubtitleDialog();
+      this.renderSubtitleDelayOverlay();
+      this.renderSubtitleTimingDialog();
       this.renderAudioDialog();
       this.renderSpeedDialog();
       this.renderSourcesPanel();
@@ -5256,6 +7591,7 @@ export const PlayerScreen = {
           skipIntro: uiRoot.querySelector("#playerSkipIntro"),
           aspectToast: uiRoot.querySelector("#playerAspectToast"),
           htmlSubtitles: uiRoot.querySelector("#playerHtmlSubtitles"),
+          assSubtitles: uiRoot.querySelector("#playerAssSubtitles"),
           bitmapSubtitles: uiRoot.querySelector("#playerBitmapSubtitles"),
           seekOverlay: uiRoot.querySelector("#playerSeekOverlay"),
           seekDirection: uiRoot.querySelector("#playerSeekDirection"),
@@ -5263,8 +7599,11 @@ export const PlayerScreen = {
           seekFill: uiRoot.querySelector("#playerSeekFill"),
           pauseOverlay: uiRoot.querySelector("#playerPauseOverlay"),
           nextEpisodeCard: uiRoot.querySelector("#playerNextEpisodeCard"),
+          postPlay: uiRoot.querySelector("#playerPostPlayRecommendation"),
           modalBackdrop: uiRoot.querySelector("#playerModalBackdrop"),
           subtitleDialog: uiRoot.querySelector("#playerSubtitleDialog"),
+          subtitleDelayOverlay: uiRoot.querySelector("#playerSubtitleDelayOverlay"),
+          subtitleTimingDialog: uiRoot.querySelector("#playerSubtitleTimingDialog"),
           audioDialog: uiRoot.querySelector("#playerAudioDialog"),
           speedDialog: uiRoot.querySelector("#playerSpeedDialog"),
           sourcesPanel: uiRoot.querySelector("#playerSourcesPanel"),
@@ -5534,10 +7873,17 @@ export const PlayerScreen = {
 
   getPlaybackEventErrorDetail(eventDetail = {}) {
     const detail = eventDetail && typeof eventDetail === "object" ? eventDetail : {};
+    const hlsResponseCode = Number(detail.hlsResponseCode || 0);
+    const avplayErrorDetail =
+      detail.avplayErrorDetail && typeof detail.avplayErrorDetail === "object"
+        ? JSON.stringify(detail.avplayErrorDetail)
+        : detail.avplayErrorDetail;
     return [
       detail.avplayError,
+      avplayErrorDetail,
       detail.hlsErrorType,
       detail.hlsErrorDetails,
+      hlsResponseCode >= 400 && hlsResponseCode <= 599 ? `HTTP ${hlsResponseCode}` : "",
       detail.dashError,
       detail.playbackEngine
     ]
@@ -5552,7 +7898,7 @@ export const PlayerScreen = {
       return "";
     }
     const providerHint =
-      status === 403
+      status === 400 || status === 403
         ? t(
             "player_error_stream_blocked",
             {},
@@ -5564,7 +7910,7 @@ export const PlayerScreen = {
               {},
               "\n\nThe stream link has expired or been removed. Try a different source."
             )
-          : status === 410
+          : status === 401 || status === 410
             ? t(
                 "player_error_stream_expired",
                 {},
@@ -5576,14 +7922,77 @@ export const PlayerScreen = {
                   {},
                   "\n\nToo many requests to the stream source. Wait a moment and try again."
                 )
-              : [500, 502, 503].includes(status)
+              : [500, 502, 503, 504].includes(status)
                 ? t(
                     "player_error_stream_unavailable",
                     {},
                     "\n\nThe stream server is currently unavailable. Try a different source."
                   )
                 : "";
-    return `HTTP ${status}${providerHint}`;
+    return `HTTP ${status}${normalizePlaybackDisplayLineBreaks(providerHint)}`;
+  },
+
+  showExpiredStreamError(
+    playbackUrl = this.activePlaybackUrl,
+    { sourceCandidate: explicitSourceCandidate = null, reason = "stream-url-expired" } = {}
+  ) {
+    const normalizedUrl = String(playbackUrl || "").trim();
+    const sourceCandidate =
+      explicitSourceCandidate ||
+      this.getStreamCandidateByUrl(normalizedUrl) ||
+      this.getCurrentStreamCandidate();
+    const message = t(
+      "player_error_stream_expired",
+      {},
+      "The stream link has expired. Try a different source."
+    );
+    this.markPlaybackSourceFailed(normalizedUrl, sourceCandidate);
+    const currentPlaybackUrl = String(this.activePlaybackUrl || "").trim();
+    const hasDifferentActivePlayback =
+      this.hasPresentedPlaybackFrame && normalizedUrl && currentPlaybackUrl !== normalizedUrl;
+    if (!hasDifferentActivePlayback) {
+      this.clearPlaybackStallGuard();
+      this.releaseStartupAudioGate({ resume: false });
+    }
+    if (!this.hasPresentedPlaybackFrame || !hasDifferentActivePlayback) {
+      if (!this.hasPresentedPlaybackFrame) {
+        this.showStartupError(message, {
+          streamCandidate: sourceCandidate,
+          playbackUrl: normalizedUrl,
+          reason
+        });
+      } else {
+        this.loadingVisible = false;
+        this.bufferingActive = false;
+        this.paused = true;
+        this.dismissPauseOverlay();
+        this.updateLoadingVisibility();
+        this.updateMediaSessionPlaybackState();
+        this.setControlsVisible(true, { focus: false });
+        this.sourcesError = this.formatPlaybackErrorForSources(message, {
+          streamCandidate: sourceCandidate,
+          playbackUrl: normalizedUrl,
+          reason
+        });
+        this.renderSourcesPanel();
+        this.updateUiTick();
+      }
+    } else {
+      // A user can select an already expired source while another source is
+      // still playing. Keep the active playback untouched and only report the
+      // rejected candidate in the source panel.
+      this.sourcesError = this.formatPlaybackErrorForSources(message, {
+        streamCandidate: sourceCandidate,
+        playbackUrl: normalizedUrl,
+        reason
+      });
+      this.renderSourcesPanel();
+    }
+
+    console.warn("Playback source URL has expired; refusing to retry it", {
+      url: normalizedUrl,
+      reason
+    });
   },
 
   getWebHeaderRestrictedStreamMessage(streamCandidate = this.getCurrentStreamCandidate()) {
@@ -5644,8 +8053,24 @@ export const PlayerScreen = {
     const engineFs = candidate?.engineFs || raw?.engineFs || this.currentEngineFsStream || null;
     const mediaError = video?.error || null;
     const eventErrorDetail = this.getPlaybackEventErrorDetail(eventDetail);
+    const avplaySnapshot =
+      eventDetail?.avplaySnapshot || PlayerController.getAvPlayDiagnosticSnapshot?.() || null;
+    const avplayErrorDiagnostic =
+      eventDetail?.avplayErrorDetail || PlayerController.getLastAvPlayErrorDiagnostic?.() || null;
+    const rememberedHlsError =
+      typeof PlayerController.getLastHlsErrorDetail === "function"
+        ? PlayerController.getLastHlsErrorDetail()
+        : "";
     const httpStatus = extractPlaybackHttpStatus(
-      [detail, eventErrorDetail, error?.message, error?.name, error?.errorText, error?.status]
+      [
+        detail,
+        eventErrorDetail,
+        rememberedHlsError,
+        error?.message,
+        error?.name,
+        error?.errorText,
+        error?.status
+      ]
         .filter(Boolean)
         .join(" ")
     );
@@ -5692,10 +8117,51 @@ export const PlayerScreen = {
     pushPlaybackDiagnosticLine(
       lines,
       "HLS error",
-      eventDetail?.hlsErrorDetails || eventDetail?.hlsErrorType
+      eventDetail?.hlsErrorDetails || eventDetail?.hlsErrorType || rememberedHlsError,
+      420
     );
     pushPlaybackDiagnosticLine(lines, "DASH error", eventDetail?.dashError);
     pushPlaybackDiagnosticLine(lines, "AVPlay error", eventDetail?.avplayError);
+    pushPlaybackDiagnosticLine(
+      lines,
+      "AVPlay error detail",
+      avplayErrorDiagnostic && typeof avplayErrorDiagnostic === "object"
+        ? JSON.stringify(avplayErrorDiagnostic)
+        : avplayErrorDiagnostic,
+      600
+    );
+    pushPlaybackDiagnosticLine(lines, "AVPlay state", avplaySnapshot?.state);
+    pushPlaybackDiagnosticLine(lines, "AVPlay current time ms", avplaySnapshot?.currentTimeMs);
+    pushPlaybackDiagnosticLine(lines, "AVPlay duration ms", avplaySnapshot?.durationMs);
+    pushPlaybackDiagnosticLine(
+      lines,
+      "AVPlay buffering",
+      avplaySnapshot?.buffering == null ? "" : String(Boolean(avplaySnapshot.buffering))
+    );
+    pushPlaybackDiagnosticLine(
+      lines,
+      "AVPlay buffering duration ms",
+      avplaySnapshot?.bufferingDurationMs
+    );
+    pushPlaybackDiagnosticLine(
+      lines,
+      "AVPlay buffering progress",
+      avplaySnapshot?.bufferingProgress == null ? "" : `${avplaySnapshot.bufferingProgress}%`
+    );
+    pushPlaybackDiagnosticLine(lines, "AVPlay current bandwidth", avplaySnapshot?.currentBandwidth);
+    pushPlaybackDiagnosticLine(lines, "AVPlay available bitrate", avplaySnapshot?.availableBitrate);
+    pushPlaybackDiagnosticLine(
+      lines,
+      "AVPlay audio tracks",
+      avplaySnapshot?.audioTracks?.length ? JSON.stringify(avplaySnapshot.audioTracks) : "",
+      900
+    );
+    pushPlaybackDiagnosticLine(
+      lines,
+      "AVPlay current streams",
+      avplaySnapshot?.currentStreams?.length ? JSON.stringify(avplaySnapshot.currentStreams) : "",
+      1200
+    );
     pushPlaybackDiagnosticLine(lines, "HTML media error", mediaError?.message || mediaError?.code);
     pushPlaybackDiagnosticLine(lines, "Video readyState", video?.readyState);
     pushPlaybackDiagnosticLine(lines, "Video networkState", video?.networkState);
@@ -5768,6 +8234,7 @@ export const PlayerScreen = {
         });
     this.lastPlaybackErrorAt = 0;
     this.loadingVisible = false;
+    this.bufferingActive = false;
     this.loadingProgress = null;
     this.loadingTorrentStatus = "";
     this.loadingLogoFillActive = false;
@@ -5780,7 +8247,11 @@ export const PlayerScreen = {
     this.sourcesLoading = false;
     this.sourcesError = "";
     this.sourcesPanelVisible = false;
+    this.clearSubtitleDelayOverlayTimer();
     this.subtitleDialogVisible = false;
+    this.subtitleDelayOverlayVisible = false;
+    this.subtitleTimingDialogVisible = false;
+    this.resetSubtitleAutoSyncState();
     this.audioDialogVisible = false;
     this.speedDialogVisible = false;
     this.episodePanelVisible = false;
@@ -5792,6 +8263,8 @@ export const PlayerScreen = {
     this.renderControlButtons();
     this.renderSourcesPanel();
     this.renderSubtitleDialog();
+    this.renderSubtitleDelayOverlay();
+    this.renderSubtitleTimingDialog();
     this.renderAudioDialog();
     this.renderSpeedDialog();
     this.renderEpisodePanel();
@@ -5813,8 +8286,28 @@ export const PlayerScreen = {
       });
       return;
     }
+    if (isExpiredStreamUrl(playbackUrl)) {
+      this.showExpiredStreamError(playbackUrl, {
+        sourceCandidate,
+        reason: "stream-url-expired-before-start"
+      });
+      return Promise.resolve();
+    }
+    // Keep the candidate as a defensive source of truth. A route can be
+    // rebuilt with a context that no longer contains requestHeaders, while
+    // the plugin metadata is still present on the selected stream.
+    const candidateHeaders = this.getCurrentStreamRequestHeaders(sourceCandidate);
+    const contextHeaders =
+      context?.requestHeaders && typeof context.requestHeaders === "object"
+        ? context.requestHeaders
+        : {};
+    const requestHeaders = { ...candidateHeaders, ...contextHeaders };
+    const playbackContext = {
+      ...(context && typeof context === "object" ? context : {}),
+      ...(Object.keys(requestHeaders).length ? { requestHeaders } : {})
+    };
     PlayerController.setStartupPresentationAudioMuted?.(true);
-    return Promise.resolve(PlayerController.play(playbackUrl, context)).catch((error) => {
+    return Promise.resolve(PlayerController.play(playbackUrl, playbackContext)).catch((error) => {
       if (!this.isActiveMountToken(mountToken) || this.isExternalFrameMode()) {
         return;
       }
@@ -6728,21 +9221,12 @@ export const PlayerScreen = {
   },
 
   hasEpisodeAired(released) {
-    const raw = String(released || "").trim();
-    if (!raw) {
-      return true;
-    }
-    const datePortion = raw.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0] || raw;
-    const parsedTime = Date.parse(datePortion);
-    if (!Number.isFinite(parsedTime)) {
-      return true;
-    }
-    return parsedTime <= Date.now();
+    return hasEpisodeAiredRule(released);
   },
 
   resolveNextEpisodeInfo() {
     const itemType = normalizeItemType(this.params?.itemType || "movie");
-    if (itemType !== "series") {
+    if (!isSeriesItemType(itemType)) {
       return null;
     }
 
@@ -6763,16 +9247,13 @@ export const PlayerScreen = {
     if (!nextEpisode && this.episodes.length) {
       const currentSeasonRaw = this.params?.season;
       const currentSeason = Number(currentSeasonRaw);
+      const hasCurrentSeason =
+        currentSeasonRaw != null && Number.isFinite(currentSeason) && currentSeason >= 0;
       const currentEpisode = Number(this.params?.episode || 0);
-      if (
-        currentSeasonRaw != null &&
-        Number.isFinite(currentSeason) &&
-        currentSeason >= 0 &&
-        currentEpisode > 0
-      ) {
+      if (currentEpisode > 0 && (currentSeasonRaw == null || hasCurrentSeason)) {
         const currentEntry = this.episodes.find(
           (episode) =>
-            Number(episode?.season || 0) === currentSeason &&
+            (!hasCurrentSeason || Number(episode?.season) === currentSeason) &&
             Number(episode?.episode || 0) === currentEpisode
         );
         nextEpisode = this.getNextEpisodeInSequence(currentEntry);
@@ -6808,13 +9289,23 @@ export const PlayerScreen = {
       return null;
     }
     const currentSeason = Number(currentEpisode?.season);
-    const sequence = this.episodes.filter((episode) =>
-      currentSeason === 0 ? Number(episode?.season) === 0 : Number(episode?.season) > 0
-    );
+    const hasCurrentSeason =
+      currentEpisode?.season != null && Number.isFinite(currentSeason) && currentSeason >= 0;
+    const sequence = hasCurrentSeason
+      ? this.episodes.filter((episode) =>
+          currentSeason === 0 ? Number(episode?.season) === 0 : Number(episode?.season) > 0
+        )
+      : [...this.episodes]
+          .filter((episode) => Number(episode?.episode || 0) > 0)
+          .sort(
+            (left, right) =>
+              (Number(left?.season) || 0) - (Number(right?.season) || 0) ||
+              Number(left?.episode || 0) - Number(right?.episode || 0)
+          );
     const currentIndex = sequence.findIndex(
       (episode) =>
         String(episode?.id || "") === String(currentEpisode?.id || "") ||
-        (Number(episode?.season || 0) === currentSeason &&
+        ((!hasCurrentSeason || Number(episode?.season) === currentSeason) &&
           Number(episode?.episode || 0) === Number(currentEpisode?.episode || 0))
     );
     return currentIndex >= 0 ? sequence[currentIndex + 1] || null : null;
@@ -6856,18 +9347,18 @@ export const PlayerScreen = {
 
   buildStreamRouteParamsFromPlayer() {
     const itemType = normalizeItemType(this.params?.itemType || "movie");
-    const currentEpisode = itemType === "series" ? this.resolveCurrentEpisodeEntry() : null;
-    const nextEpisode = itemType === "series" ? this.resolveNextEpisodeInfo() : null;
+    const seriesItem = isSeriesItemType(itemType);
+    const currentEpisode = seriesItem ? this.resolveCurrentEpisodeEntry() : null;
+    const nextEpisode = seriesItem ? this.resolveNextEpisodeInfo() : null;
     const currentPositionMs = Math.round(this.getPlaybackCurrentSeconds() * 1000);
     const title =
       this.params?.playerTitle || this.params?.itemTitle || this.params?.itemId || "Untitled";
     const backdrop =
       this.params?.playerBackdropUrl || this.params?.backdrop || this.params?.poster || null;
     const logo = this.params?.playerLogoUrl || this.params?.logo || null;
-    const videoId =
-      itemType === "series"
-        ? this.params?.videoId || currentEpisode?.id || null
-        : this.params?.videoId || this.params?.itemId || null;
+    const videoId = seriesItem
+      ? this.params?.videoId || currentEpisode?.id || null
+      : this.params?.videoId || this.params?.itemId || null;
 
     return {
       itemId: this.params?.itemId || null,
@@ -6878,7 +9369,7 @@ export const PlayerScreen = {
       returnToDetail: true,
       fromDetailRoute: Boolean(this.params?.fromDetailRoute),
       itemTitle: title,
-      itemSubtitle: itemType === "series" ? "" : this.params?.playerSubtitle || "",
+      itemSubtitle: seriesItem ? "" : this.params?.playerSubtitle || "",
       year: this.params?.playerReleaseYear || this.params?.year || "",
       backdrop,
       poster: this.params?.poster || backdrop,
@@ -6886,17 +9377,14 @@ export const PlayerScreen = {
       parentalWarnings: this.params?.parentalWarnings || null,
       parentalGuide: this.params?.parentalGuide || null,
       videoId,
-      season:
-        itemType === "series" ? (this.params?.season ?? currentEpisode?.season ?? null) : null,
-      episode:
-        itemType === "series" ? (this.params?.episode ?? currentEpisode?.episode ?? null) : null,
-      episodeTitle:
-        itemType === "series"
-          ? this.params?.playerEpisodeTitle ||
-            this.params?.playerSubtitle ||
-            currentEpisode?.title ||
-            ""
-          : "",
+      season: seriesItem ? (this.params?.season ?? currentEpisode?.season ?? null) : null,
+      episode: seriesItem ? (this.params?.episode ?? currentEpisode?.episode ?? null) : null,
+      episodeTitle: seriesItem
+        ? this.params?.playerEpisodeTitle ||
+          this.params?.playerSubtitle ||
+          currentEpisode?.title ||
+          ""
+        : "",
       episodes: Array.isArray(this.episodes) ? this.episodes : [],
       nextEpisodeVideoId: nextEpisode?.videoId || null,
       nextEpisodeLabel: nextEpisode?.episodeLabel || null,
@@ -6941,13 +9429,13 @@ export const PlayerScreen = {
 
   buildDetailRouteParamsFromPlayer() {
     const itemType = normalizeItemType(this.params?.itemType || "movie");
+    const seriesItem = isSeriesItemType(itemType);
     const streamRouteParams =
       this.params?.streamRouteParams && typeof this.params.streamRouteParams === "object"
         ? this.params.streamRouteParams
         : null;
-    const currentEpisode = itemType === "series" ? this.resolveCurrentEpisodeEntry() : null;
-    const preferredSeasonRaw =
-      itemType === "series" ? (this.params?.season ?? currentEpisode?.season) : null;
+    const currentEpisode = seriesItem ? this.resolveCurrentEpisodeEntry() : null;
+    const preferredSeasonRaw = seriesItem ? (this.params?.season ?? currentEpisode?.season) : null;
     const preferredSeason = Number(preferredSeasonRaw);
     return {
       itemId: this.params?.itemId || null,
@@ -6969,6 +9457,7 @@ export const PlayerScreen = {
 
   buildStreamRouteParamsForEpisode(episode = null) {
     const itemType = normalizeItemType(this.params?.itemType || "movie");
+    const seriesItem = isSeriesItemType(itemType);
     const targetEpisode = episode || null;
     const title =
       this.params?.playerTitle || this.params?.itemTitle || this.params?.itemId || "Untitled";
@@ -6984,7 +9473,7 @@ export const PlayerScreen = {
       returnToDetail: true,
       fromDetailRoute: Boolean(this.params?.fromDetailRoute),
       itemTitle: title,
-      itemSubtitle: itemType === "series" ? "" : this.params?.playerSubtitle || "",
+      itemSubtitle: seriesItem ? "" : this.params?.playerSubtitle || "",
       year: this.params?.playerReleaseYear || this.params?.year || "",
       backdrop,
       poster: this.params?.poster || backdrop,
@@ -6994,15 +9483,17 @@ export const PlayerScreen = {
       videoId: targetEpisode?.videoId || targetEpisode?.id || null,
       season: targetEpisode?.season == null ? null : Number(targetEpisode.season),
       episode: targetEpisode?.episode == null ? null : Number(targetEpisode.episode),
-      episodeTitle:
-        itemType === "series" ? targetEpisode?.episodeTitle || targetEpisode?.title || "" : "",
+      episodeTitle: seriesItem ? targetEpisode?.episodeTitle || targetEpisode?.title || "" : "",
       episodes: Array.isArray(this.episodes) ? this.episodes : []
     };
   },
 
   navigateBackToStreamScreen({ forceDetail = false } = {}) {
     if (this.playerBackNavigationInProgress) {
-      return true;
+      // The first Back already requested the browser pop that reveals the
+      // existing route. A duplicate Tizen key must not make FocusEngine call
+      // suppressNextPopstate(), otherwise it can swallow that traversal.
+      return "history";
     }
     this.playerBackNavigationInProgress = true;
     this.releaseCurrentEngineFsStreamBestEffort("back-to-stream", {
@@ -7015,16 +9506,43 @@ export const PlayerScreen = {
     } catch (_) {
       // Route cleanup will make a second best-effort stop if native teardown throws.
     }
-    const shouldReturnToStream = !forceDetail && this.shouldReturnToStreamOnBack();
-    Router.suppressNextPopstate?.(1500);
-    Router.ignoreSinglePopstate?.();
-    const targetRoute = shouldReturnToStream ? "stream" : this.params?.itemId ? "detail" : "home";
+    const shouldReturnToLibrary = !forceDetail && this.params?.returnToLibraryOnBack === true;
+    const shouldReturnToHome = !forceDetail && this.params?.returnToHomeOnBack === true;
+    const shouldReturnToStream =
+      !shouldReturnToLibrary &&
+      !shouldReturnToHome &&
+      !forceDetail &&
+      this.shouldReturnToStreamOnBack();
+    const targetRoute = shouldReturnToHome
+      ? "home"
+      : shouldReturnToLibrary
+        ? "library"
+        : shouldReturnToStream
+          ? "stream"
+          : this.params?.itemId
+            ? "detail"
+            : "home";
     const targetParams =
-      targetRoute === "stream"
-        ? streamParams
-        : targetRoute === "detail"
-          ? this.buildDetailRouteParamsFromPlayer()
-          : {};
+      targetRoute === "library"
+        ? {}
+        : targetRoute === "stream"
+          ? streamParams
+          : targetRoute === "detail"
+            ? this.buildDetailRouteParamsFromPlayer()
+            : {};
+
+    // Android returns to the existing NavController destination with
+    // popBackStack(). Use the matching Web history/Router stack entry when it
+    // exists so the previous Sources/Library/Home/Detail screen is restored in
+    // place instead of being reconstructed with replaceHistory.
+    if (Router.popToExistingRoute?.(targetRoute, targetParams)) {
+      return "history";
+    }
+
+    // Keep a conservative fallback for direct-player and recovered sessions
+    // whose browser history no longer contains the expected destination.
+    // Router's back-navigation guard still protects this replacement from a
+    // late Tizen popstate without masking a legitimate history traversal.
     void Router.navigate(targetRoute, targetParams, {
       skipStackPush: true,
       replaceHistory: true,
@@ -7041,9 +9559,6 @@ export const PlayerScreen = {
     if (!this.hasPresentedPlaybackFrame) {
       return false;
     }
-    if (this.nextEpisodeCardTriggered) {
-      return true;
-    }
     const durationSeconds = Number(this.getPlaybackDurationSeconds() || 0);
     const currentSeconds = Number(this.getPlaybackCurrentSeconds() || 0);
     if (
@@ -7054,19 +9569,73 @@ export const PlayerScreen = {
     ) {
       return false;
     }
+    if (!this.isNaturalPlaybackCompletionEligible(durationSeconds)) {
+      return false;
+    }
+    const shouldShow = this.getNextEpisodeCardThresholdReached(currentSeconds, durationSeconds);
+    if (this.nextEpisodeCardTriggered && !this.nextEpisodeLaunching && !shouldShow) {
+      this.resetNextEpisodeCardCycle({ render: false });
+      return false;
+    }
+    if (this.nextEpisodeCardTriggered) {
+      return true;
+    }
+    if (shouldShow) {
+      this.nextEpisodeCardTriggered = true;
+    }
+    return shouldShow;
+  },
+
+  hasFatalPlaybackError() {
+    const controllerErrorCode =
+      typeof PlayerController.getLastPlaybackErrorCode === "function"
+        ? Number(PlayerController.getLastPlaybackErrorCode() || 0)
+        : 0;
+    const nativeErrorCode = Number(PlayerController.video?.error?.code || 0);
+    return (
+      this.isStartupErrorVisible() ||
+      Boolean(String(this.sourcesError || "").trim()) ||
+      controllerErrorCode > 0 ||
+      nativeErrorCode > 0
+    );
+  },
+
+  isNaturalPlaybackCompletionEligible(durationSeconds = this.getPlaybackDurationSeconds()) {
+    const duration = Number(durationSeconds);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      return false;
+    }
+    return shouldTreatAsNaturalPlaybackCompletion({
+      hasRenderedFirstFrame: Boolean(this.hasPresentedPlaybackFrame),
+      hasFatalError: this.hasFatalPlaybackError(),
+      durationMs: duration * 1000
+    });
+  },
+
+  getNextEpisodeCardThresholdReached(
+    positionSeconds = this.getPlaybackCurrentSeconds(),
+    durationSeconds = this.getPlaybackDurationSeconds()
+  ) {
+    const duration = Number(durationSeconds || 0);
+    const position = Number(positionSeconds || 0);
+    if (
+      !Number.isFinite(duration) ||
+      duration <= 0 ||
+      !Number.isFinite(position) ||
+      position < 0 ||
+      !this.isNaturalPlaybackCompletionEligible(duration)
+    ) {
+      return false;
+    }
     const settings = PlayerSettingsStore.get();
-    const shouldShow = shouldShowNextEpisodeCardRule({
-      positionSeconds: currentSeconds,
-      durationSeconds,
+    return shouldShowNextEpisodeCardRule({
+      positionSeconds: position,
+      durationSeconds: duration,
       skipIntervals: settings.skipIntroEnabled ? this.skipIntervals : [],
       thresholdMode: settings.nextEpisodeThresholdMode,
       thresholdPercent: settings.nextEpisodeThresholdPercent,
       thresholdMinutesBeforeEnd: settings.nextEpisodeThresholdMinutesBeforeEnd
     });
-    if (shouldShow) {
-      this.nextEpisodeCardTriggered = true;
-    }
-    return shouldShow;
   },
 
   hasPlaybackReachedNaturalEnd() {
@@ -7082,7 +9651,8 @@ export const PlayerScreen = {
     }
     const remainingSeconds = durationSeconds - currentSeconds;
     const progress = currentSeconds / durationSeconds;
-    return remainingSeconds <= 1 || progress >= 0.999;
+    const reachedEnd = remainingSeconds <= 1 || progress >= 0.999;
+    return reachedEnd && this.isNaturalPlaybackCompletionEligible(durationSeconds);
   },
 
   shouldPrefetchNextEpisodeStreams() {
@@ -7096,19 +9666,27 @@ export const PlayerScreen = {
     ) {
       return false;
     }
+    if (!this.isNaturalPlaybackCompletionEligible(durationSeconds)) {
+      return false;
+    }
     return currentSeconds / durationSeconds >= NEXT_EPISODE_PREFETCH_PERCENT;
   },
 
-  getStreamCacheKey(videoId, itemType) {
+  getStreamCacheKey(videoId, itemType, season = null, episode = null) {
     const normalizedVideoId = String(videoId || "").trim();
     if (!normalizedVideoId) {
       return "";
     }
-    return `${normalizeItemType(itemType || this.params?.itemType || "movie")}:${normalizedVideoId}`;
+    return JSON.stringify([
+      normalizeItemType(itemType || this.params?.itemType || "movie"),
+      normalizedVideoId,
+      season == null ? null : Number(season),
+      episode == null ? null : Number(episode)
+    ]);
   },
 
-  getCachedPlayableStreamsForVideo(videoId, itemType) {
-    const cacheKey = this.getStreamCacheKey(videoId, itemType);
+  getCachedPlayableStreamsForVideo(videoId, itemType, season = null, episode = null) {
+    const cacheKey = this.getStreamCacheKey(videoId, itemType, season, episode);
     const cache = this.streamCandidatesByVideoId || (this.streamCandidatesByVideoId = new Map());
     if (!cacheKey || !cache.has(cacheKey)) {
       return null;
@@ -7123,7 +9701,9 @@ export const PlayerScreen = {
     }
     const cached = this.getCachedPlayableStreamsForVideo(
       nextEpisode.videoId,
-      this.params?.itemType || "series"
+      this.params?.itemType || "series",
+      nextEpisode.season,
+      nextEpisode.episode
     );
     return Array.isArray(cached) && cached.length > 0;
   },
@@ -7131,17 +9711,27 @@ export const PlayerScreen = {
   ensureNextEpisodeStreamsPrefetch({ force = false } = {}) {
     const nextEpisode = this.resolveNextEpisodeInfo();
     const itemType = normalizeItemType(this.params?.itemType || "movie");
-    if (!nextEpisode?.videoId || itemType !== "series" || nextEpisode.hasAired === false) {
+    if (!nextEpisode?.videoId || !isSeriesItemType(itemType) || nextEpisode.hasAired === false) {
       return;
     }
     if (!force && !this.shouldPrefetchNextEpisodeStreams()) {
       return;
     }
-    const cacheKey = this.getStreamCacheKey(nextEpisode.videoId, itemType);
+    const cacheKey = this.getStreamCacheKey(
+      nextEpisode.videoId,
+      itemType,
+      nextEpisode.season,
+      nextEpisode.episode
+    );
     const loadPromises =
       this.streamCandidatesLoadPromises || (this.streamCandidatesLoadPromises = new Map());
     if (
-      this.getCachedPlayableStreamsForVideo(nextEpisode.videoId, itemType) ||
+      this.getCachedPlayableStreamsForVideo(
+        nextEpisode.videoId,
+        itemType,
+        nextEpisode.season,
+        nextEpisode.episode
+      ) ||
       loadPromises.has(cacheKey)
     ) {
       return;
@@ -7165,6 +9755,49 @@ export const PlayerScreen = {
       return;
     }
     this.renderNextEpisodeCard();
+  },
+
+  resetNextEpisodeCardCycle({ render = true } = {}) {
+    const hadState =
+      this.nextEpisodeCardTriggered ||
+      this.nextEpisodeCardDismissed ||
+      this.nextEpisodeBackExitArmed ||
+      this.controlFocusZone === "nextEpisode";
+    if (!hadState) {
+      return false;
+    }
+    this.nextEpisodeCardTriggered = false;
+    this.nextEpisodeCardDismissed = false;
+    this.nextEpisodeBackExitArmed = false;
+    if (this.controlFocusZone === "nextEpisode") {
+      this.controlFocusZone =
+        this.controlsVisible && this.isSeekBarAvailable() ? "progress" : "buttons";
+    }
+    if (render) {
+      if (this.nextEpisodeLaunching) {
+        this.cancelNextEpisodeLaunch();
+      } else {
+        this.renderNextEpisodeCard();
+      }
+    }
+    return true;
+  },
+
+  resetNextEpisodeCardAfterBackwardSeek(targetSeconds) {
+    if (!this.nextEpisodeCardTriggered) {
+      return false;
+    }
+    const currentSeconds = Number(this.getPlaybackCurrentSeconds());
+    const target = Number(targetSeconds);
+    if (
+      !Number.isFinite(currentSeconds) ||
+      !Number.isFinite(target) ||
+      target >= currentSeconds - 0.5 ||
+      this.getNextEpisodeCardThresholdReached(target)
+    ) {
+      return false;
+    }
+    return this.resetNextEpisodeCardCycle();
   },
 
   resetNextEpisodeCardDismissal() {
@@ -7246,7 +9879,7 @@ export const PlayerScreen = {
     }
 
     const nextEpisode = this.resolveNextEpisodeInfo();
-    if (!nextEpisode || normalizeItemType(this.params?.itemType || "movie") !== "series") {
+    if (!nextEpisode || !isSeriesItemType(this.params?.itemType || "movie")) {
       this.nextEpisodeAutoplayAttemptedKey = "";
       return false;
     }
@@ -7266,6 +9899,10 @@ export const PlayerScreen = {
       !Number.isFinite(currentSeconds) ||
       currentSeconds < 0
     ) {
+      return false;
+    }
+    if (!this.isNaturalPlaybackCompletionEligible(durationSeconds)) {
+      this.nextEpisodeAutoplayAttemptedKey = "";
       return false;
     }
 
@@ -7317,19 +9954,36 @@ export const PlayerScreen = {
     if (!normalizedVideoId) {
       return [];
     }
-    const cacheKey = this.getStreamCacheKey(normalizedVideoId, normalizedType);
+    const forceRefresh = options.forceRefresh === true;
+    const cacheKey = this.getStreamCacheKey(
+      normalizedVideoId,
+      normalizedType,
+      options.season,
+      options.episode
+    );
     const cache = this.streamCandidatesByVideoId || (this.streamCandidatesByVideoId = new Map());
-    if (cache.has(cacheKey)) {
+    if (!forceRefresh && cache.has(cacheKey)) {
       const cached = cache.get(cacheKey);
-      const cachedStreams = Array.isArray(cached) ? cached.map((stream) => ({ ...stream })) : [];
+      const cachedStreams = orderStreamsByAddonOrder(
+        Array.isArray(cached) ? cached.map((stream) => ({ ...stream })) : [],
+        [],
+        { isDirectDebrid: (stream) => DebridStreamPresentation.isDirectDebrid(stream) }
+      );
       options.onChunk?.(cachedStreams);
       return cachedStreams;
     }
     const loadPromises =
       this.streamCandidatesLoadPromises || (this.streamCandidatesLoadPromises = new Map());
-    if (loadPromises.has(cacheKey)) {
+    if (forceRefresh) {
+      loadPromises.delete(cacheKey);
+    }
+    if (!forceRefresh && loadPromises.has(cacheKey)) {
       const loaded = await loadPromises.get(cacheKey);
-      const loadedStreams = Array.isArray(loaded) ? loaded.map((stream) => ({ ...stream })) : [];
+      const loadedStreams = orderStreamsByAddonOrder(
+        Array.isArray(loaded) ? loaded.map((stream) => ({ ...stream })) : [],
+        [],
+        { isDirectDebrid: (stream) => DebridStreamPresentation.isDirectDebrid(stream) }
+      );
       options.onChunk?.(loadedStreams);
       return loadedStreams;
     }
@@ -7340,28 +9994,46 @@ export const PlayerScreen = {
         itemId: String(this.params?.itemId || ""),
         season: options.season ?? null,
         episode: options.episode ?? null,
+        forceRefresh,
         onChunk: (chunkResult) => {
           const chunkItems = flattenStreamGroups(chunkResult);
           if (!chunkItems.length) {
             return;
           }
           partialItems = mergeStreamItems(partialItems, chunkItems);
-          options.onChunk?.(partialItems.map((stream) => ({ ...stream })));
+          options.onChunk?.(
+            orderStreamsByAddonOrder(partialItems, [], {
+              isDirectDebrid: (stream) => DebridStreamPresentation.isDirectDebrid(stream)
+            }).map((stream) => ({ ...stream }))
+          );
         }
       })
       .then((streamResult) => {
-        const streamItems = mergeStreamItems(
-          partialItems,
-          streamResult?.status === "success" ? flattenStreamGroups(streamResult) : []
+        const streamItems = orderStreamsByAddonOrder(
+          mergeStreamItems(
+            partialItems,
+            streamResult?.status === "success" ? flattenStreamGroups(streamResult) : []
+          ),
+          [],
+          { isDirectDebrid: (stream) => DebridStreamPresentation.isDirectDebrid(stream) }
         );
-        cache.set(
-          cacheKey,
-          streamItems.map((stream) => ({ ...stream }))
-        );
+        if (streamItems.length) {
+          cache.set(
+            cacheKey,
+            streamItems.map((stream) => ({ ...stream }))
+          );
+        } else {
+          // Android's repository cache does not retain failed/empty-only
+          // sessions. Do not let an empty UI snapshot suppress the next
+          // provider search or make the source panel look permanently empty.
+          cache.delete(cacheKey);
+        }
         return streamItems;
       })
       .finally(() => {
-        loadPromises.delete(cacheKey);
+        if (loadPromises.get(cacheKey) === loadPromise) {
+          loadPromises.delete(cacheKey);
+        }
       });
     loadPromises.set(cacheKey, loadPromise);
 
@@ -7421,6 +10093,7 @@ export const PlayerScreen = {
   },
 
   async resolveNextEpisodeStreamByAutoPlayPolicy(nextEpisode, itemType, settings) {
+    streamRepository.setLocalPluginSearchPaused(false);
     const installedAddonNames = new Set(
       ((await addonRepository.getInstalledAddons().catch(() => [])) || [])
         .map((addon) => String(addon?.displayName || addon?.name || "").trim())
@@ -7579,7 +10252,7 @@ export const PlayerScreen = {
     const itemType = normalizeItemType(this.params?.itemType || "movie");
     if (
       !nextEpisode?.videoId ||
-      itemType !== "series" ||
+      !isSeriesItemType(itemType) ||
       nextEpisode.hasAired === false ||
       this.nextEpisodeLaunching
     ) {
@@ -7790,8 +10463,11 @@ export const PlayerScreen = {
       return;
     }
     const style = this.subtitleStyleSettings || {};
-    const verticalOffset = splitSubtitleVerticalOffset(style.verticalOffset);
-    const subtitleColor = String(style.textColor || "#FFFFFF");
+    const verticalOffsetVh = getSubtitleVerticalOffsetVh(style.verticalOffset);
+    const residualOffsetVh = getSubtitleVerticalResidualOffsetVh(style.verticalOffset);
+    const subtitleTextOpacity = normalizeSubtitleTextOpacity(style.textOpacity);
+    const subtitleTextColor = String(style.textColor || "#FFFFFF");
+    const subtitleColor = subtitleTextColorWithOpacity(subtitleTextColor, subtitleTextOpacity);
     const outlineColor = String(style.outlineColor || "#000000");
     const subtitleFontWeight = style.bold ? "800" : Environment.isWebOS() ? "400" : "500";
     const boldShadow = style.bold
@@ -7809,7 +10485,13 @@ export const PlayerScreen = {
     if (Environment.isTizen() && PlayerController.isUsingAvPlay?.()) {
       PlayerController.setAvPlayExternalSubtitleDelay?.(this.subtitleDelayMs);
     }
-    uiRoot.style.setProperty("--player-subtitle-color", String(style.textColor || "#FFFFFF"));
+    uiRoot.style.setProperty("--player-subtitle-color", subtitleColor);
+    // HTML subtitles need the alpha composited over the complete text run.
+    // Applying it in rgba() makes overlapping Arabic glyphs accumulate alpha
+    // on affected TV browser engines; native cues keep the Android-equivalent
+    // rgba color below.
+    uiRoot.style.setProperty("--player-subtitle-text-color", subtitleTextColor);
+    uiRoot.style.setProperty("--player-subtitle-text-opacity", String(subtitleTextOpacity / 100));
     uiRoot.style.setProperty(
       "--player-subtitle-background",
       String(style.backgroundColor || "#00000000")
@@ -7819,11 +10501,8 @@ export const PlayerScreen = {
     uiRoot.style.setProperty("--player-html-subtitle-font-size", htmlSubtitleFontSize);
     uiRoot.style.setProperty("--player-subtitle-font-weight", subtitleFontWeight);
     uiRoot.style.setProperty("--player-subtitle-shadow", subtitleShadow);
-    uiRoot.style.setProperty(
-      "--player-subtitle-offset",
-      `${(verticalOffset.value * -2).toFixed(2)}vh`
-    );
-    video.style.setProperty("--player-subtitle-color", String(style.textColor || "#FFFFFF"));
+    uiRoot.style.setProperty("--player-subtitle-offset", `${verticalOffsetVh.toFixed(2)}vh`);
+    video.style.setProperty("--player-subtitle-color", subtitleColor);
     video.style.setProperty(
       "--player-subtitle-background",
       String(style.backgroundColor || "#00000000")
@@ -7832,10 +10511,7 @@ export const PlayerScreen = {
     video.style.setProperty("--player-subtitle-font-size", `${subtitleFontSize}%`);
     video.style.setProperty("--player-subtitle-font-weight", subtitleFontWeight);
     video.style.setProperty("--player-subtitle-shadow", subtitleShadow);
-    video.style.setProperty(
-      "--player-subtitle-offset",
-      `${(verticalOffset.residualOffset * -2).toFixed(2)}vh`
-    );
+    video.style.setProperty("--player-subtitle-offset", `${residualOffsetVh.toFixed(2)}vh`);
     this.refreshSubtitleCueStyles();
     this.renderBitmapSubtitleAtCurrentTime({ force: true });
     if (refreshTrackRendering) {
@@ -7894,6 +10570,8 @@ export const PlayerScreen = {
 
   activateWebOsEmbeddedHtmlSubtitleOverlay(track, cues, selectedIndex, overlayId) {
     if (
+      this.webOsEmbeddedTextSubtitleUsingAss ||
+      this.webOsEmbeddedTextSubtitleUsingHtml ||
       !track ||
       !cues.length ||
       this.selectedEmbeddedSubtitleTrackIndex !== selectedIndex ||
@@ -7924,6 +10602,8 @@ export const PlayerScreen = {
   syncWebOsEmbeddedHtmlSubtitleOverlay(track = this.getSelectedWebOsEmbeddedTextTrack()) {
     if (
       !Environment.isWebOS() ||
+      this.webOsEmbeddedTextSubtitleUsingAss ||
+      this.webOsEmbeddedTextSubtitleUsingHtml ||
       !track ||
       this.selectedEmbeddedSubtitleTrackIndex < 0 ||
       track !== this.getSelectedWebOsEmbeddedTextTrack()
@@ -8132,7 +10812,10 @@ export const PlayerScreen = {
       return;
     }
     const { lineOffset } = splitSubtitleVerticalOffset(offset);
-    if (lineOffset === 0) {
+    // A source-authored line (including percentage positioning) belongs to
+    // the subtitle itself. Keep it intact; Android applies its bottom padding
+    // only when the cue has no explicit line.
+    if (hasExplicitSubtitleVerticalPosition(snapshot) || lineOffset === 0) {
       this.restoreSubtitleCueSnapshot(cue, snapshot);
       return;
     }
@@ -8356,7 +11039,18 @@ export const PlayerScreen = {
   },
 
   refreshSubtitleTrackRendering() {
+    if (this.isTizenEmbeddedTextSubtitleActive()) {
+      this.renderWebOsEmbeddedTextSubtitleAtCurrentTime();
+      return;
+    }
     if (Environment.isWebOS()) {
+      if (this.webOsEmbeddedTextSubtitleUsingAss) {
+        return;
+      }
+      if (this.webOsEmbeddedTextSubtitleUsingHtml) {
+        this.renderWebOsEmbeddedTextSubtitleAtCurrentTime();
+        return;
+      }
       if (
         this.selectedEmbeddedSubtitleTrackIndex < 0 ||
         typeof PlayerController.setWebOsEmbeddedSubtitleTrack !== "function"
@@ -8380,6 +11074,16 @@ export const PlayerScreen = {
       const timerId = setTimeout(() => {
         this.embeddedSubtitleCueRefreshTimers?.delete?.(timerId);
         if (this.selectedEmbeddedSubtitleTrackIndex !== selectedIndex) {
+          return;
+        }
+        // Keep the native refresh from racing an app-owned renderer. The
+        // activation key also covers the existing async HTML-overlay path,
+        // which claims ownership before the renderer flags are committed.
+        if (
+          this.webOsEmbeddedTextSubtitleUsingAss ||
+          this.webOsEmbeddedTextSubtitleUsingHtml ||
+          this.webOsEmbeddedHtmlSubtitleActivationKey
+        ) {
           return;
         }
         PlayerController.setWebOsEmbeddedSubtitleTrack(targetTrackIndex, selectedIndex);
@@ -8410,6 +11114,13 @@ export const PlayerScreen = {
     });
   },
 
+  isTizenEmbeddedTextSubtitleActive() {
+    return (
+      Environment.isTizen() &&
+      isTizenEmbeddedTextSubtitleFallbackTrack(this.webOsEmbeddedTextSubtitleTrack)
+    );
+  },
+
   updateModalBackdrop() {
     const modalBackdrop = this.uiRefs?.modalBackdrop;
     const controlsOverlay = this.uiRefs?.controlsOverlay;
@@ -8418,6 +11129,8 @@ export const PlayerScreen = {
     }
     const hasModal =
       this.subtitleDialogVisible ||
+      this.subtitleTimingDialogVisible ||
+      this.subtitleDelayOverlayVisible ||
       this.audioDialogVisible ||
       this.sourcesPanelVisible ||
       this.episodePanelVisible ||
@@ -8444,28 +11157,73 @@ export const PlayerScreen = {
       if (this.isStartupErrorVisible()) {
         return;
       }
-      if (
-        isTizenAvPlayPlayback() &&
-        this.hasPresentedPlaybackFrame &&
-        this.getPlaybackCurrentSeconds() > 0
-      ) {
+      if (this.hasPresentedPlaybackFrame && !this.playbackEngineValidated) {
+        this.resetPlaybackEngineValidation();
+      } else if (this.postValidationRecoveryValidationActive) {
+        this.resetPostValidationRecoveryValidationWindow();
+      }
+      const currentSeconds = this.getPlaybackCurrentSeconds();
+      // AVPlay does not provide a browser-native buffering UI. Keep the
+      // startup overlay hidden after the first frame, but expose the same
+      // centered transient indicator that Android TV shows while rebuffering.
+      if (isTizenAvPlayPlayback() && this.hasPresentedPlaybackFrame && currentSeconds > 0) {
+        this.bufferingActive = true;
+        this.bufferingSpinnerBaselineSeconds = currentSeconds;
+        this.lastPlaybackProgressAt = Date.now();
         this.loadingVisible = false;
         this.updateLoadingVisibility();
+        this.scheduleBufferingSpinnerRefresh();
         return;
       }
+      const minimalBufferingUiEnabled =
+        Environment.isWebOS() &&
+        PlayerSettingsStore.get().minimalBufferingUiEnabled === true &&
+        this.hasPresentedPlaybackFrame &&
+        currentSeconds > 0 &&
+        !this.seekLoading &&
+        !this.sourcesPanelVisible &&
+        !this.isSeekOverlaySuppressingControls();
       this.dismissPauseOverlay();
       this.loadingVisible = true;
-      this.updateLoadingVisibility();
-      if (!this.sourcesPanelVisible && !this.isSeekOverlaySuppressingControls()) {
-        this.setControlsVisible(true, { focus: false });
+      if (minimalBufferingUiEnabled) {
+        this.bufferingActive = true;
+        this.bufferingSpinnerBaselineSeconds = currentSeconds;
+        this.lastPlaybackProgressAt = Date.now();
+        this.setControlsVisible(false, { focus: false });
+        this.updateLoadingVisibility();
+        this.scheduleBufferingSpinnerRefresh();
+      } else {
+        this.bufferingActive = false;
+        this.updateLoadingVisibility();
+        if (!this.sourcesPanelVisible && !this.isSeekOverlaySuppressingControls()) {
+          this.setControlsVisible(true, { focus: false });
+        }
       }
       this.schedulePlaybackStallGuard();
     };
 
     const onPlaying = () => {
       if (this.isStartupErrorVisible()) {
-        return;
+        if (!Environment.isWebOS()) {
+          return;
+        }
+        console.info("webOS playback recovered after the startup stall guard", {
+          url: this.activePlaybackUrl,
+          engine: PlayerController.playbackEngine
+        });
+        this.clearStartupError();
+        this.failedPlaybackUrls?.delete?.(String(this.activePlaybackUrl || "").trim());
+        const currentStreamId = String(this.getCurrentStreamCandidate()?.id || "").trim();
+        if (currentStreamId) {
+          this.failedPlaybackStreamIds?.delete?.(currentStreamId);
+        }
+        this.loadingVisible = true;
       }
+      this.playbackRecoveryActive = false;
+      this.playbackRecoveryAttempts = 0;
+      this.beginPlaybackEngineValidation();
+      this.bufferingActive = false;
+      this.clearBufferingSpinnerTimer();
       if (this.seekLoading) {
         this.seekLoading = false;
         this.seekLoadingBaselineSeconds = null;
@@ -8482,6 +11240,12 @@ export const PlayerScreen = {
           this.schedulePlaybackStallGuard({ timeoutMs: 12000 });
           this.scheduleLoadingCompletionCheck(250);
           return;
+        }
+        // AVPlay returns from this platform-specific branch before the shared
+        // browser playback path below. Keep the Android start-scrobble event at
+        // the first real playing state on Tizen as well.
+        if (TrackingScrobbleService.isEnabled()) {
+          TrackingScrobbleService.start(this.buildScrobbleContext());
         }
         this.markPlaybackProgress();
         this.paused = false;
@@ -8505,6 +11269,8 @@ export const PlayerScreen = {
       }
       if (this.currentEngineFsStream && !this.hasPresentedPlaybackFrame) {
         this.lastPlaybackErrorAt = 0;
+        this.engineFsStartupErrorRetries = 0;
+        this.lastEngineFsStartupErrorStats = null;
         this.sourcesError = "";
         this.paused = false;
         this.updateMediaSessionPlaybackState();
@@ -8568,6 +11334,11 @@ export const PlayerScreen = {
       if (ended) {
         return;
       }
+      if (this.hasPresentedPlaybackFrame && !this.playbackEngineValidated) {
+        this.resetPlaybackEngineValidation();
+      } else if (this.postValidationRecoveryValidationActive) {
+        this.resetPostValidationRecoveryValidationWindow();
+      }
       // Immediate scrobble pause
       if (TrackingScrobbleService.isEnabled()) {
         TrackingScrobbleService.pause(this.buildScrobbleContext());
@@ -8612,8 +11383,10 @@ export const PlayerScreen = {
       }
       this.markPlaybackProgress();
       this.attemptPendingPlaybackRestore();
+      this.renderWebOsEmbeddedTextSubtitleAtCurrentTime();
       this.refreshWebOsEmbeddedHtmlSubtitleOverlayIfNeeded();
       this.renderHtmlSubtitleOverlayAtCurrentTime();
+      this.updateMediaSessionPositionState();
       this.updateUiTick();
     };
 
@@ -8635,6 +11408,7 @@ export const PlayerScreen = {
       this.applySubtitlePresentationSettings();
       this.applyAspectMode({ showToast: false });
       this.ensureTrackDataWarmup();
+      this.updateMediaSessionPositionState();
       if (this.paused) {
         this.schedulePauseOverlay();
       }
@@ -8648,6 +11422,16 @@ export const PlayerScreen = {
     const onPlayable = () => {
       if (this.isStartupErrorVisible()) {
         return;
+      }
+      if (
+        this.bufferingActive &&
+        isTizenAvPlayPlayback() &&
+        this.hasPresentedPlaybackFrame &&
+        this.getPlaybackCurrentSeconds() > 0
+      ) {
+        this.bufferingActive = false;
+        this.clearBufferingSpinnerTimer();
+        this.updateLoadingVisibility();
       }
       this.attemptPendingPlaybackRestore();
       this.completeSeekLoadingIfReady();
@@ -8663,13 +11447,22 @@ export const PlayerScreen = {
       if (this.isStartupErrorVisible()) {
         return;
       }
+      if (this.hasPresentedPlaybackFrame && !this.playbackEngineValidated) {
+        this.resetPlaybackEngineValidation();
+      } else if (this.postValidationRecoveryValidationActive) {
+        this.resetPostValidationRecoveryValidationWindow();
+      }
       this.attemptPendingPlaybackRestore();
       this.completeSeekLoadingIfReady();
       this.markPlaybackProgress();
+      this.renderWebOsEmbeddedTextSubtitleAtCurrentTime();
+      this.renderBitmapSubtitleAtCurrentTime({ force: true });
+      this.updateMediaSessionPositionState();
       this.updateUiTick();
     };
 
     const onTrackListChanged = () => {
+      this.applyAspectMode({ showToast: false });
       this.refreshTrackDialogs();
       if (this.refreshSubtitleCueStyles()) {
         this.refreshWebOsEmbeddedSubtitleAfterCueMutation();
@@ -8679,8 +11472,9 @@ export const PlayerScreen = {
       if (
         this.trackDiscoveryInProgress &&
         !embeddedAudioDiscoveryPending &&
-        this.hasAudioTracksAvailable() &&
-        this.hasSubtitleTracksAvailable()
+        this.hasAudioTracksAvailable({ includeImplicit: false }) &&
+        this.hasSubtitleTracksAvailable() &&
+        !this.isWebOsEngineFsEmbeddedTrackDiscoveryPending()
       ) {
         this.trackDiscoveryInProgress = false;
         this.clearTrackDiscoveryTimer();
@@ -8770,6 +11564,7 @@ export const PlayerScreen = {
         return;
       }
       this.seekLoading = false;
+      this.bufferingActive = false;
       this.seekLoadingBaselineSeconds = null;
       this.seekLoadingTargetSeconds = null;
       const now = Date.now();
@@ -8787,10 +11582,12 @@ export const PlayerScreen = {
         detailErrorCode || Number(video?.error?.code || 0) || controllerErrorCode;
       const eventDetail = event?.detail && typeof event.detail === "object" ? event.detail : {};
       const playbackErrorDetail = this.getPlaybackEventErrorDetail(eventDetail);
+      const terminalHlsHttpFailure = isTerminalHlsHttpStatus(eventDetail.hlsResponseCode);
       const avplayError = String(eventDetail?.avplayError || "").toLowerCase();
       const normalizedPlaybackErrorDetail = String(playbackErrorDetail || "").toLowerCase();
       const currentSourceCandidate =
         this.getStreamCandidateByUrl(this.activePlaybackUrl) || this.getCurrentStreamCandidate();
+      const expiredPlaybackUrl = isExpiredStreamUrl(this.activePlaybackUrl);
       const currentEngineFsState = this.currentEngineFsStream || null;
       const publicEngineFsUrl = String(currentEngineFsState?.publicPlaybackUrl || "").trim();
       const isLocalEngineFsNetworkFailure =
@@ -8801,6 +11598,13 @@ export const PlayerScreen = {
           avplayError.includes("connection refused") ||
           normalizedPlaybackErrorDetail.includes("network") ||
           normalizedPlaybackErrorDetail.includes("failed"));
+      if (expiredPlaybackUrl) {
+        this.showExpiredStreamError(this.activePlaybackUrl, {
+          sourceCandidate: currentSourceCandidate,
+          reason: "stream-url-expired-during-playback"
+        });
+        return;
+      }
       if (!this.hasPresentedPlaybackFrame && isLocalEngineFsNetworkFailure) {
         const sourceCandidate =
           this.getStreamCandidateByUrl(this.activePlaybackUrl) || this.getCurrentStreamCandidate();
@@ -8861,8 +11665,32 @@ export const PlayerScreen = {
           }
         }
 
+        const isActiveTizenAvPlayStartupError =
+          !currentEngineFsState &&
+          isTizenAvPlayPlayback() &&
+          !this.hasPresentedPlaybackFrame &&
+          (mediaErrorCode === 2 || mediaErrorCode === 3 || mediaErrorCode === 4);
+        if (isActiveTizenAvPlayStartupError) {
+          // AVPlay's listener can report an error while the same native session
+          // is still able to finish prepare/play. Keep Android's loading-until-
+          // playback policy and let the existing startup watchdog decide whether
+          // the session is genuinely stuck.
+          this.loadingVisible = true;
+          this.updateLoadingVisibility();
+          if (!this.playbackStallTimer) {
+            this.schedulePlaybackStallGuard();
+          }
+          console.warn("Tizen AVPlay startup error deferred while native session is active", {
+            url: this.activePlaybackUrl,
+            mediaErrorCode,
+            avplayError
+          });
+          return;
+        }
+
         this.markPlaybackSourceFailed(this.activePlaybackUrl);
         const targetEngine =
+          !terminalHlsHttpFailure &&
           typeof PlayerController.getAlternativePlaybackEngine === "function"
             ? PlayerController.getAlternativePlaybackEngine(this.activePlaybackUrl)
             : null;
@@ -8915,6 +11743,7 @@ export const PlayerScreen = {
       this.clearPlaybackStallGuard();
       this.releaseStartupAudioGate({ resume: false });
       this.loadingVisible = false;
+      this.bufferingActive = false;
       this.paused = true;
       this.dismissPauseOverlay();
       this.updateLoadingVisibility();
@@ -8973,6 +11802,36 @@ export const PlayerScreen = {
       video.addEventListener(eventName, handler);
       this.videoListeners.push({ target: video, eventName, handler });
     });
+
+    if (typeof window?.addEventListener === "function") {
+      const onViewportResize = () => {
+        this.applyAspectMode({ showToast: false });
+        // applyAspectMode() restores the native AVPlay surface to full screen.
+        // In post-play the same mode key may still be current, so invalidate it
+        // before re-applying the Android mini-window geometry.
+        this.cancelPostPlayNativeSurfaceAnimation();
+        const viewport = PlayerController.getAvPlayViewportSize?.() || {
+          width: 1920,
+          height: 1080
+        };
+        if (this.isPostPlayVisible()) {
+          this.postPlayNativeSurfaceStateKey = "";
+          this.postPlayNativeSurfaceRect = {
+            x: 0,
+            y: 0,
+            width: Math.max(1, Math.round(Number(viewport.width || 1920))),
+            height: Math.max(1, Math.round(Number(viewport.height || 1080)))
+          };
+        }
+        this.syncPostPlayPlayerSurface(this.getPostPlayState());
+      };
+      window.addEventListener("resize", onViewportResize);
+      this.videoListeners.push({
+        target: window,
+        eventName: "resize",
+        handler: onViewportResize
+      });
+    }
 
     const trackTargets = [this.getVideoTextTrackList(), this.getVideoAudioTrackList()].filter(
       Boolean
@@ -9079,6 +11938,19 @@ export const PlayerScreen = {
     ];
   },
 
+  getControlRenderSignature(controls = this.getControlDefinitions()) {
+    return JSON.stringify(
+      controls.map((control) => [
+        control.action || "",
+        control.label || "",
+        control.icon || "",
+        control.title || "",
+        Boolean(control.primary),
+        Boolean(control.useMask)
+      ])
+    );
+  },
+
   renderControlButtons() {
     if (this.isExternalFrameMode()) {
       return;
@@ -9088,7 +11960,15 @@ export const PlayerScreen = {
       return;
     }
 
+    if (this.isPostPlayVisible() || this.isPostPlayLoading()) {
+      wrap.innerHTML = "";
+      this.renderedControlSignature = "";
+      this.syncPlayerOverlayLayoutState();
+      return;
+    }
+
     const controls = this.getControlDefinitions();
+    const controlRenderSignature = this.getControlRenderSignature(controls);
     if (
       this.stickyProgressFocus &&
       this.controlsVisible &&
@@ -9116,6 +11996,7 @@ export const PlayerScreen = {
     `
       )
       .join("");
+    this.renderedControlSignature = controlRenderSignature;
 
     const buttons = Array.from(wrap.querySelectorAll(".player-control-btn"));
     buttons.forEach((button, index) => {
@@ -9158,7 +12039,7 @@ export const PlayerScreen = {
       ) {
         focusedButton.focus();
       }
-    } else if (this.controlFocusZone === "skipIntro") {
+    } else if (this.controlFocusZone === "skipIntro" || this.controlFocusZone === "nextEpisode") {
       buttons.forEach((button) => {
         if (typeof button.blur === "function") {
           button.blur();
@@ -9174,6 +12055,72 @@ export const PlayerScreen = {
     }
     this.syncSkipIntroFocusState();
     this.renderNextEpisodeCard();
+    this.syncNextEpisodeCardFocusState();
+    this.syncPlayerOverlayLayoutState();
+    this.renderBitmapSubtitleAtCurrentTime();
+  },
+
+  syncControlFocusDom() {
+    if (this.isExternalFrameMode()) {
+      return;
+    }
+    const wrap = this.uiRefs?.controlButtons;
+    if (!wrap) {
+      return;
+    }
+
+    const controls = this.getControlDefinitions();
+    const buttons = Array.from(wrap.querySelectorAll(".player-control-btn"));
+    const controlsMatchDom = buttons.every(
+      (button, index) => button.dataset.action === String(controls[index]?.action || "")
+    );
+    // This path is used only when focus moves. If playback state changed the
+    // available controls without rendering them first, fall back to the full
+    // state render instead of focusing a stale button.
+    if (
+      buttons.length !== controls.length ||
+      !controlsMatchDom ||
+      this.renderedControlSignature !== this.getControlRenderSignature(controls)
+    ) {
+      this.renderControlButtons();
+      return;
+    }
+
+    this.controlFocusIndex = clamp(this.controlFocusIndex, 0, Math.max(0, controls.length - 1));
+    buttons.forEach((button, index) => {
+      button.classList.toggle(
+        "focused",
+        this.controlFocusZone === "buttons" && index === this.controlFocusIndex
+      );
+    });
+
+    const progressShell = this.uiRefs?.progressShell;
+    progressShell?.classList.toggle("focused", this.controlFocusZone === "progress");
+
+    if (this.controlFocusZone === "progress") {
+      buttons.forEach((button) => button.blur?.());
+      if (progressShell && document.activeElement !== progressShell) {
+        progressShell.focus?.();
+      }
+    } else if (this.controlFocusZone === "buttons") {
+      if (progressShell && document.activeElement === progressShell) {
+        progressShell.blur?.();
+      }
+      const focusedButton = buttons[this.controlFocusIndex] || null;
+      if (focusedButton && document.activeElement !== focusedButton) {
+        focusedButton.focus?.();
+      }
+    } else if (this.controlFocusZone === "skipIntro" || this.controlFocusZone === "nextEpisode") {
+      buttons.forEach((button) => button.blur?.());
+      if (progressShell && document.activeElement === progressShell) {
+        progressShell.blur?.();
+      }
+    }
+
+    // Preserve the non-markup side effects of renderControlButtons().
+    this.syncSkipIntroFocusState();
+    this.renderNextEpisodeCard();
+    this.syncNextEpisodeCardFocusState();
     this.syncPlayerOverlayLayoutState();
     this.renderBitmapSubtitleAtCurrentTime();
   },
@@ -9181,6 +12128,8 @@ export const PlayerScreen = {
   isDialogOpen() {
     return (
       this.subtitleDialogVisible ||
+      this.subtitleTimingDialogVisible ||
+      this.subtitleDelayOverlayVisible ||
       this.audioDialogVisible ||
       this.sourcesPanelVisible ||
       this.episodePanelVisible ||
@@ -9193,11 +12142,161 @@ export const PlayerScreen = {
     if (!root) {
       return;
     }
+    const postPlayState = this.getPostPlayState();
+    const postPlayVisible = Boolean(postPlayState.isVisible);
+    const postPlayTrailer = Boolean(postPlayState.isTrailerPlaying);
+    const postPlayTrailerConsumed = Boolean(postPlayVisible && postPlayState.hasAutoPlayedTrailer);
     root.classList.toggle(
       "controls-visible",
-      Boolean(this.controlsVisible) && !this.isExternalFrameMode()
+      Boolean(this.controlsVisible) && !this.isExternalFrameMode() && !postPlayVisible
     );
+    root.classList.toggle("post-play-visible", postPlayVisible);
+    root.classList.toggle("post-play-loading", Boolean(postPlayState.isLoadingRecommendation));
+    root.classList.toggle("post-play-trailer", postPlayTrailer);
+    root.classList.toggle("post-play-trailer-consumed", postPlayTrailerConsumed);
+    root.classList.toggle("post-play-returning", Boolean(postPlayState.hasReturnedToPlayer));
+    this.container?.classList.toggle("post-play-visible", postPlayVisible);
+    this.container?.classList.toggle("post-play-trailer", postPlayTrailer);
+    this.container?.classList.toggle("post-play-trailer-consumed", postPlayTrailerConsumed);
+    this.container?.classList.toggle(
+      "post-play-returning",
+      Boolean(postPlayState.hasReturnedToPlayer)
+    );
+    this.syncPostPlayPlayerSurface(postPlayState);
     this.syncPlayerActionOverlayOffset();
+  },
+
+  cancelPostPlayNativeSurfaceAnimation() {
+    if (this.postPlayNativeSurfaceAnimationFrame == null) {
+      return;
+    }
+    if (this.postPlayNativeSurfaceAnimationUsesRaf) {
+      globalThis.cancelAnimationFrame?.(this.postPlayNativeSurfaceAnimationFrame);
+    } else {
+      clearTimeout(this.postPlayNativeSurfaceAnimationFrame);
+    }
+    this.postPlayNativeSurfaceAnimationFrame = null;
+  },
+
+  syncPostPlayPlayerSurface(state = this.getPostPlayState()) {
+    if (!Environment.isTizen() || !PlayerController.isUsingAvPlay?.()) {
+      return;
+    }
+    const avPlayObject = document.getElementById("avPlayerObject");
+    const viewport = PlayerController.getAvPlayViewportSize?.() || {
+      width: 1920,
+      height: 1080
+    };
+    const viewportWidth = Math.max(1, Math.round(Number(viewport.width || 1920)));
+    const viewportHeight = Math.max(1, Math.round(Number(viewport.height || 1080)));
+    const isTrailerSurfaceHidden = Boolean(
+      state.isVisible && (state.isTrailerPlaying || state.hasAutoPlayedTrailer)
+    );
+    const isMiniSurface = Boolean(state.isVisible && !isTrailerSurfaceHidden);
+    const surfaceMode = isTrailerSurfaceHidden ? "hidden" : isMiniSurface ? "mini" : "normal";
+    const key = `${surfaceMode}:${viewportWidth}x${viewportHeight}:${document.documentElement?.dir || "ltr"}`;
+    if (key === this.postPlayNativeSurfaceStateKey) {
+      return;
+    }
+    this.postPlayNativeSurfaceStateKey = key;
+    this.cancelPostPlayNativeSurfaceAnimation();
+    const fullRect = {
+      x: 0,
+      y: 0,
+      width: viewportWidth,
+      height: viewportHeight
+    };
+    if (avPlayObject?.style) {
+      avPlayObject.style.visibility = isTrailerSurfaceHidden ? "hidden" : "visible";
+    }
+
+    if (surfaceMode === "hidden") {
+      // The Android implementation releases the player surface while the
+      // trailer owns the screen. Keep the native surface out of the way and
+      // reset its geometry so a later lifecycle cannot resurrect a stale mini
+      // rectangle.
+      this.postPlayNativeSurfaceRect = fullRect;
+      PlayerController.setAvPlayDisplayRect?.(fullRect, "PLAYER_DISPLAY_MODE_FULL_SCREEN");
+      return;
+    }
+
+    const video = PlayerController.video;
+    if (video?.style) {
+      // Tizen's AVPlay object is the visible surface; the HTML video element
+      // still needs the same fullscreen box when the mini-window is restored.
+      video.style.position = "fixed";
+      video.style.left = "0px";
+      video.style.top = "0px";
+      video.style.right = "auto";
+      video.style.bottom = "auto";
+      video.style.width = "100vw";
+      video.style.height = "100vh";
+      video.style.maxWidth = "100vw";
+      video.style.maxHeight = "100vh";
+      video.style.objectFit = "fill";
+      video.style.transform = "none";
+    }
+
+    const targetRect = { ...fullRect };
+    if (surfaceMode === "mini") {
+      const cssViewportWidth = Math.max(1, Number(window.innerWidth || viewportWidth));
+      const scale = viewportWidth / cssViewportWidth;
+      const gutter = Math.max(0, Math.round(32 * scale));
+      const width = Math.min(
+        viewportWidth,
+        Math.max(1, Math.round(cssViewportWidth * 0.32 * scale))
+      );
+      targetRect.width = width;
+      targetRect.height = Math.min(viewportHeight, Math.max(1, Math.round(width * (9 / 16))));
+      targetRect.x =
+        document.documentElement?.dir === "rtl"
+          ? gutter
+          : Math.max(0, viewportWidth - width - gutter);
+      targetRect.y = gutter;
+    }
+
+    const currentRect =
+      this.postPlayNativeSurfaceRect || PlayerController.avplayDisplayRect || fullRect;
+    const sameRect = ["x", "y", "width", "height"].every(
+      (keyName) => Number(currentRect[keyName]) === Number(targetRect[keyName])
+    );
+    if (sameRect) {
+      this.postPlayNativeSurfaceRect = { ...targetRect };
+      PlayerController.setAvPlayDisplayRect?.(targetRect, "PLAYER_DISPLAY_MODE_FULL_SCREEN");
+      return;
+    }
+
+    const startedAt =
+      typeof globalThis.performance?.now === "function" ? globalThis.performance.now() : Date.now();
+    const schedule = (callback) => {
+      if (typeof requestAnimationFrame === "function") {
+        this.postPlayNativeSurfaceAnimationUsesRaf = true;
+        return requestAnimationFrame(callback);
+      }
+      this.postPlayNativeSurfaceAnimationUsesRaf = false;
+      return setTimeout(callback, 16);
+    };
+    const applyRect = (rect) => {
+      this.postPlayNativeSurfaceRect = { ...rect };
+      PlayerController.setAvPlayDisplayRect?.(rect, "PLAYER_DISPLAY_MODE_FULL_SCREEN");
+    };
+    const animate = () => {
+      if (this.postPlayNativeSurfaceStateKey !== key) {
+        return;
+      }
+      const now =
+        typeof globalThis.performance?.now === "function"
+          ? globalThis.performance.now()
+          : Date.now();
+      const progress = Math.max(0, Math.min(1, (now - startedAt) / 420));
+      applyRect(interpolatePostPlayRect(currentRect, targetRect, progress));
+      if (progress >= 1) {
+        this.postPlayNativeSurfaceAnimationFrame = null;
+        return;
+      }
+      this.postPlayNativeSurfaceAnimationFrame = schedule(animate);
+    };
+    animate();
   },
 
   measurePlayerActionOverlayOffset() {
@@ -9255,6 +12354,7 @@ export const PlayerScreen = {
   },
 
   setControlsVisible(visible, { focus = false } = {}) {
+    const wasControlsVisible = this.controlsVisible;
     this.controlsVisible = Boolean(visible);
     if (this.isExternalFrameMode()) {
       return;
@@ -9275,7 +12375,18 @@ export const PlayerScreen = {
       this.resetControlsAutoHide();
     } else {
       this.clearControlsAutoHide();
-      this.focusPlayerRootForHiddenControls();
+      // Android transfers focus to the visible next-episode overlay as part
+      // of the same controls-hidden state update. Smart manages focus
+      // manually, so waiting for the next playback tick leaves the DOM card
+      // selected while the logical focus remains on the player root.
+      if (wasControlsVisible) {
+        this.renderNextEpisodeCard();
+      }
+      if (this.controlFocusZone === "nextEpisode" && this.isNextEpisodeCardFocusable()) {
+        this.syncNextEpisodeCardFocusState();
+      } else {
+        this.focusPlayerRootForHiddenControls();
+      }
     }
   },
 
@@ -9303,7 +12414,7 @@ export const PlayerScreen = {
     this.autoHideControlsAfterSeek = false;
     this.controlFocusZone = "buttons";
     this.controlFocusIndex = 0;
-    this.renderControlButtons();
+    this.syncControlFocusDom();
     const firstButton = this.container.querySelector(".player-control-btn[data-action]");
     firstButton?.focus?.();
   },
@@ -9313,7 +12424,7 @@ export const PlayerScreen = {
       this.stickyProgressFocus = false;
       this.autoHideControlsAfterSeek = false;
       this.controlFocusZone = "buttons";
-      this.renderControlButtons();
+      this.syncControlFocusDom();
       return;
     }
     const activeElement = document.activeElement;
@@ -9326,7 +12437,7 @@ export const PlayerScreen = {
     }
     this.stickyProgressFocus = true;
     this.controlFocusZone = "progress";
-    this.renderControlButtons();
+    this.syncControlFocusDom();
     this.uiRefs?.progressShell?.focus?.();
     this.scheduleProgressBarRefocus();
   },
@@ -9370,7 +12481,7 @@ export const PlayerScreen = {
       return !this.isExternalFrameMode() && !this.isStartupErrorVisible();
     }
     if (
-      !this.loadingVisible ||
+      (!this.loadingVisible && !this.bufferingActive) ||
       !this.hasPresentedPlaybackFrame ||
       this.isExternalFrameMode() ||
       this.isStartupErrorVisible()
@@ -9423,7 +12534,7 @@ export const PlayerScreen = {
   scheduleBufferingSpinnerRefresh(delayMs = BUFFERING_SPINNER_STALL_MS) {
     this.clearBufferingSpinnerTimer();
     if (
-      !this.loadingVisible ||
+      (!this.loadingVisible && !this.bufferingActive) ||
       !this.hasPresentedPlaybackFrame ||
       this.isExternalFrameMode() ||
       this.isStartupErrorVisible()
@@ -9434,7 +12545,7 @@ export const PlayerScreen = {
       () => {
         this.bufferingSpinnerTimer = null;
         if (
-          !this.loadingVisible ||
+          (!this.loadingVisible && !this.bufferingActive) ||
           !this.hasPresentedPlaybackFrame ||
           this.isExternalFrameMode() ||
           this.isStartupErrorVisible()
@@ -9519,6 +12630,7 @@ export const PlayerScreen = {
       return false;
     }
     this.hasPresentedPlaybackFrame = true;
+    this.beginPlaybackEngineValidation();
     this.warmBitmapSubtitleSharedResources();
     if (!this.startupTrackPreferenceReady) {
       // Some P2P / engineFs startups expose tracks before the first real frame
@@ -9731,6 +12843,7 @@ export const PlayerScreen = {
       return false;
     }
     this.seekLoading = false;
+    this.bufferingActive = false;
     this.seekLoadingBaselineSeconds = null;
     this.seekLoadingTargetSeconds = null;
     if (hideBuffering && this.hasPresentedPlaybackFrame) {
@@ -9768,6 +12881,15 @@ export const PlayerScreen = {
   },
 
   seekPlaybackSeconds(seconds, { preserveSkipIntroSuppression = false } = {}) {
+    const currentSeconds = Number(this.getPlaybackCurrentSeconds());
+    const targetSeconds = Number(seconds);
+    if (
+      Number.isFinite(currentSeconds) &&
+      Number.isFinite(targetSeconds) &&
+      targetSeconds < currentSeconds - 0.5
+    ) {
+      this.resetNextEpisodeCardAfterBackwardSeek(targetSeconds);
+    }
     if (!preserveSkipIntroSuppression) {
       this.clearSkipIntroSeekSuppression();
     }
@@ -9776,6 +12898,8 @@ export const PlayerScreen = {
     this.seekLoadingTargetSeconds = Number(seconds || 0);
     this.seekLoading = true;
     this.updateLoadingVisibility();
+    this.prepareBitmapSubtitleForSeek(this.seekLoadingTargetSeconds);
+    this.prepareWebOsEmbeddedTextSubtitleForSeek(this.seekLoadingTargetSeconds);
     if (typeof PlayerController.seekToSeconds === "function") {
       const didSeek = Boolean(PlayerController.seekToSeconds(seconds));
       if (!didSeek) {
@@ -9882,12 +13006,14 @@ export const PlayerScreen = {
         }
         this.clearBufferingSpinnerTimer();
       }
+      this.renderSkipIntroButton();
       return;
     }
     if (this.isStartupErrorVisible()) {
       overlay.classList.add("hidden");
       bufferingSpinner?.classList.add("hidden");
       this.clearBufferingSpinnerTimer();
+      this.renderSkipIntroButton();
       return;
     }
     const showStartupOverlay =
@@ -9914,7 +13040,7 @@ export const PlayerScreen = {
       this.loadingTorrentStatus = "";
       this.syncLoadingOverlayStatus();
     }
-    if (!this.loadingVisible && !this.seekLoading) {
+    if (!this.loadingVisible && !this.seekLoading && !this.bufferingActive) {
       this.clearBufferingSpinnerTimer();
     }
     if (showStartupOverlay) {
@@ -9939,7 +13065,7 @@ export const PlayerScreen = {
         this.renderSeekOverlay();
       }
     } else if (!showBufferingSpinner) {
-      if (!this.loadingVisible) {
+      if (!this.loadingVisible && !this.bufferingActive) {
         this.clearBufferingSpinnerTimer();
       }
       if (this.isStartupGateReleaseReady()) {
@@ -9949,6 +13075,10 @@ export const PlayerScreen = {
         this.schedulePauseOverlay();
       }
     }
+    // Keep the Skip overlay in sync with loading/buffering transitions before
+    // the D-pad focus graph is evaluated. Android removes the composable from
+    // the focus graph as soon as it is no longer actually visible.
+    this.renderSkipIntroButton();
     this.renderNextEpisodeCard();
   },
 
@@ -9965,7 +13095,27 @@ export const PlayerScreen = {
     card.classList.toggle("hidden", hidden);
     if (hidden) {
       card.innerHTML = "";
+      this.nextEpisodeCardRenderedKey = "";
+      if (this.controlFocusZone === "nextEpisode") {
+        this.controlFocusZone =
+          this.controlsVisible && this.isSeekBarAvailable() ? "progress" : "buttons";
+      }
       return;
+    }
+
+    // Android keeps the next-episode action as the default hidden-controls
+    // focus target. Reconcile that state from the live focus zone on every
+    // render so an older webOS DOM/focus transition cannot leave the card
+    // visually selected while the player root still owns navigation.
+    if (
+      !this.controlsVisible &&
+      this.controlFocusZone !== "skipIntro" &&
+      this.controlFocusZone !== "nextEpisode"
+    ) {
+      this.stickyProgressFocus = false;
+      this.autoHideControlsAfterSeek = false;
+      this.controlFocusZone = "nextEpisode";
+      this.resetControlsAutoHide();
     }
 
     const titleLine = [nextEpisode.episodeLabel, nextEpisode.episodeTitle]
@@ -9988,23 +13138,39 @@ export const PlayerScreen = {
       this.episodes.find((entry) => String(entry?.id || "") === String(nextEpisode.videoId || ""))
         ?.thumbnail || "";
 
-    card.innerHTML = `
-      <div class="player-next-episode-card-inner${nextEpisode.hasAired ? " focusable is-playable" : ""}${!this.controlsVisible ? " is-selected" : ""}"${nextEpisode.hasAired ? ' data-player-pointer-action="nextEpisode"' : ""}>
-        <div class="player-next-episode-thumb-wrap">
-          ${thumb ? `<img class="player-next-episode-thumb" src="${escapeHtml(thumb)}" alt="" aria-hidden="true" />` : `<div class="player-next-episode-thumb player-next-episode-thumb-fallback"></div>`}
-          <div class="player-next-episode-thumb-shade"></div>
+    const renderKey = JSON.stringify([
+      nextEpisode.videoId,
+      titleLine,
+      statusText,
+      progressText,
+      thumb,
+      Boolean(nextEpisode.hasAired),
+      Boolean(this.controlsVisible)
+    ]);
+    if (
+      this.nextEpisodeCardRenderedKey !== renderKey ||
+      !card.querySelector(".player-next-episode-card-inner")
+    ) {
+      card.innerHTML = `
+        <div class="player-next-episode-card-inner focusable${nextEpisode.hasAired ? " is-playable" : ""}${!this.controlsVisible && this.controlFocusZone === "nextEpisode" ? " is-selected" : ""}" tabindex="-1" role="button" data-player-pointer-action="nextEpisode">
+          <div class="player-next-episode-thumb-wrap">
+            ${thumb ? `<img class="player-next-episode-thumb" src="${escapeHtml(thumb)}" alt="" aria-hidden="true" />` : `<div class="player-next-episode-thumb player-next-episode-thumb-fallback"></div>`}
+            <div class="player-next-episode-thumb-shade"></div>
+          </div>
+          <div class="player-next-episode-copy">
+            <div class="player-next-episode-kicker">${escapeHtml(t("next_episode_label", {}, "Next episode"))}</div>
+            <div class="player-next-episode-title">${escapeHtml(titleLine || t("next_episode_label", {}, "Next episode"))}</div>
+            ${progressText ? `<div class="player-next-episode-status">${escapeHtml(progressText)}</div>` : ""}
+          </div>
+          <div class="player-next-episode-pill${nextEpisode.hasAired ? " is-playable" : ""}">
+            <span class="player-next-episode-pill-icon">&#9654;</span>
+            <span class="player-next-episode-pill-text">${escapeHtml(statusText)}</span>
+          </div>
         </div>
-        <div class="player-next-episode-copy">
-          <div class="player-next-episode-kicker">${escapeHtml(t("next_episode_label", {}, "Next episode"))}</div>
-          <div class="player-next-episode-title">${escapeHtml(titleLine || t("next_episode_label", {}, "Next episode"))}</div>
-          ${progressText ? `<div class="player-next-episode-status">${escapeHtml(progressText)}</div>` : ""}
-        </div>
-        <div class="player-next-episode-pill${nextEpisode.hasAired ? " is-playable" : ""}">
-          <span class="player-next-episode-pill-icon">&#9654;</span>
-          <span class="player-next-episode-pill-text">${escapeHtml(statusText)}</span>
-        </div>
-      </div>
-    `;
+      `;
+      this.nextEpisodeCardRenderedKey = renderKey;
+    }
+    this.syncNextEpisodeCardFocusState();
   },
 
   updateUiTick() {
@@ -10018,6 +13184,7 @@ export const PlayerScreen = {
     this.updateActiveSkipInterval(current);
     this.updateSkipIntroCountdown(Date.now());
     const duration = this.getPlaybackDurationSeconds();
+    this.evaluatePostPlayRecommendation();
     const effectiveProgressSeconds =
       this.controlsVisible &&
       this.controlFocusZone === "progress" &&
@@ -10071,15 +13238,26 @@ export const PlayerScreen = {
 
     const endsAt = uiRefs.endsAt;
     if (endsAt) {
-      const remainingMs = Math.max(0, (Number(duration || 0) - Number(current || 0)) * 1000);
+      const isLivePlayback =
+        typeof PlayerController.isLivePlaybackItemType === "function" &&
+        Boolean(PlayerController.isLivePlaybackItemType());
+      const playbackSpeed = this.getPlaybackSpeed();
+      // Keep this clock based on the full media duration. Outro intervals are
+      // handled independently by skip/autoplay, as they are on Android TV.
+      const remainingMs = isLivePlayback
+        ? null
+        : calculateRemainingPlaybackMilliseconds(current, duration, playbackSpeed);
       const nextEndsAtMinuteBucket =
-        duration > 0 ? Math.floor((Date.now() + remainingMs) / 60000) : -1;
+        remainingMs == null ? -1 : Math.floor((Date.now() + remainingMs) / 60000);
+      endsAt.classList.toggle("hidden", isLivePlayback);
       if (uiState.endsAtMinuteBucket !== nextEndsAtMinuteBucket) {
-        const nextEndsAtText = t(
-          "player_ends_at",
-          [formatEndsAt(current, duration, this.webOsClockLocaleInfo)],
-          "Ends at %1$s"
-        );
+        const nextEndsAtText = isLivePlayback
+          ? ""
+          : t(
+              "player_ends_at",
+              [formatEndsAt(current, duration, this.webOsClockLocaleInfo, playbackSpeed)],
+              "Ends at %1$s"
+            );
         endsAt.textContent = nextEndsAtText;
         uiState.endsAtText = nextEndsAtText;
         uiState.endsAtMinuteBucket = nextEndsAtMinuteBucket;
@@ -10169,19 +13347,10 @@ export const PlayerScreen = {
     this.seekPreviewDirection = direction;
     this.seekRepeatCount += 1;
 
-    const stepSeconds =
-      this.seekRepeatCount >= 18
-        ? 120
-        : this.seekRepeatCount >= 12
-          ? 60
-          : this.seekRepeatCount >= 7
-            ? 30
-            : this.seekRepeatCount >= 3
-              ? 20
-              : 10;
+    const deltaSeconds = deltaMsForKeyRepeat(this.seekRepeatCount - 1, direction > 0) / 1000;
     const duration = this.getPlaybackDurationSeconds();
     const base = this.seekPreviewSeconds == null ? currentTime : Number(this.seekPreviewSeconds);
-    let next = base + direction * stepSeconds;
+    let next = base + deltaSeconds;
     if (duration > 0) {
       next = clamp(next, 0, duration);
     } else {
@@ -10357,7 +13526,7 @@ export const PlayerScreen = {
     return codeMap[keyCode] || null;
   },
 
-  applyMediaAction(action) {
+  applyMediaAction(action, event = null) {
     if (this.isExternalFrameMode() || !action) {
       return;
     }
@@ -10382,12 +13551,12 @@ export const PlayerScreen = {
     }
 
     if (action === "fastForward") {
-      this.quickSeekBy(30);
+      this.beginSeekPreview(1, Boolean(event?.repeat));
       return;
     }
 
     if (action === "rewind") {
-      this.quickSeekBy(-30);
+      this.beginSeekPreview(-1, Boolean(event?.repeat));
     }
   },
 
@@ -10443,7 +13612,86 @@ export const PlayerScreen = {
       this.quickSeekBy(Number.isFinite(offset) ? -offset : -30);
     });
 
+    this.updateMediaSessionMetadata();
     this.updateMediaSessionPlaybackState();
+  },
+
+  updateMediaSessionMetadata() {
+    const mediaSession = globalThis.navigator?.mediaSession;
+    const MediaMetadataConstructor = globalThis.MediaMetadata;
+    if (!mediaSession || typeof MediaMetadataConstructor !== "function") {
+      return;
+    }
+
+    const title =
+      String(
+        this.params?.playerTitle ||
+          this.params?.itemTitle ||
+          this.params?.title ||
+          this.params?.itemId
+      ).trim() || "Nuvio";
+    const episodeTitle = String(
+      this.params?.playerEpisodeTitle ||
+        this.params?.episodeTitle ||
+        this.params?.playerSubtitle ||
+        ""
+    ).trim();
+    const season = Number(this.params?.season);
+    const episode = Number(this.params?.episode);
+    const isSeries = isSeriesItemType(this.params?.itemType || "movie");
+    const episodeCode =
+      isSeries && Number.isFinite(season) && season >= 0 && Number.isFinite(episode) && episode > 0
+        ? `S${season}:E${episode}`
+        : "";
+    const releaseYear = String(
+      this.params?.playerReleaseYear || this.params?.releaseYear || this.params?.year || ""
+    ).trim();
+    const artist = isSeries
+      ? [episodeCode, episodeTitle].filter(Boolean).join(" – ") || "Nuvio"
+      : releaseYear || "Nuvio";
+    const artworkUrl = String(
+      this.params?.playerPosterUrl ||
+        this.params?.poster ||
+        this.params?.playerBackdropUrl ||
+        this.params?.backdrop ||
+        ""
+    ).trim();
+
+    try {
+      mediaSession.metadata = new MediaMetadataConstructor({
+        title,
+        artist,
+        album: isSeries ? title : "Nuvio",
+        artwork: artworkUrl ? [{ src: artworkUrl }] : []
+      });
+    } catch (_) {
+      // Ignore runtimes with a partial MediaMetadata implementation.
+    }
+  },
+
+  updateMediaSessionPositionState() {
+    const mediaSession = globalThis.navigator?.mediaSession;
+    if (!mediaSession || typeof mediaSession.setPositionState !== "function") {
+      return;
+    }
+
+    const video = PlayerController.video || this.container?.querySelector?.("#videoPlayer");
+    const duration = Number(video?.duration);
+    const position = Number(video?.currentTime);
+    if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(position)) {
+      return;
+    }
+
+    const playbackRate = Number(video?.playbackRate);
+    try {
+      mediaSession.setPositionState({
+        duration,
+        position: Math.min(Math.max(0, position), duration),
+        playbackRate: Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1
+      });
+    } catch (_) {
+      // Ignore invalid or unsupported position updates.
+    }
   },
 
   clearMediaSessionHandlers() {
@@ -10462,6 +13710,7 @@ export const PlayerScreen = {
     this.mediaSessionHandlersBound = false;
     try {
       mediaSession.playbackState = "none";
+      mediaSession.metadata = null;
     } catch (_) {
       // Ignore unsupported playback state.
     }
@@ -10477,6 +13726,7 @@ export const PlayerScreen = {
     } catch (_) {
       // Ignore unsupported playback state.
     }
+    this.updateMediaSessionPositionState();
   },
 
   async playStreamByUrl(
@@ -10486,6 +13736,8 @@ export const PlayerScreen = {
       resetSilentAudioState = true,
       preservePlaybackState = false,
       preservePendingRestore = false,
+      preserveStartupRecoveryState = false,
+      preservePlaybackRecoveryState = false,
       forceEngine = null,
       sourceCandidate: explicitSourceCandidate = null,
       mountToken = null
@@ -10501,14 +13753,25 @@ export const PlayerScreen = {
       return;
     }
 
-    const selectedIndex = this.streamCandidates.findIndex((entry) => entry.url === streamUrl);
+    const normalizedStreamUrl = String(streamUrl || "").trim();
+    const sourceCandidate =
+      explicitSourceCandidate ||
+      this.getStreamCandidateByUrl(normalizedStreamUrl) ||
+      this.getCurrentStreamCandidate();
+    if (isExpiredStreamUrl(normalizedStreamUrl)) {
+      this.showExpiredStreamError(normalizedStreamUrl, {
+        sourceCandidate,
+        reason: "stream-url-expired"
+      });
+      return;
+    }
+
+    const selectedIndex = this.streamCandidates.findIndex(
+      (entry) => entry.url === normalizedStreamUrl
+    );
     if (selectedIndex >= 0) {
       this.currentStreamIndex = selectedIndex;
     }
-    const sourceCandidate =
-      explicitSourceCandidate ||
-      this.getStreamCandidateByUrl(streamUrl) ||
-      this.getCurrentStreamCandidate();
     const sourceContext = this.getPlaybackSourceContext(sourceCandidate);
     if (sourceContext) {
       this.activePlaybackSourceContext = sourceContext;
@@ -10518,6 +13781,11 @@ export const PlayerScreen = {
       Environment.isWebOS() &&
       !nextEngineFsState &&
       this.isCurrentSourceLikelyMkv(streamUrl, sourceCandidate);
+    const allowNativePlaybackDuringStartupAudioGate =
+      shouldAllowNativePlaybackDuringStartupAudioGate({
+        isHlsPlayback: this.isCurrentSourceLikelyHls(streamUrl, sourceCandidate),
+        isPrioritizedWebOsRemoteMkvPlayback: prioritizeWebOsRemoteMkvPlayback
+      });
     const sameEngineFsState = this.isSameEngineFsState(
       this.currentEngineFsStream,
       nextEngineFsState
@@ -10546,9 +13814,25 @@ export const PlayerScreen = {
       this.lastEngineFsStartupErrorStats = null;
     }
 
-    this.hasPresentedPlaybackFrame = false;
+    const preservePresentedPlaybackFrame = Boolean(
+      preservePlaybackRecoveryState && this.hasPresentedPlaybackFrame
+    );
+    if (!preservePresentedPlaybackFrame) {
+      this.resetPlaybackEngineValidation();
+    }
+    if (!preservePlaybackRecoveryState) {
+      this.playbackRecoveryActive = false;
+      this.playbackRecoveryAttempts = 0;
+    }
+    this.playbackRecoveryActive = preservePresentedPlaybackFrame;
+    this.hasPresentedPlaybackFrame = preservePresentedPlaybackFrame;
+    this.webOsNativeStartupLoadingExtended = false;
+    if (!preserveStartupRecoveryState) {
+      this.webOsNativeReadyStartupRetries = 0;
+    }
     this.startupPlaybackBaselineSeconds = null;
     this.startupPlaybackHasAdvanced = false;
+    this.bufferingActive = false;
     this.bufferingSpinnerBaselineSeconds = null;
     this.clearStartupError();
     this.loadingVisible = true;
@@ -10558,7 +13842,7 @@ export const PlayerScreen = {
       this.releaseStartupAudioGate({ resume: false });
     } else {
       this.enableStartupAudioGate({
-        allowNativePlayback: prioritizeWebOsRemoteMkvPlayback,
+        allowNativePlayback: allowNativePlaybackDuringStartupAudioGate,
         maxWaitMs: prioritizeWebOsRemoteMkvPlayback ? WEBOS_REMOTE_MKV_AUDIO_GATE_MAX_WAIT_MS : 0
       });
     }
@@ -10601,7 +13885,11 @@ export const PlayerScreen = {
       this.closeSourcesPanel();
     }
 
+    this.clearSubtitleDelayOverlayTimer();
     this.subtitleDialogVisible = false;
+    this.subtitleDelayOverlayVisible = false;
+    this.subtitleTimingDialogVisible = false;
+    this.resetSubtitleAutoSyncState();
     this.audioDialogVisible = false;
     this.speedDialogVisible = false;
     this.selectedAddonSubtitleId = null;
@@ -10626,6 +13914,7 @@ export const PlayerScreen = {
     this.embeddedAudioTracks = [];
     this.selectedEmbeddedAudioTrackIndex = -1;
     this.clearBitmapSubtitleOverlay({ dispose: true });
+    this.destroyAssSubtitleRenderer();
     this.clearSubtitleCueStyleBindings();
     this.clearMountedExternalSubtitleTracks();
     this.trackDiscoveryInProgress = true;
@@ -10706,7 +13995,9 @@ export const PlayerScreen = {
     if (!streamCandidate) {
       return;
     }
-    let targetUrl = streamDirectPlaybackUrl(streamCandidate);
+    streamRepository.setLocalPluginSearchPaused(true);
+    const forceEngineFsResolve = options?.forceEngineFsResolve === true;
+    let targetUrl = forceEngineFsResolve ? "" : streamDirectPlaybackUrl(streamCandidate);
     if (!targetUrl) {
       const resolveContext = {
         season: this.params?.season == null ? null : Number(this.params.season),
@@ -10715,11 +14006,24 @@ export const PlayerScreen = {
       const canUseEngineFs = WebOsEngineFsResolver.canResolveStream(streamCandidate);
       const canUseTizenP2p = TizenStreamingServerResolver.canResolveStream(streamCandidate);
       const canResolveP2p = canUseEngineFs || canUseTizenP2p;
+      const tizenP2pUnsupported =
+        TizenStreamingServerResolver.isUnsupportedOnCurrentTizen(streamCandidate);
       const p2pEnabled = Boolean(TorrentSettingsStore.get().p2pEnabled);
       const canUseP2p = p2pEnabled && canResolveP2p;
       let fallbackError = "";
       let resolveFailureStatus = "";
       let resolveFailureDetail = "";
+      let preResolveEngineFsKeepAliveToken = "";
+      const stopPreResolveEngineFsKeepAlive = () => {
+        if (
+          !preResolveEngineFsKeepAliveToken ||
+          this.engineFsKeepAliveToken !== preResolveEngineFsKeepAliveToken ||
+          this.currentEngineFsStream
+        ) {
+          return;
+        }
+        this.stopEngineFsKeepAlive();
+      };
 
       if (DirectDebridResolver.canResolveStream(streamCandidate, resolveContext)) {
         const result = await DirectDebridResolver.resolve(streamCandidate, resolveContext);
@@ -10774,10 +14078,26 @@ export const PlayerScreen = {
       }
 
       if (!targetUrl && canUseP2p) {
+        if (canUseEngineFs && !this.currentEngineFsStream && !this.engineFsKeepAliveToken) {
+          const infoHash = getP2pInfoHash(streamCandidate);
+          if (infoHash) {
+            this.startEngineFsKeepAlive({
+              kind: "webos-enginefs",
+              infoHash,
+              fileIdx: streamCandidate.fileIdx ?? streamCandidate.raw?.fileIdx ?? null
+            });
+            preResolveEngineFsKeepAliveToken = this.engineFsKeepAliveToken;
+            logEngineFsDebug("EngineFS keepalive started before P2P resolve", {
+              infoHash,
+              fileIdx: streamCandidate.fileIdx ?? streamCandidate.raw?.fileIdx ?? null
+            });
+          }
+        }
         const result = canUseEngineFs
           ? await WebOsEngineFsResolver.resolve(streamCandidate, resolveContext)
           : await TizenStreamingServerResolver.resolve(streamCandidate, resolveContext);
         if (!this.isActiveMountToken(mountToken)) {
+          stopPreResolveEngineFsKeepAlive();
           const resolvedEngineFs = result?.stream?.engineFs || null;
           if (resolvedEngineFs?.infoHash) {
             void this.cleanupEngineFsState(resolvedEngineFs, "stale-p2p-resolve", {
@@ -10814,6 +14134,8 @@ export const PlayerScreen = {
               "",
             fileIdx: streamCandidate.fileIdx ?? streamCandidate.raw?.fileIdx ?? null
           });
+
+          stopPreResolveEngineFsKeepAlive();
         }
       }
 
@@ -10823,24 +14145,31 @@ export const PlayerScreen = {
         }
         const startupMessage =
           fallbackError ||
-          (!p2pEnabled && canResolveP2p
+          (tizenP2pUnsupported
             ? t(
-                "player_error_p2p_disabled",
+                "player_error_tizen_p2p_unsupported",
                 {},
-                "P2P streaming is disabled. Enable P2P in Settings to play torrent streams."
+                "Torrent/P2P streaming is not supported on this TV."
               )
-            : canUseP2p
+            : !p2pEnabled && canResolveP2p
               ? t(
-                  "player_error_failed_start_torrent",
-                  [t("player_error_playback_fallback", {}, "Playback error")],
-                  "Failed to start torrent: %1$s"
+                  "player_error_p2p_disabled",
+                  {},
+                  "P2P streaming is disabled. Enable P2P in Settings to play torrent streams."
                 )
-              : t("player_error_playback_fallback", {}, "Playback error"));
+              : canUseP2p
+                ? t(
+                    "player_error_failed_start_torrent",
+                    [t("player_error_playback_fallback", {}, "Playback error")],
+                    "Failed to start torrent: %1$s"
+                  )
+                : t("player_error_playback_fallback", {}, "Playback error"));
         if (!this.hasPresentedPlaybackFrame) {
           this.showStartupError(startupMessage, {
             streamCandidate,
-            reason:
-              !p2pEnabled && canResolveP2p
+            reason: tizenP2pUnsupported
+              ? "tizen-p2p-unsupported"
+              : !p2pEnabled && canResolveP2p
                 ? "p2p-disabled"
                 : canUseP2p
                   ? "p2p-resolve"
@@ -10850,8 +14179,13 @@ export const PlayerScreen = {
           });
           return;
         }
-        const sourceErrorMessage =
-          !p2pEnabled && canResolveP2p
+        const sourceErrorMessage = tizenP2pUnsupported
+          ? t(
+              "player_error_tizen_p2p_unsupported",
+              {},
+              "Torrent/P2P streaming is not supported on this TV."
+            )
+          : !p2pEnabled && canResolveP2p
             ? t(
                 "player_error_p2p_disabled",
                 {},
@@ -10867,8 +14201,9 @@ export const PlayerScreen = {
                 );
         this.sourcesError = this.formatPlaybackErrorForSources(sourceErrorMessage, {
           streamCandidate,
-          reason:
-            !p2pEnabled && canResolveP2p
+          reason: tizenP2pUnsupported
+            ? "tizen-p2p-unsupported"
+            : !p2pEnabled && canResolveP2p
               ? "p2p-disabled"
               : canUseP2p
                 ? "p2p-resolve"
@@ -10912,12 +14247,15 @@ export const PlayerScreen = {
     await this.playStreamCandidate(selected, { preservePlaybackState: true });
   },
 
-  markPlaybackSourceFailed(url = this.activePlaybackUrl) {
+  markPlaybackSourceFailed(
+    url = this.activePlaybackUrl,
+    streamCandidate = this.getCurrentStreamCandidate()
+  ) {
     const normalizedUrl = String(url || "").trim();
     if (normalizedUrl) {
       (this.failedPlaybackUrls || (this.failedPlaybackUrls = new Set())).add(normalizedUrl);
     }
-    const currentCandidate = this.getCurrentStreamCandidate?.();
+    const currentCandidate = streamCandidate || this.getCurrentStreamCandidate?.();
     const currentId = String(currentCandidate?.id || "").trim();
     if (currentId) {
       (this.failedPlaybackStreamIds || (this.failedPlaybackStreamIds = new Set())).add(currentId);
@@ -10994,8 +14332,186 @@ export const PlayerScreen = {
     }
   },
 
+  resetPlaybackEngineValidation() {
+    this.playbackEngineValidationEngine = "";
+    this.playbackEngineValidationStartedAt = 0;
+    this.playbackEngineValidationStartSeconds = null;
+    this.playbackEngineValidationLastSeconds = null;
+    this.playbackEngineValidationProgressSeconds = 0;
+    this.playbackEngineValidated = false;
+    this.postValidationRecoveryValidationActive = false;
+    this.postValidationSameEngineRecoveryAttempts = 0;
+  },
+
+  resetPostValidationRecoveryValidationWindow() {
+    if (!this.postValidationRecoveryValidationActive) {
+      return;
+    }
+    this.playbackEngineValidationStartedAt = 0;
+    this.playbackEngineValidationStartSeconds = null;
+    this.playbackEngineValidationLastSeconds = null;
+    this.playbackEngineValidationProgressSeconds = 0;
+  },
+
+  armPostValidationRecoveryValidation() {
+    if (!this.playbackEngineValidated) {
+      return;
+    }
+    this.postValidationRecoveryValidationActive = true;
+    this.resetPostValidationRecoveryValidationWindow();
+  },
+
+  beginPlaybackEngineValidation() {
+    if (
+      !this.hasPresentedPlaybackFrame ||
+      (this.playbackEngineValidated && !this.postValidationRecoveryValidationActive)
+    ) {
+      return;
+    }
+    const currentEngine = String(PlayerController.playbackEngine || "").trim();
+    if (!currentEngine || !this.activePlaybackUrl) {
+      return;
+    }
+    const currentSeconds = Number(this.getPlaybackCurrentSeconds());
+    if (!Number.isFinite(currentSeconds) || currentSeconds < 0) {
+      return;
+    }
+    if (this.playbackEngineValidationEngine !== currentEngine) {
+      this.playbackEngineValidationEngine = currentEngine;
+      this.playbackEngineValidationStartedAt = Date.now();
+      this.playbackEngineValidationStartSeconds = currentSeconds;
+      this.playbackEngineValidationLastSeconds = currentSeconds;
+      this.playbackEngineValidationProgressSeconds = 0;
+      this.postValidationSameEngineRecoveryAttempts = 0;
+    } else if (!Number(this.playbackEngineValidationStartedAt || 0)) {
+      this.playbackEngineValidationStartedAt = Date.now();
+      this.playbackEngineValidationStartSeconds = currentSeconds;
+      this.playbackEngineValidationLastSeconds = currentSeconds;
+      this.playbackEngineValidationProgressSeconds = 0;
+    }
+  },
+
+  recordPlaybackEngineValidationProgress(currentSeconds = this.getPlaybackCurrentSeconds()) {
+    if (
+      !this.hasPresentedPlaybackFrame ||
+      (this.playbackEngineValidated && !this.postValidationRecoveryValidationActive)
+    ) {
+      return;
+    }
+    const current = Number(currentSeconds);
+    if (!Number.isFinite(current) || current < 0) {
+      return;
+    }
+    this.beginPlaybackEngineValidation();
+    if (!this.playbackEngineValidationEngine) {
+      return;
+    }
+    const last = Number(this.playbackEngineValidationLastSeconds);
+    if (!Number.isFinite(last)) {
+      this.playbackEngineValidationLastSeconds = current;
+      return;
+    }
+    const delta = current - last;
+    if (
+      delta < -STARTUP_PLAYBACK_ADVANCE_EPSILON_SECONDS ||
+      delta > PLAYBACK_ENGINE_VALIDATION_MAX_PROGRESS_GAP_SECONDS
+    ) {
+      this.playbackEngineValidationStartedAt = Date.now();
+      this.playbackEngineValidationStartSeconds = current;
+      this.playbackEngineValidationProgressSeconds = 0;
+    } else if (delta > STARTUP_PLAYBACK_ADVANCE_EPSILON_SECONDS) {
+      this.playbackEngineValidationProgressSeconds += delta;
+    }
+    this.playbackEngineValidationLastSeconds = current;
+  },
+
+  updatePlaybackEngineValidation() {
+    this.beginPlaybackEngineValidation();
+    const engineAlreadyValidated = Boolean(this.playbackEngineValidated);
+    if (this.playbackEngineValidated && !this.postValidationRecoveryValidationActive) {
+      return true;
+    }
+    const currentEngine = String(PlayerController.playbackEngine || "").trim();
+    const validationEngine = String(this.playbackEngineValidationEngine || "").trim();
+    const startedAt = Number(this.playbackEngineValidationStartedAt || 0);
+    if (!currentEngine || currentEngine !== validationEngine || !startedAt) {
+      return engineAlreadyValidated;
+    }
+    if (Date.now() - startedAt < PLAYBACK_ENGINE_VALIDATION_WINDOW_MS) {
+      return engineAlreadyValidated;
+    }
+    if (
+      Number(this.playbackEngineValidationProgressSeconds || 0) <
+      PLAYBACK_ENGINE_VALIDATION_WINDOW_MS / 1000
+    ) {
+      return engineAlreadyValidated;
+    }
+    if (Number(this.lastPlaybackProgressAt || 0) < startedAt) {
+      return engineAlreadyValidated;
+    }
+    if (this.playbackEngineValidated) {
+      this.postValidationRecoveryValidationActive = false;
+      this.postValidationSameEngineRecoveryAttempts = 0;
+    } else {
+      this.playbackEngineValidated = true;
+    }
+    return true;
+  },
+
+  isPlaybackEngineValidated() {
+    return this.updatePlaybackEngineValidation();
+  },
+
+  recoverValidatedPlaybackOnStall() {
+    if (!this.isPlaybackEngineValidated()) {
+      return false;
+    }
+    const stalledPlaybackUrl = String(this.activePlaybackUrl || "").trim();
+    const currentEngine = String(PlayerController.playbackEngine || "").trim();
+    if (
+      !stalledPlaybackUrl ||
+      !currentEngine ||
+      currentEngine === "none" ||
+      Number(this.postValidationSameEngineRecoveryAttempts || 0) >=
+        POST_VALIDATION_SAME_ENGINE_RECOVERY_MAX_ATTEMPTS
+    ) {
+      return false;
+    }
+
+    const sourceCandidate =
+      this.getStreamCandidateByUrl(stalledPlaybackUrl) || this.getCurrentStreamCandidate();
+    this.postValidationSameEngineRecoveryAttempts =
+      Number(this.postValidationSameEngineRecoveryAttempts || 0) + 1;
+    console.warn("Playback stalled after engine validation; retrying the same engine", {
+      url: stalledPlaybackUrl,
+      engine: currentEngine,
+      attempt: this.postValidationSameEngineRecoveryAttempts,
+      limit: POST_VALIDATION_SAME_ENGINE_RECOVERY_MAX_ATTEMPTS
+    });
+    this.armPostValidationRecoveryValidation();
+    void this.playStreamByUrl(stalledPlaybackUrl, {
+      preservePanel: true,
+      preservePlaybackState: true,
+      resetSilentAudioState: false,
+      preservePlaybackRecoveryState: true,
+      forceEngine: currentEngine,
+      sourceCandidate
+    });
+    return true;
+  },
+
   markPlaybackProgress() {
     const currentSeconds = this.getPlaybackCurrentSeconds();
+    const bufferingBaselineSeconds = Number(this.bufferingSpinnerBaselineSeconds);
+    const bufferingRecovered =
+      this.bufferingActive &&
+      Number.isFinite(currentSeconds) &&
+      Number.isFinite(bufferingBaselineSeconds) &&
+      currentSeconds > bufferingBaselineSeconds + STARTUP_PLAYBACK_ADVANCE_EPSILON_SECONDS;
+    if (bufferingRecovered) {
+      this.bufferingActive = false;
+      this.clearBufferingSpinnerTimer();
+    }
     if (typeof PlayerController.recordProgressSnapshot === "function") {
       PlayerController.recordProgressSnapshot(
         Math.floor(currentSeconds * 1000),
@@ -11023,8 +14539,14 @@ export const PlayerScreen = {
     }
     this.bufferingSpinnerBaselineSeconds = currentSeconds;
     this.lastPlaybackProgressAt = Date.now();
+    this.beginPlaybackEngineValidation();
+    this.recordPlaybackEngineValidationProgress(currentSeconds);
+    this.updatePlaybackEngineValidation();
     this.engineFsStallExtensions = 0;
     this.lastEngineFsStallStats = null;
+    if (bufferingRecovered) {
+      this.updateLoadingVisibility();
+    }
     this.scheduleBufferingSpinnerRefresh();
   },
 
@@ -11215,6 +14737,17 @@ export const PlayerScreen = {
     const sourceCandidate =
       this.getStreamCandidateByUrl(retryUrl) || this.getCurrentStreamCandidate();
     const snapshot = this.getEngineFsStallSnapshot(stats);
+    const startupMediaErrorWithEmptyEngine =
+      Number(mediaErrorCode) > 0 &&
+      snapshot &&
+      snapshot.downloaded <= 0 &&
+      snapshot.progress <= 0 &&
+      snapshot.downloadSpeed <= 0;
+    const recreateLocalEngineFs =
+      (!stats || (startupMediaErrorWithEmptyEngine && retry <= 3)) &&
+      Environment.isWebOS() &&
+      this.currentEngineFsStream.kind === "webos-enginefs" &&
+      Boolean(sourceCandidate);
 
     this.lastPlaybackErrorAt = 0;
     this.loadingVisible = true;
@@ -11226,13 +14759,19 @@ export const PlayerScreen = {
     this.setControlsVisible(false, { focus: false });
     this.schedulePlaybackStallGuard({ timeoutMs: delayMs + 12000 });
 
-    logEngineFsDebug("EngineFS startup decode error while buffering; retrying same source", {
-      retry,
-      delayMs,
-      mediaErrorCode,
-      playbackUrl: retryUrl,
-      stats: snapshot
-    });
+    logEngineFsDebug(
+      recreateLocalEngineFs
+        ? "EngineFS startup unavailable; recreating local torrent before retry"
+        : "EngineFS startup decode error while buffering; retrying same source",
+      {
+        retry,
+        delayMs,
+        mediaErrorCode,
+        playbackUrl: retryUrl,
+        recreateLocalEngineFs,
+        stats: snapshot
+      }
+    );
 
     this.engineFsStartupRetryTimer = setTimeout(() => {
       this.engineFsStartupRetryTimer = null;
@@ -11241,6 +14780,15 @@ export const PlayerScreen = {
         this.activePlaybackUrl !== retryUrl ||
         !this.currentEngineFsStream
       ) {
+        return;
+      }
+      if (recreateLocalEngineFs) {
+        void this.playStreamCandidate(sourceCandidate, {
+          preservePanel: true,
+          resetSilentAudioState: false,
+          preservePendingRestore: Boolean(this.pendingPlaybackRestore),
+          forceEngineFsResolve: true
+        });
         return;
       }
       void this.playStreamByUrl(retryUrl, {
@@ -11256,7 +14804,18 @@ export const PlayerScreen = {
   getPlaybackStallTimeoutMs({ startup = false } = {}) {
     const playbackEngine = String(PlayerController.playbackEngine || "");
     if (startup) {
+      if (Environment.isTizen() && playbackEngine === "native-hls") {
+        // The native-hls path is the first fallback after AVPlay fails on the
+        // affected Tizen TVs. Bound only this startup fallback; keep hls.js,
+        // AVPlay and post-first-frame buffering on their existing policies.
+        return TIZEN_NATIVE_HLS_STARTUP_STALL_TIMEOUT_MS;
+      }
       if (Environment.isTizen() || Environment.isWebOS()) {
+        if (Environment.isWebOS() && playbackEngine === "hls.js") {
+          // Allow the hls.js load policy to use Android's six timeout retries
+          // before the screen-level engine fallback takes over.
+          return WEBOS_HLS_STARTUP_STALL_TIMEOUT_MS;
+        }
         return playbackEngine.endsWith("avplay") ? 60000 : 45000;
       }
       if (Environment.isVega()) {
@@ -11268,6 +14827,10 @@ export const PlayerScreen = {
       return playbackEngine.endsWith("avplay") ? 22000 : 16000;
     }
     if (Environment.isWebOS()) {
+      if (playbackEngine === "hls.js") {
+        // Match Android's 15-second playback stall watchdog.
+        return WEBOS_HLS_REBUFFER_STALL_TIMEOUT_MS;
+      }
       return playbackEngine.endsWith("avplay") ? 16000 : 12000;
     }
     return 9000;
@@ -11317,6 +14880,13 @@ export const PlayerScreen = {
 
       if (startup && this.currentEngineFsStream) {
         const stats = await this.fetchCurrentEngineFsStats();
+        if (
+          !stats &&
+          Environment.isWebOS() &&
+          this.scheduleEngineFsStartupRetry({ mediaErrorCode: 0, stats: null })
+        ) {
+          return;
+        }
         if (this.shouldDeferEngineFsStartupStall(stats)) {
           this.engineFsStallExtensions = Number(this.engineFsStallExtensions || 0) + 1;
           logEngineFsDebug("EngineFS startup still buffering; extending stall guard", {
@@ -11329,11 +14899,123 @@ export const PlayerScreen = {
         }
       }
 
+      const startupMediaErrorCode = Number(PlayerController.getLastPlaybackErrorCode?.() || 0);
+      const networkState = Number(PlayerController.video?.networkState ?? 0);
+      const startupHlsError =
+        startup && typeof PlayerController.getLastHlsErrorDetail === "function"
+          ? PlayerController.getLastHlsErrorDetail()
+          : "";
+      const lastHlsErrorDiagnostic =
+        typeof PlayerController.getLastHlsErrorDiagnostic === "function"
+          ? PlayerController.getLastHlsErrorDiagnostic()
+          : null;
+      const terminalHlsHttpStatus = Number(lastHlsErrorDiagnostic?.responseCode || 0);
+      const terminalHlsHttpFailure = isTerminalHlsHttpStatus(terminalHlsHttpStatus);
+      const terminalHlsErrorDetail = terminalHlsHttpFailure ? "HTTP " + terminalHlsHttpStatus : "";
+      if (isExpiredStreamUrl(this.activePlaybackUrl)) {
+        this.showExpiredStreamError(this.activePlaybackUrl, {
+          sourceCandidate:
+            this.getStreamCandidateByUrl(this.activePlaybackUrl) ||
+            this.getCurrentStreamCandidate(),
+          reason: "stream-url-expired-during-stall"
+        });
+        return;
+      }
+      if (startup) {
+        console.warn("[Nuvio playback] startup stall", {
+          engine: String(PlayerController.playbackEngine || "unknown"),
+          readyState,
+          networkState,
+          mediaErrorCode: startupMediaErrorCode || null,
+          hlsError: startupHlsError || null
+        });
+      }
+      if (
+        startup &&
+        Environment.isWebOS() &&
+        !this.currentEngineFsStream &&
+        String(PlayerController.playbackEngine || "") === "native-file" &&
+        startupMediaErrorCode === 0 &&
+        readyState === 0 &&
+        networkState === 2 &&
+        !this.webOsNativeStartupLoadingExtended
+      ) {
+        this.webOsNativeStartupLoadingExtended = true;
+        console.info("webOS native playback is still loading; extending the startup stall guard", {
+          url: this.activePlaybackUrl,
+          timeoutMs: WEBOS_NATIVE_STARTUP_LOADING_EXTENSION_MS
+        });
+        this.schedulePlaybackStallGuard({
+          timeoutMs: WEBOS_NATIVE_STARTUP_LOADING_EXTENSION_MS
+        });
+        return;
+      }
+
+      const currentPlaybackEngine = String(PlayerController.playbackEngine || "");
+      const playbackEngineValidated = !startup && this.isPlaybackEngineValidated();
+      let skipAutomaticPlaybackRecovery = false;
+
+      if (playbackEngineValidated) {
+        if (this.recoverValidatedPlaybackOnStall()) {
+          return;
+        }
+        // The current engine has already proven that it can play this source.
+        // Do not switch engines after a later rebuffer; let the existing error
+        // presentation handle a failed same-engine recovery.
+        skipAutomaticPlaybackRecovery = true;
+      }
+
+      const recoverableHlsPlaybackStall =
+        !startup &&
+        !playbackEngineValidated &&
+        Environment.isWebOS() &&
+        currentPlaybackEngine === "hls.js" &&
+        isRecoverableHlsFragmentTimeout(lastHlsErrorDiagnostic);
+      const sameEngineHlsRecoveryPending =
+        !startup &&
+        !playbackEngineValidated &&
+        Environment.isWebOS() &&
+        currentPlaybackEngine === "hls.js" &&
+        (recoverableHlsPlaybackStall || this.playbackRecoveryActive);
+      // Match Android's post-first-frame rebuffer behavior: keep the current
+      // playback engine for a transient network timeout and bound the retry.
+      if (sameEngineHlsRecoveryPending) {
+        if (Number(this.playbackRecoveryAttempts || 0) < WEBOS_HLS_PLAYBACK_RECOVERY_MAX_ATTEMPTS) {
+          const stalledPlaybackUrl = this.activePlaybackUrl;
+          const sourceCandidate =
+            this.getStreamCandidateByUrl(stalledPlaybackUrl) || this.getCurrentStreamCandidate();
+          const recoveryAttempt = Number(this.playbackRecoveryAttempts || 0) + 1;
+          this.playbackRecoveryAttempts = recoveryAttempt;
+          this.playbackRecoveryActive = true;
+          console.warn("webOS HLS playback stalled; retrying the current hls.js engine", {
+            url: stalledPlaybackUrl,
+            engine: currentPlaybackEngine,
+            attempt: recoveryAttempt,
+            limit: WEBOS_HLS_PLAYBACK_RECOVERY_MAX_ATTEMPTS,
+            hlsError: lastHlsErrorDiagnostic?.details || null
+          });
+          this.resetPlaybackEngineValidation();
+          void this.playStreamByUrl(stalledPlaybackUrl, {
+            preservePanel: true,
+            preservePlaybackState: true,
+            resetSilentAudioState: false,
+            preservePlaybackRecoveryState: true,
+            forceEngine: "hls.js",
+            sourceCandidate
+          });
+          return;
+        }
+        this.playbackRecoveryActive = false;
+        skipAutomaticPlaybackRecovery = true;
+      }
+
       const targetEngine =
+        !playbackEngineValidated &&
+        !terminalHlsHttpFailure &&
         typeof PlayerController.getAlternativePlaybackEngine === "function"
           ? PlayerController.getAlternativePlaybackEngine(this.activePlaybackUrl)
           : null;
-      if (targetEngine) {
+      if (targetEngine && !skipAutomaticPlaybackRecovery) {
         console.warn("Playback stalled; switching player engine", {
           url: this.activePlaybackUrl,
           from: PlayerController.playbackEngine,
@@ -11347,19 +15029,53 @@ export const PlayerScreen = {
         return;
       }
 
+      if (
+        startup &&
+        Environment.isWebOS() &&
+        !this.currentEngineFsStream &&
+        String(PlayerController.playbackEngine || "") === "native-file" &&
+        startupMediaErrorCode === 0 &&
+        !startupHlsError &&
+        readyState >= 3 &&
+        networkState === 2 &&
+        Number(this.webOsNativeReadyStartupRetries || 0) < 1
+      ) {
+        this.webOsNativeReadyStartupRetries = Number(this.webOsNativeReadyStartupRetries || 0) + 1;
+        const stalledPlaybackUrl = this.activePlaybackUrl;
+        const sourceCandidate =
+          this.getStreamCandidateByUrl(stalledPlaybackUrl) || this.getCurrentStreamCandidate();
+        console.warn(
+          "webOS native playback is ready but has not started; retrying the current source once",
+          {
+            engine: PlayerController.playbackEngine,
+            readyState,
+            networkState
+          }
+        );
+        void this.playStreamByUrl(stalledPlaybackUrl, {
+          preservePanel: true,
+          preservePlaybackState: true,
+          resetSilentAudioState: false,
+          preserveStartupRecoveryState: true,
+          sourceCandidate
+        });
+        return;
+      }
+
       this.releaseStartupAudioGate({ resume: false });
       if (startup) {
         this.markPlaybackSourceFailed(this.activePlaybackUrl);
-        const mediaErrorCode = Number(PlayerController.getLastPlaybackErrorCode?.() || 0);
+        const mediaErrorCode = startupMediaErrorCode;
         const sourceCandidate =
           this.getStreamCandidateByUrl(this.activePlaybackUrl) || this.getCurrentStreamCandidate();
         const startupErrorMessage = this.getStartupErrorMessage(
           mediaErrorCode,
-          "",
+          terminalHlsErrorDetail,
           sourceCandidate
         );
         this.showStartupError(startupErrorMessage, {
           mediaErrorCode,
+          detail: terminalHlsErrorDetail,
           streamCandidate: sourceCandidate,
           playbackUrl: this.activePlaybackUrl,
           reason: "startup-stall"
@@ -11377,7 +15093,7 @@ export const PlayerScreen = {
         return;
       }
 
-      if (Environment.isWebOS()) {
+      if (Environment.isWebOS() && !skipAutomaticPlaybackRecovery) {
         const stalledPlaybackUrl = this.activePlaybackUrl;
         const sourceCandidate =
           this.getStreamCandidateByUrl(stalledPlaybackUrl) || this.getCurrentStreamCandidate();
@@ -11404,9 +15120,10 @@ export const PlayerScreen = {
           this.getStreamCandidateByUrl(this.activePlaybackUrl) || this.getCurrentStreamCandidate();
         const mediaErrorCode = Number(PlayerController.getLastPlaybackErrorCode?.() || 0);
         this.sourcesError = this.formatPlaybackErrorForSources(
-          `${this.mediaErrorMessage(mediaErrorCode, "", sourceCandidate)}. Choose another source manually.`,
+          `${this.mediaErrorMessage(mediaErrorCode, terminalHlsErrorDetail, sourceCandidate)}. Choose another source manually.`,
           {
             mediaErrorCode,
+            detail: terminalHlsErrorDetail,
             streamCandidate: sourceCandidate,
             playbackUrl: this.activePlaybackUrl,
             reason: "playback-stall"
@@ -11446,6 +15163,7 @@ export const PlayerScreen = {
   refreshTrackDialogs() {
     this.invalidateTrackDialogCaches();
     this.syncTrackState();
+    this.syncSubtitleDialogSession();
     const audioTrackSetSignature = this.getStartupAudioTrackSetSignature();
     if (
       Environment.isWebOS() &&
@@ -11473,6 +15191,7 @@ export const PlayerScreen = {
     this.refreshSubtitleCueStyles();
     this.renderControlButtons();
     if (this.subtitleDialogVisible) {
+      this.restoreSubtitleDialogFocus();
       this.renderSubtitleDialog();
     }
     if (this.audioDialogVisible) {
@@ -11482,6 +15201,84 @@ export const PlayerScreen = {
 
   invalidateTrackDialogCaches() {
     this.trackDialogCache = createTrackDialogCache();
+    this.renderedSubtitleDialogMarkup = "";
+    this.resetSubtitleOptionVirtualState();
+  },
+
+  resetSubtitleOptionVirtualState() {
+    if (this.subtitleOptionVirtualMeasureTimer) {
+      clearTimeout(this.subtitleOptionVirtualMeasureTimer);
+      this.subtitleOptionVirtualMeasureTimer = null;
+    }
+    this.subtitleOptionVirtualState = createSubtitleOptionVirtualState();
+  },
+
+  getSubtitleDialogSourceSignature(subtitles = this.subtitles) {
+    return (Array.isArray(subtitles) ? subtitles : [])
+      .map((subtitle, index) => {
+        const id = subtitle?.id || subtitle?.url || `subtitle-${index}`;
+        return [
+          id,
+          subtitle?.url || "",
+          subtitle?.lang || subtitle?.language || subtitle?.languageCode || "",
+          subtitle?.addonName || ""
+        ]
+          .map((value) => String(value ?? "").trim())
+          .join("\u0001");
+      })
+      .join("\u0002");
+  },
+
+  beginSubtitleDialogSession() {
+    const subtitles = Array.isArray(this.subtitles) ? this.subtitles.slice() : [];
+    this.subtitleDialogSession = {
+      subtitles,
+      sourceSignature: this.getSubtitleDialogSourceSignature(subtitles)
+    };
+    this.subtitleOptionFocusMemory = new Map();
+    this.resetSubtitleOptionVirtualState();
+    this.renderedSubtitleDialogMarkup = "";
+  },
+
+  syncSubtitleDialogSession() {
+    if (!this.subtitleDialogVisible || !this.subtitleDialogSession) {
+      return false;
+    }
+    const subtitles = Array.isArray(this.subtitles) ? this.subtitles.slice() : [];
+    const sourceSignature = this.getSubtitleDialogSourceSignature(subtitles);
+    if (sourceSignature === this.subtitleDialogSession.sourceSignature) {
+      return false;
+    }
+    this.subtitleDialogSession = { subtitles, sourceSignature };
+    this.resetSubtitleOptionVirtualState();
+    return true;
+  },
+
+  restoreSubtitleDialogFocus() {
+    if (!this.subtitleDialogVisible) {
+      return;
+    }
+    const languages = this.getSubtitleLanguageRailItems();
+    const focusedLanguageIndex = languages.findIndex(
+      (item) => item.key === this.subtitleFocusedLanguageKey
+    );
+    if (focusedLanguageIndex >= 0) {
+      this.subtitleLanguageRailIndex = focusedLanguageIndex;
+    } else {
+      const selectedLanguageKey = this.getSelectedSubtitleLanguageKey();
+      const selectedLanguageIndex = languages.findIndex((item) => item.key === selectedLanguageKey);
+      this.subtitleLanguageRailIndex = Math.max(0, selectedLanguageIndex);
+      this.subtitleFocusedLanguageKey =
+        languages[this.subtitleLanguageRailIndex]?.key || SUBTITLE_LANGUAGE_OFF_KEY;
+    }
+    this.syncSubtitleOptionIndexForFocusedLanguage();
+  },
+
+  getSubtitleDialogSubtitles() {
+    if (this.subtitleDialogVisible && this.subtitleDialogSession) {
+      return this.subtitleDialogSession.subtitles;
+    }
+    return Array.isArray(this.subtitles) ? this.subtitles : [];
   },
 
   getStartupAudioTrackSetSignature() {
@@ -11501,7 +15298,7 @@ export const PlayerScreen = {
       .join("||");
   },
 
-  hasAudioTracksAvailable() {
+  hasAudioTracksAvailable({ includeImplicit = true } = {}) {
     let dashCount = 0;
     try {
       dashCount =
@@ -11538,15 +15335,22 @@ export const PlayerScreen = {
     } catch (_) {
       nativeCount = 0;
     }
-    return (
+    const hasConcreteAudioTracks =
       dashCount > 0 ||
       avplayCount > 0 ||
       hlsCount > 0 ||
       nativeCount > 0 ||
       (this.canDiscoverEmbeddedAudioTracks() && this.embeddedAudioTracks.length > 0) ||
-      this.manifestAudioTracks.length > 0 ||
-      Boolean(this.getImplicitAudioEntry())
-    );
+      this.manifestAudioTracks.length > 0;
+    if (hasConcreteAudioTracks) {
+      return true;
+    }
+
+    // The implicit entry describes the stream candidate, not a track that the
+    // native player or the embedded-track probe has exposed. It is useful for
+    // the audio UI fallback, but it must not complete startup discovery before
+    // WebOS has had a chance to return the embedded streams.
+    return includeImplicit && Boolean(this.getImplicitAudioEntry());
   },
 
   hasSubtitleTracksAvailable() {
@@ -11626,26 +15430,33 @@ export const PlayerScreen = {
       }
 
       const now = Date.now();
+      const canDiscoverEmbeddedTracks =
+        this.canDiscoverEmbeddedSubtitleTracks() || this.canDiscoverEmbeddedAudioTracks();
       const shouldRetryEmbeddedTracks =
-        this.canDiscoverEmbeddedSubtitleTracks() &&
+        canDiscoverEmbeddedTracks &&
         this.embeddedSubtitleTracks.length <= 0 &&
         this.embeddedAudioTracks.length <= 0 &&
         !this.embeddedSubtitleLoading &&
         !this.embeddedAudioLoading;
+      const webOsEngineFsEmbeddedTrackDiscoveryPending =
+        this.isWebOsEngineFsEmbeddedTrackDiscoveryPending();
       if (shouldRetryEmbeddedTracks && now - Number(this.lastEmbeddedTrackRetryAt || 0) >= 1200) {
         this.lastEmbeddedTrackRetryAt = now;
         this.loadEmbeddedSubtitleTracks();
       }
 
       const doneByData =
-        (this.hasSubtitleTracksAvailable() || this.hasAudioTracksAvailable()) &&
-        !shouldRetryEmbeddedTracks;
+        (this.hasSubtitleTracksAvailable() ||
+          this.hasAudioTracksAvailable({ includeImplicit: false })) &&
+        !shouldRetryEmbeddedTracks &&
+        !webOsEngineFsEmbeddedTrackDiscoveryPending;
       const doneByIdle =
         !this.subtitleLoading &&
         !this.embeddedSubtitleLoading &&
         !this.embeddedAudioLoading &&
         !this.manifestLoading &&
         !shouldRetryEmbeddedTracks &&
+        !webOsEngineFsEmbeddedTrackDiscoveryPending &&
         now - Number(this.trackDiscoveryStartedAt || 0) >= 1200;
       const trackDiscoveryElapsedMs = now - Number(this.trackDiscoveryStartedAt || 0);
       const webOsStartupPreferenceUnresolved = Boolean(
@@ -11817,6 +15628,7 @@ export const PlayerScreen = {
 
   disableEmbeddedSubtitleSelection() {
     this.clearEmbeddedSubtitleCueRefreshTimers();
+    this.clearWebOsEmbeddedTextSubtitleOverlay({ dispose: true });
     const hadBitmapSelection = Boolean(this.bitmapSubtitleTrack);
     this.clearBitmapSubtitleOverlay({ dispose: true });
     if (this.selectedEmbeddedSubtitleTrackIndex < 0) {
@@ -11944,9 +15756,32 @@ export const PlayerScreen = {
     if (!Number.isFinite(targetIndex) || targetIndex < 0) {
       return null;
     }
-    return (
-      this.ensureEmbeddedTrackLookupCache().embeddedSubtitleByNativeIndex.get(targetIndex) || null
+    const directTrack =
+      this.ensureEmbeddedTrackLookupCache().embeddedSubtitleByNativeIndex.get(targetIndex) || null;
+    const rawTizenAvPlayIndex = directTrack?.raw?.index;
+    const hasExplicitTizenAvPlayIndex =
+      rawTizenAvPlayIndex !== undefined &&
+      rawTizenAvPlayIndex !== null &&
+      Number.isFinite(Number(rawTizenAvPlayIndex));
+    if (directTrack && (!Environment.isTizen() || hasExplicitTizenAvPlayIndex)) {
+      return directTrack;
+    }
+    if (!Environment.isTizen()) {
+      return null;
+    }
+
+    // Tizen's /tracks metadata currently has no AVPlay stream index. Both
+    // lists preserve the source text-stream order, so resolve the AVPlay raw
+    // index to the corresponding local text ordinal only when direct mapping
+    // is unavailable.
+    const avplayTracks =
+      typeof PlayerController.getAvPlaySubtitleTracks === "function"
+        ? PlayerController.getAvPlaySubtitleTracks()
+        : [];
+    const avplayOrdinal = avplayTracks.findIndex(
+      (track) => Number(track?.avplayTrackIndex) === targetIndex
     );
+    return avplayOrdinal >= 0 ? this.embeddedSubtitleTracks[avplayOrdinal] || null : null;
   },
 
   getEmbeddedSubtitleTrackByEmbeddedIndex(index) {
@@ -12002,34 +15837,73 @@ export const PlayerScreen = {
     const embeddedTrack = this.getEmbeddedSubtitleTrackByNativeIndex(
       Number.isFinite(avplayTrackIndex) ? avplayTrackIndex : index
     );
+    const support = getEmbeddedSubtitleSupportState({
+      ...embeddedTrack,
+      ...track,
+      codec: track?.codec || embeddedTrack?.codec,
+      format: track?.format || embeddedTrack?.format
+    });
     if (!embeddedTrack) {
-      return track;
+      return {
+        ...track,
+        supported: support.supported,
+        unsupportedReason: support.unsupportedReason
+      };
     }
-    const avplayLanguage = getTrackLanguageValue(track);
-    const embeddedLanguage = getTrackLanguageValue(embeddedTrack);
+    const rawAvplayLanguage = getTrackLanguageValue(track);
+    const rawEmbeddedLanguage = getTrackLanguageValue(embeddedTrack);
+    const avplayLanguageCode =
+      normalizeTrackLanguageCode(rawAvplayLanguage) ||
+      inferTrackLanguageCodeFromText(rawAvplayLanguage);
+    const embeddedLanguageCode =
+      normalizeTrackLanguageCode(rawEmbeddedLanguage) ||
+      inferTrackLanguageCodeFromText(rawEmbeddedLanguage);
+    const avplayLanguage = avplayLanguageCode ? rawAvplayLanguage : "";
+    const embeddedLanguage = embeddedLanguageCode ? rawEmbeddedLanguage : "";
+    const languageMatches =
+      !avplayLanguageCode || !embeddedLanguageCode || avplayLanguageCode === embeddedLanguageCode;
+    const avplayLabel = cleanDisplayText(track?.label || track?.name || track?.title);
+    const embeddedLabel = cleanDisplayText(
+      embeddedTrack?.label || embeddedTrack?.name || embeddedTrack?.title
+    );
+    const meaningfulEmbeddedLabel = isGenericSubtitleTrackLabel(embeddedLabel) ? "" : embeddedLabel;
+    const useEmbeddedLabel = Boolean(
+      meaningfulEmbeddedLabel &&
+      (!avplayLabel || isGenericSubtitleTrackLabel(avplayLabel)) &&
+      languageMatches
+    );
+    const displayLabel =
+      (useEmbeddedLabel ? meaningfulEmbeddedLabel : avplayLabel || meaningfulEmbeddedLabel) ||
+      subtitleLabel(index);
+    const selectedLanguage = avplayLanguage || embeddedLanguage;
     return {
       ...track,
-      label:
-        cleanDisplayText(track?.label) ||
-        cleanDisplayText(embeddedTrack.label) ||
-        subtitleLabel(index),
+      label: displayLabel,
+      name:
+        cleanDisplayText(track?.name) && !isGenericSubtitleTrackLabel(track.name)
+          ? track.name
+          : displayLabel,
       // AVPlay's extra_info.track_lang is the authoritative Samsung language.
       // Local /tracks metadata only fills gaps and must not replace it with
       // placeholders such as "unknown" or "und".
-      language: avplayLanguage || embeddedLanguage,
+      language: selectedLanguage,
+      lang: track?.lang || selectedLanguage,
+      codec: track?.codec || embeddedTrack?.codec || "",
+      format: track?.format || embeddedTrack?.format || "",
+      supported: support.supported,
+      unsupportedReason: embeddedTrack?.unsupportedReason || support.unsupportedReason || null,
       forced: isForcedSubtitleTrack(track) || isForcedSubtitleTrack(embeddedTrack),
-      secondary:
-        embeddedTrack.secondary || String(avplayLanguage || embeddedLanguage || "").toUpperCase()
+      secondary: embeddedTrack.secondary || String(selectedLanguage || "").toUpperCase()
     };
   },
 
   mergeEmbeddedAudioTrackMetadata(track, index) {
     let embeddedTrack =
       this.getEmbeddedAudioTrackByNativeIndex(index) || this.getEmbeddedAudioTrack(index);
-    const explicitLanguage = normalizeTrackLanguageCode(track?.language || track?.lang || "");
-    let embeddedLanguage = normalizeTrackLanguageCode(
-      embeddedTrack?.language || embeddedTrack?.lang || ""
-    );
+    const trackLanguage = getUsableAudioTrackLanguageValue(track);
+    let embeddedTrackLanguage = getUsableAudioTrackLanguageValue(embeddedTrack);
+    const explicitLanguage = normalizeTrackLanguageCode(trackLanguage);
+    let embeddedLanguage = normalizeTrackLanguageCode(embeddedTrackLanguage);
     if (explicitLanguage && embeddedLanguage && explicitLanguage !== embeddedLanguage) {
       const languageMatchedTrack = (this.embeddedAudioTracks || []).find(
         (candidate) =>
@@ -12038,9 +15912,8 @@ export const PlayerScreen = {
       );
       if (languageMatchedTrack) {
         embeddedTrack = languageMatchedTrack;
-        embeddedLanguage = normalizeTrackLanguageCode(
-          embeddedTrack?.language || embeddedTrack?.lang || ""
-        );
+        embeddedTrackLanguage = getUsableAudioTrackLanguageValue(embeddedTrack);
+        embeddedLanguage = normalizeTrackLanguageCode(embeddedTrackLanguage);
       }
     }
     if (!embeddedTrack) {
@@ -12063,9 +15936,8 @@ export const PlayerScreen = {
         cleanDisplayText(track?.name || (useEmbeddedLabel ? embeddedLabel : "")) ||
         track?.name ||
         "",
-      language:
-        track?.language || track?.lang || embeddedTrack?.language || embeddedTrack?.lang || "",
-      lang: track?.lang || track?.language || embeddedTrack?.lang || embeddedTrack?.language || "",
+      language: trackLanguage || embeddedTrackLanguage,
+      lang: trackLanguage || embeddedTrackLanguage,
       codec: embeddedTrack.codec || track?.codec || track?.audioCodec || "",
       codecs: embeddedTrack.codecs || track?.codecs || "",
       audioCodec: embeddedTrack.audioCodec || track?.audioCodec || track?.codec || "",
@@ -12084,13 +15956,14 @@ export const PlayerScreen = {
 
   mergeAvPlayAudioTrackMetadata(track, index) {
     const avplayTrackIndex = Number(track?.avplayTrackIndex);
-    let embeddedTrack = this.getEmbeddedAudioTrackByNativeIndex(
-      Number.isFinite(avplayTrackIndex) ? avplayTrackIndex : index
-    );
-    const explicitLanguage = normalizeTrackLanguageCode(track?.language || track?.lang || "");
-    let embeddedLanguage = normalizeTrackLanguageCode(
-      embeddedTrack?.language || embeddedTrack?.lang || ""
-    );
+    let embeddedTrack =
+      this.getEmbeddedAudioTrackByNativeIndex(
+        Number.isFinite(avplayTrackIndex) ? avplayTrackIndex : index
+      ) || this.getEmbeddedAudioTrack(index);
+    const avplayLanguage = getUsableAudioTrackLanguageValue(track);
+    let embeddedTrackLanguage = getUsableAudioTrackLanguageValue(embeddedTrack);
+    const explicitLanguage = normalizeTrackLanguageCode(avplayLanguage);
+    let embeddedLanguage = normalizeTrackLanguageCode(embeddedTrackLanguage);
     if (explicitLanguage && embeddedLanguage && explicitLanguage !== embeddedLanguage) {
       const languageMatchedTrack = (this.embeddedAudioTracks || []).find(
         (candidate) =>
@@ -12099,9 +15972,8 @@ export const PlayerScreen = {
       );
       if (languageMatchedTrack) {
         embeddedTrack = languageMatchedTrack;
-        embeddedLanguage = normalizeTrackLanguageCode(
-          embeddedTrack?.language || embeddedTrack?.lang || ""
-        );
+        embeddedTrackLanguage = getUsableAudioTrackLanguageValue(embeddedTrack);
+        embeddedLanguage = normalizeTrackLanguageCode(embeddedTrackLanguage);
       }
     }
     if (!embeddedTrack) {
@@ -12124,9 +15996,8 @@ export const PlayerScreen = {
         cleanDisplayText(track?.name || (useEmbeddedLabel ? embeddedLabel : "")) ||
         track?.name ||
         "",
-      language:
-        track?.language || track?.lang || embeddedTrack?.language || embeddedTrack?.lang || "",
-      lang: track?.lang || track?.language || embeddedTrack?.lang || embeddedTrack?.language || "",
+      language: avplayLanguage || embeddedTrackLanguage,
+      lang: avplayLanguage || embeddedTrackLanguage,
       codec: embeddedTrack.codec || track?.codec || track?.audioCodec || "",
       codecs: embeddedTrack.codecs || track?.codecs || "",
       audioCodec: embeddedTrack.audioCodec || track?.audioCodec || track?.codec || "",
@@ -12144,11 +16015,14 @@ export const PlayerScreen = {
   },
 
   mergeHlsAudioTrackMetadata(track, index) {
-    const hlsLanguage = normalizeTrackLanguageCode(getTrackLanguageValue(track));
+    const hlsTrackLanguage = getUsableAudioTrackLanguageValue(track);
+    const hlsLanguage = normalizeTrackLanguageCode(hlsTrackLanguage);
     const hlsName = cleanDisplayText(track?.name || track?.label || "");
     const manifestTrack =
       this.manifestAudioTracks.find((entry) => {
-        const manifestLanguage = normalizeTrackLanguageCode(getTrackLanguageValue(entry));
+        const manifestLanguage = normalizeTrackLanguageCode(
+          getUsableAudioTrackLanguageValue(entry)
+        );
         const manifestName = cleanDisplayText(entry?.name || entry?.label || "");
         if (hlsLanguage && manifestLanguage && hlsLanguage === manifestLanguage) {
           return true;
@@ -12170,6 +16044,7 @@ export const PlayerScreen = {
         ...getAudioTrackSupportState(track)
       };
     }
+    const manifestTrackLanguage = getUsableAudioTrackLanguageValue(manifestTrack);
     const mergedTrack = {
       ...track,
       label:
@@ -12182,8 +16057,8 @@ export const PlayerScreen = {
         track?.name ||
         track?.label ||
         "",
-      language: manifestTrack.language || track?.language || track?.lang || "",
-      lang: manifestTrack.language || track?.lang || track?.language || "",
+      language: manifestTrackLanguage || hlsTrackLanguage,
+      lang: manifestTrackLanguage || hlsTrackLanguage,
       channels: manifestTrack.channels || track?.channels || track?.channelCount || "",
       channelCount: manifestTrack.channels || track?.channelCount || track?.channels || "",
       characteristics: manifestTrack.characteristics || track?.characteristics || "",
@@ -12218,6 +16093,9 @@ export const PlayerScreen = {
   clearMountedExternalSubtitleTracks() {
     this.externalTrackNodes.forEach((node) => node.remove());
     this.externalTrackNodes = [];
+    // External subtitle selection is being torn down; retire the ASS
+    // renderer so no overlay, instance, or timer outlives the tracks.
+    this.destroyAssSubtitleRenderer();
     this.revokeExternalSubtitleObjectUrls();
   },
 
@@ -12236,13 +16114,16 @@ export const PlayerScreen = {
 
   createSubtitleObjectUrl(body, sourceUrl = "", contentType = "") {
     const normalizedContentType = String(contentType || "").toLowerCase();
+    const assBody = isAssSubtitle(body, { sourceUrl, contentType: normalizedContentType });
     const shouldConvertToVtt =
       this.isLikelySrtSubtitleUrl(sourceUrl) ||
       normalizedContentType.includes("subrip") ||
       (!normalizedContentType.includes("vtt") && !/^\s*WEBVTT/i.test(body));
-    const vttText = shouldConvertToVtt
-      ? this.convertSrtToVtt(body)
-      : this.applySubtitleAssAlignmentToVtt(body);
+    const vttText = assBody
+      ? convertAssBodyToVtt(body)
+      : shouldConvertToVtt
+        ? this.convertSrtToVtt(body)
+        : this.applySubtitleAssAlignmentToVtt(body);
     const objectUrl = URL.createObjectURL(new Blob([vttText], { type: "text/vtt" }));
     this.externalSubtitleObjectUrls.push(objectUrl);
     return objectUrl;
@@ -12363,13 +16244,19 @@ export const PlayerScreen = {
     return this.applySubtitleAssAlignmentToVtt(`WEBVTT\n\n${normalized}`);
   },
 
-  async resolveSubtitlePlaybackUrl(url, { timeoutMs = 0 } = {}) {
+  /**
+   * Raw subtitle fetch boundary for ASS-aware callers. Returns
+   * { body, sourceUrl, contentType, resolvedUrl } or null. Never converts
+   * to a VTT object URL; callers that need that use
+   * resolveSubtitlePlaybackUrl(), whose URL contract is unchanged.
+   */
+  async fetchSubtitleRawBody(url, { timeoutMs = 0, languageHint = "" } = {}) {
     const original = String(url || "").trim();
     if (!original) {
-      return "";
+      return null;
     }
     if (/^(blob:|data:)/i.test(original)) {
-      return original;
+      return { body: null, sourceUrl: original, contentType: "", resolvedUrl: original };
     }
     const effectiveTimeoutMs =
       Number(timeoutMs) > 0 ? Number(timeoutMs) : Environment.isWebOS() ? 5000 : 0;
@@ -12403,28 +16290,58 @@ export const PlayerScreen = {
       if (!response.ok) {
         throw new Error(`Subtitle request failed with HTTP ${response.status}`);
       }
-      const body = await response.text();
       const contentType = String(response.headers?.get("content-type") || "").toLowerCase();
-      return this.createSubtitleObjectUrl(body, original, contentType);
+      const decodedBody =
+        typeof TextDecoder === "function"
+          ? await decodeSubtitleResponseBody(response, { languageHint, contentType })
+          : null;
+      const body = sanitizeSubtitleMojibake(decodedBody ?? (await response.text()));
+      return { body, sourceUrl: original, contentType, resolvedUrl: response.url || original };
     } catch (directError) {
       if (Environment.isWebOS()) {
         try {
           const resolved = await localMediaSubtitleRepository.getExternalSubtitleText(original);
-          return this.createSubtitleObjectUrl(resolved.body, original, resolved.contentType);
+          return {
+            body: sanitizeSubtitleMojibake(resolved.body),
+            sourceUrl: original,
+            contentType: resolved.contentType,
+            resolvedUrl: resolved.resolvedUrl || original
+          };
         } catch (proxyError) {
           console.warn("webOS subtitle resolver failed", {
             subtitleUrl: original,
             directError: directError?.message || String(directError || ""),
             proxyError: proxyError?.message || String(proxyError || "")
           });
-          return "";
+          return null;
         }
       }
-      return original;
+      throw directError;
     } finally {
       if (requestTimeoutId) {
         clearTimeout(requestTimeoutId);
       }
+    }
+  },
+
+  async resolveSubtitlePlaybackUrl(url, { timeoutMs = 0, languageHint = "" } = {}) {
+    const original = String(url || "").trim();
+    if (!original) {
+      return "";
+    }
+    if (/^(blob:|data:)/i.test(original)) {
+      return original;
+    }
+    try {
+      const raw = await this.fetchSubtitleRawBody(url, { timeoutMs, languageHint });
+      if (!raw) {
+        return "";
+      }
+      return this.createSubtitleObjectUrl(raw.body, raw.sourceUrl, raw.contentType);
+    } catch (_) {
+      // Direct fetch failed on a non-webOS platform: fall back to the
+      // original URL so the browser <track> can try it directly.
+      return original;
     }
   },
 
@@ -12498,6 +16415,83 @@ export const PlayerScreen = {
     ).trim();
   },
 
+  getAssSubtitleContainer() {
+    return this.uiRefs?.assSubtitles || document.getElementById("playerAssSubtitles");
+  },
+
+  destroyAssSubtitleRenderer(renderer = null) {
+    // A stale async activation may finish after a newer selection replaced
+    // this.assSubtitleRenderer. Destroy only the instance owned by that
+    // activation; never hide or clear the newer renderer's container.
+    if (renderer && this.assSubtitleRenderer !== renderer) {
+      renderer.destroy?.();
+      return;
+    }
+    if (this.assSubtitleRenderer) {
+      this.assSubtitleRenderer.destroy();
+      this.assSubtitleRenderer = null;
+    }
+    const node = this.getAssSubtitleContainer();
+    if (node) {
+      node.classList.add("hidden");
+      node.setAttribute("aria-hidden", "true");
+    }
+  },
+
+  showAssSubtitleContainer() {
+    const node = this.getAssSubtitleContainer();
+    if (node) {
+      node.classList.remove("hidden");
+      node.setAttribute("aria-hidden", "false");
+    }
+  },
+
+  isAssAddonSubtitleActive() {
+    return Boolean(this.assSubtitleRenderer?.active);
+  },
+
+  /**
+   * Render a detected ASS body through ass.js. Returns { applied } —
+   * applied=true means ass.js owns this selection; applied=false means the
+   * caller must fall back, using the returned fallbackVtt (plain-text VTT
+   * converted from Dialogue events, never raw ASS text).
+   */
+  async applyAssSubtitleBody({ body, selectionToken, isCurrent = null }) {
+    const isCurrentSelection = () =>
+      Number(selectionToken) === Number(this.subtitleSelectionToken) &&
+      (typeof isCurrent !== "function" || isCurrent());
+    this.destroyAssSubtitleRenderer();
+    const container = this.getAssSubtitleContainer();
+    const video = PlayerController.video;
+    const renderer = createAssRenderer({
+      body,
+      video,
+      container,
+      selectionToken,
+      isCurrentSelection,
+      // webOS exposes requestVideoFrameCallback but its video pipeline does
+      // not fire it; make ass.js capture requestAnimationFrame instead.
+      forceRafFrameLoop: Environment.isWebOS(),
+      // The webOS native pipeline can leave video.paused=true while the app
+      // is playing, and the UI paused flag can lag that state. The controller
+      // state is authoritative when deciding whether to kick the renderer.
+      forcePlaybackFrameLoopKick: Environment.isWebOS() && PlayerController.isPlaying
+    });
+    if (!renderer || typeof renderer.init !== "function") {
+      return { applied: false, fallbackVtt: convertAssBodyToVtt(body) };
+    }
+    this.assSubtitleRenderer = renderer;
+    const result = await renderer.init();
+    if (!result.ok || !isCurrentSelection()) {
+      const fallbackVtt = convertAssBodyToVtt(body);
+      this.destroyAssSubtitleRenderer(renderer);
+      return { applied: false, fallbackVtt };
+    }
+    renderer.setDelay(this.subtitleDelayMs);
+    this.showAssSubtitleContainer();
+    return { applied: true };
+  },
+
   parseSubtitleCues(content = "") {
     const normalized = this.convertSrtToVtt(content)
       .replace(/^\uFEFF/, "")
@@ -12522,7 +16516,15 @@ export const PlayerScreen = {
           return null;
         }
         const layout = parseVttCueLayout(lines[timingIndex]);
-        return { start, end, text, line: layout.line, align: layout.align };
+        return {
+          start,
+          end,
+          text,
+          line: layout.line,
+          position: layout.position,
+          align: layout.align,
+          size: layout.size
+        };
       })
       .filter(Boolean)
       .sort((left, right) => left.start - right.start || left.end - right.end);
@@ -12586,6 +16588,7 @@ export const PlayerScreen = {
     this.bitmapSubtitleLastErrorAt = 0;
     this.clearBitmapSubtitleCanvas();
     if (dispose) {
+      this.embeddedBitmapSubtitleSupportNotice = "";
       this.bitmapSubtitleDecoder?.dispose?.();
       this.bitmapSubtitleDecoder = null;
       this.bitmapSubtitleTrack = null;
@@ -12593,10 +16596,413 @@ export const PlayerScreen = {
     }
   },
 
+  markEmbeddedBitmapSubtitleUnsupported(track, reason = "webos-bitmap-runtime") {
+    if (!Environment.isWebOS() || !getEmbeddedBitmapSubtitleFormat(track)) {
+      return;
+    }
+    track.supported = false;
+    track.unsupportedReason = reason;
+    this.embeddedBitmapSubtitleSupportNotice = getBitmapSubtitleSupportMessage();
+    this.bitmapSubtitleDecoder?.dispose?.();
+    this.bitmapSubtitleDecoder = null;
+    this.bitmapSubtitleWindowStart = 0;
+    this.bitmapSubtitleWindowEnd = 0;
+    this.clearBitmapSubtitleCanvas();
+    this.invalidateTrackDialogCaches();
+    if (this.subtitleDialogVisible) {
+      this.renderSubtitleDialog();
+    }
+  },
+
+  clearWebOsEmbeddedTextSubtitleOverlay({ dispose = false } = {}) {
+    const overlayActive =
+      this.webOsEmbeddedTextSubtitleUsingHtml ||
+      String(this.htmlSubtitleSelectedId || "").startsWith("webos-embedded-text-") ||
+      String(this.htmlSubtitleSelectedId || "").startsWith("tizen-tx3g-") ||
+      String(this.htmlSubtitleSelectedId || "").startsWith("tizen-embedded-text-");
+    if (this.webOsEmbeddedTextSubtitleUsingAss) {
+      this.destroyAssSubtitleRenderer();
+    }
+    this.webOsEmbeddedTextSubtitleLoadToken =
+      Number(this.webOsEmbeddedTextSubtitleLoadToken || 0) + 1;
+    this.webOsEmbeddedTextSubtitleLoading = false;
+    this.webOsEmbeddedTextSubtitleWindowStart = 0;
+    this.webOsEmbeddedTextSubtitleWindowEnd = 0;
+    this.webOsEmbeddedTextSubtitleWindowFailureCount = 0;
+    this.webOsEmbeddedTextSubtitleLastErrorAt = 0;
+    if (dispose) {
+      this.embeddedTextSubtitleSupportNotice = "";
+      this.webOsEmbeddedTextSubtitleFallbackUnavailable = false;
+    }
+    if (overlayActive) {
+      this.clearHtmlSubtitleOverlay();
+    }
+    this.webOsEmbeddedTextSubtitleUsingAss = false;
+    if (dispose) {
+      this.webOsEmbeddedTextSubtitleTrack = null;
+      this.webOsEmbeddedTextSubtitleUsingHtml = false;
+    }
+  },
+
+  markEmbeddedTextSubtitleUnsupported(track, reason = "tx3g-runtime") {
+    if (!isTx3gSubtitleTrack(track)) {
+      return;
+    }
+    this.embeddedTextSubtitleSupportNotice = getTx3gSubtitleSupportMessage(reason);
+    if (Environment.isTizen()) {
+      track.supported = false;
+      track.unsupportedReason = reason;
+    }
+    this.invalidateTrackDialogCaches();
+    if (this.subtitleDialogVisible) {
+      this.renderSubtitleDialog();
+    }
+  },
+
+  prepareWebOsEmbeddedTextSubtitleForSeek(timeSeconds) {
+    const track = this.webOsEmbeddedTextSubtitleTrack;
+    if (!track) {
+      return;
+    }
+    const targetSeconds = Math.max(0, Number(timeSeconds) || 0);
+    const hasReusableWindow =
+      this.webOsEmbeddedTextSubtitleWindowEnd > this.webOsEmbeddedTextSubtitleWindowStart &&
+      targetSeconds >= this.webOsEmbeddedTextSubtitleWindowStart &&
+      targetSeconds < this.webOsEmbeddedTextSubtitleWindowEnd;
+    if (hasReusableWindow) {
+      return;
+    }
+    this.webOsEmbeddedTextSubtitleLoadToken =
+      Number(this.webOsEmbeddedTextSubtitleLoadToken || 0) + 1;
+    this.webOsEmbeddedTextSubtitleLoading = false;
+    this.webOsEmbeddedTextSubtitleWindowStart = 0;
+    this.webOsEmbeddedTextSubtitleWindowEnd = 0;
+    this.webOsEmbeddedTextSubtitleLastErrorAt = 0;
+    if (this.webOsEmbeddedTextSubtitleUsingHtml) {
+      this.htmlSubtitleCues = [];
+      this.renderHtmlSubtitleOverlayCue([]);
+    }
+    if (this.webOsEmbeddedTextSubtitleUsingAss) {
+      this.destroyAssSubtitleRenderer();
+      this.webOsEmbeddedTextSubtitleUsingAss = false;
+    }
+    // AVPlay is still resolving the seek here. The seeked/timeupdate path
+    // starts the optional extractor after the native media request settles.
+  },
+
+  async loadWebOsEmbeddedTextSubtitleWindow(timeSeconds) {
+    const track = this.webOsEmbeddedTextSubtitleTrack;
+    const sourceUrl = this.getTrackProbeUrl();
+    const sourceTrackId = Number(track?.sourceTrackId);
+    const sourceTrackOrdinal = Number(track?.sourceTrackOrdinal);
+    const isTizenSubRipFallback = isTizenSubRipEmbeddedSubtitleTrack(track);
+    const hasValidTrackSelector = isTizenSubRipFallback
+      ? Number.isFinite(sourceTrackOrdinal) && sourceTrackOrdinal >= 0
+      : Number.isFinite(sourceTrackId) && sourceTrackId > 0;
+    if (
+      (!Environment.isWebOS() && !isTizenEmbeddedTextSubtitleFallbackTrack(track)) ||
+      !track ||
+      !sourceUrl ||
+      !hasValidTrackSelector ||
+      this.webOsEmbeddedTextSubtitleFallbackUnavailable ||
+      this.webOsEmbeddedTextSubtitleLoading
+    ) {
+      return false;
+    }
+    const requestToken = Number(this.webOsEmbeddedTextSubtitleLoadToken || 0) + 1;
+    this.webOsEmbeddedTextSubtitleLoadToken = requestToken;
+    this.webOsEmbeddedTextSubtitleLoading = true;
+    // Keep fetch failures separate from parsing/renderer failures. The former
+    // can leave the last successfully rendered window in place while retrying.
+    let windowRequestCompleted = false;
+    const subtitleTime = Math.max(0, Number(timeSeconds || 0));
+    const startSeconds =
+      Math.floor(subtitleTime / EMBEDDED_TEXT_SUBTITLE_WINDOW_BUCKET_SECONDS) *
+      EMBEDDED_TEXT_SUBTITLE_WINDOW_BUCKET_SECONDS;
+    try {
+      const windowData = await localMediaEmbeddedSubtitleRepository.getWindow({
+        url: sourceUrl,
+        trackNumber: isTizenSubRipFallback ? undefined : sourceTrackId,
+        trackOrdinal: isTizenSubRipFallback ? sourceTrackOrdinal : undefined,
+        startSeconds,
+        endSeconds: startSeconds + EMBEDDED_TEXT_SUBTITLE_WINDOW_SECONDS,
+        includeAssBody:
+          this.webOsEmbeddedTextSubtitleUsingAss ||
+          isAssSubtitleCodec(track?.codec) ||
+          isAssSubtitleCodec(track?.codec_name)
+      });
+      windowRequestCompleted = true;
+      if (
+        requestToken !== this.webOsEmbeddedTextSubtitleLoadToken ||
+        this.webOsEmbeddedTextSubtitleTrack !== track
+      ) {
+        return false;
+      }
+
+      if (isTx3gSubtitleTrack(track)) {
+        this.embeddedTextSubtitleSupportNotice = "";
+        if (Environment.isTizen()) {
+          track.supported = true;
+          track.unsupportedReason = null;
+        }
+      }
+
+      this.webOsEmbeddedTextSubtitleWindowStart = Number(
+        windowData.windowStartSeconds || startSeconds
+      );
+      this.webOsEmbeddedTextSubtitleWindowEnd = Number(
+        windowData.windowEndSeconds || startSeconds + EMBEDDED_TEXT_SUBTITLE_WINDOW_SECONDS
+      );
+      const assBody = String(windowData.assBody || "");
+      // Select the renderer from stable track metadata. The advanced-tag flag
+      // is local to this extraction window and can otherwise switch from the
+      // VTT fallback to ass.js while playback is already running, leaving the
+      // newly-created renderer stuck on its initial cue.
+      const shouldUseAss =
+        Boolean(assBody) &&
+        (isAssSubtitleCodec(windowData.codecId) ||
+          isAssSubtitleCodec(track?.codec) ||
+          isAssSubtitleCodec(track?.codec_name));
+      if (shouldUseAss) {
+        const assResult = await this.applyAssSubtitleBody({
+          body: assBody,
+          selectionToken: this.subtitleSelectionToken,
+          isCurrent: () =>
+            requestToken === this.webOsEmbeddedTextSubtitleLoadToken &&
+            this.webOsEmbeddedTextSubtitleTrack === track
+        });
+        if (
+          requestToken !== this.webOsEmbeddedTextSubtitleLoadToken ||
+          this.webOsEmbeddedTextSubtitleTrack !== track
+        ) {
+          return false;
+        }
+        if (assResult.applied) {
+          if (typeof PlayerController.setWebOsEmbeddedSubtitleNativeVisibility !== "function") {
+            this.destroyAssSubtitleRenderer();
+            return false;
+          }
+          // Claim webOS app ownership before the native-hide round trip so a
+          // queued native refresh cannot re-enable the renderer in parallel.
+          const wasUsingHtml = this.webOsEmbeddedTextSubtitleUsingHtml;
+          const canClaimWebOsAssOwnership = Environment.isWebOS();
+          if (canClaimWebOsAssOwnership) {
+            this.webOsEmbeddedTextSubtitleUsingAss = true;
+            this.webOsEmbeddedTextSubtitleUsingHtml = false;
+          }
+          const nativeRendererHidden = await Promise.resolve(
+            PlayerController.setWebOsEmbeddedSubtitleNativeVisibility(
+              false,
+              this.selectedEmbeddedSubtitleTrackIndex
+            )
+          );
+          if (
+            !nativeRendererHidden ||
+            requestToken !== this.webOsEmbeddedTextSubtitleLoadToken ||
+            this.webOsEmbeddedTextSubtitleTrack !== track
+          ) {
+            if (canClaimWebOsAssOwnership) {
+              this.webOsEmbeddedTextSubtitleUsingAss = false;
+              this.webOsEmbeddedTextSubtitleUsingHtml = wasUsingHtml;
+            }
+            this.destroyAssSubtitleRenderer();
+            return false;
+          }
+          this.clearHtmlSubtitleOverlay();
+          this.webOsEmbeddedTextSubtitleUsingAss = true;
+          this.webOsEmbeddedTextSubtitleUsingHtml = false;
+          this.webOsEmbeddedTextSubtitleWindowFailureCount = 0;
+          return true;
+        }
+        if (assResult.fallbackVtt) {
+          windowData.body = assResult.fallbackVtt;
+        }
+      }
+
+      if (this.webOsEmbeddedTextSubtitleUsingAss) {
+        this.destroyAssSubtitleRenderer();
+        this.webOsEmbeddedTextSubtitleUsingAss = false;
+      }
+      const isAssTrack =
+        isAssSubtitleCodec(windowData.codecId) ||
+        isAssSubtitleCodec(track?.codec) ||
+        isAssSubtitleCodec(track?.codec_name) ||
+        Boolean(windowData.assBody);
+      const cues = this.parseSubtitleCues(windowData.body);
+      const shouldUseHtml =
+        isTizenEmbeddedTextSubtitleFallbackTrack(track) ||
+        this.webOsEmbeddedTextSubtitleUsingHtml ||
+        Boolean(windowData.hasAssOverrideTags) ||
+        (isAssTrack && cues.length > 0);
+      if (!shouldUseHtml || (!cues.length && !this.webOsEmbeddedTextSubtitleUsingHtml)) {
+        return false;
+      }
+
+      if (!this.webOsEmbeddedTextSubtitleUsingHtml) {
+        // Tizen uses a synchronous AVPlay render-mode switch; keep its
+        // existing ordering while claiming ownership early on webOS, where
+        // the native hide is asynchronous.
+        const canClaimWebOsHtmlOwnership = Environment.isWebOS();
+        if (canClaimWebOsHtmlOwnership) {
+          this.webOsEmbeddedTextSubtitleUsingHtml = true;
+        }
+        const nativeRendererHidden = isTizenEmbeddedTextSubtitleFallbackTrack(track)
+          ? Boolean(PlayerController.applyAvPlaySubtitleRenderMode?.("html"))
+          : typeof PlayerController.setWebOsEmbeddedSubtitleNativeVisibility === "function"
+            ? await Promise.resolve(
+                PlayerController.setWebOsEmbeddedSubtitleNativeVisibility(
+                  false,
+                  this.selectedEmbeddedSubtitleTrackIndex
+                )
+              )
+            : false;
+        if (
+          requestToken !== this.webOsEmbeddedTextSubtitleLoadToken ||
+          this.webOsEmbeddedTextSubtitleTrack !== track ||
+          !nativeRendererHidden
+        ) {
+          if (canClaimWebOsHtmlOwnership) {
+            this.webOsEmbeddedTextSubtitleUsingHtml = false;
+          }
+          return false;
+        }
+        if (!canClaimWebOsHtmlOwnership) {
+          this.webOsEmbeddedTextSubtitleUsingHtml = true;
+        }
+      }
+
+      this.htmlSubtitleCues = cues;
+      this.htmlSubtitleSelectedId = isTizenTx3gEmbeddedSubtitleTrack(track)
+        ? `tizen-tx3g-${this.selectedEmbeddedSubtitleTrackIndex}`
+        : isTizenSubRipEmbeddedSubtitleTrack(track)
+          ? `tizen-embedded-text-${this.selectedEmbeddedSubtitleTrackIndex}`
+          : `webos-embedded-text-${this.selectedEmbeddedSubtitleTrackIndex}`;
+      this.renderHtmlSubtitleOverlayCue([]);
+      this.renderHtmlSubtitleOverlayAtCurrentTime();
+      this.scheduleHtmlSubtitleOverlayRender();
+      this.webOsEmbeddedTextSubtitleWindowFailureCount = 0;
+      return true;
+    } catch (error) {
+      if (
+        requestToken === this.webOsEmbeddedTextSubtitleLoadToken &&
+        this.webOsEmbeddedTextSubtitleTrack === track
+      ) {
+        this.webOsEmbeddedTextSubtitleLastErrorAt = Date.now();
+        const isRangeUnavailable = error?.code === "RANGE_UNAVAILABLE";
+        const hasExistingWebOsRenderer =
+          Environment.isWebOS() &&
+          !windowRequestCompleted &&
+          (this.webOsEmbeddedTextSubtitleUsingAss || this.webOsEmbeddedTextSubtitleUsingHtml);
+        const transientFailureCount = hasExistingWebOsRenderer
+          ? Number(this.webOsEmbeddedTextSubtitleWindowFailureCount || 0) + 1
+          : 0;
+        const preserveExistingWebOsRenderer =
+          hasExistingWebOsRenderer &&
+          !isRangeUnavailable &&
+          transientFailureCount < WEBOS_EMBEDDED_TEXT_SUBTITLE_MAX_TRANSIENT_FAILURES;
+        if (hasExistingWebOsRenderer) {
+          this.webOsEmbeddedTextSubtitleWindowFailureCount = transientFailureCount;
+        }
+        if (
+          isRangeUnavailable ||
+          transientFailureCount >= WEBOS_EMBEDDED_TEXT_SUBTITLE_MAX_TRANSIENT_FAILURES
+        ) {
+          this.webOsEmbeddedTextSubtitleFallbackUnavailable = true;
+        }
+        if (Environment.isWebOS() && !preserveExistingWebOsRenderer) {
+          this.webOsEmbeddedTextSubtitleUsingAss = false;
+          this.webOsEmbeddedTextSubtitleUsingHtml = false;
+          this.clearHtmlSubtitleOverlay();
+          void Promise.resolve(
+            PlayerController.setWebOsEmbeddedSubtitleNativeVisibility?.(
+              true,
+              this.selectedEmbeddedSubtitleTrackIndex
+            )
+          ).catch(() => {});
+        }
+        console.warn("Embedded text subtitle rendering failed", {
+          trackNumber: sourceTrackId,
+          trackOrdinal: sourceTrackOrdinal,
+          code: error?.code || "",
+          details: error?.details || null,
+          error: error?.message || String(error || "")
+        });
+        if (isTx3gSubtitleTrack(track)) {
+          this.markEmbeddedTextSubtitleUnsupported(track);
+        }
+        if (isTizenEmbeddedTextSubtitleFallbackTrack(track)) {
+          // Keep playback alive when the optional extractor is unavailable on
+          // a supported firmware; AVPlay can still render natively on devices
+          // that implement the selected text codec despite the documented gap.
+          PlayerController.applyAvPlaySubtitleRenderMode?.("native");
+        }
+      }
+      return false;
+    } finally {
+      if (requestToken === this.webOsEmbeddedTextSubtitleLoadToken) {
+        this.webOsEmbeddedTextSubtitleLoading = false;
+      }
+    }
+  },
+
+  renderWebOsEmbeddedTextSubtitleAtCurrentTime() {
+    const track = this.webOsEmbeddedTextSubtitleTrack;
+    if (!track) {
+      return false;
+    }
+    const currentTime = Number(this.getPlaybackCurrentSeconds() || 0);
+    const subtitleTime = Math.max(0, currentTime - Number(this.subtitleDelayMs || 0) / 1000);
+    const outsideWindow =
+      subtitleTime < this.webOsEmbeddedTextSubtitleWindowStart ||
+      subtitleTime >= this.webOsEmbeddedTextSubtitleWindowEnd;
+    const approachingWindowEnd =
+      this.webOsEmbeddedTextSubtitleWindowEnd > 0 &&
+      subtitleTime >=
+        this.webOsEmbeddedTextSubtitleWindowEnd - EMBEDDED_TEXT_SUBTITLE_PREFETCH_SECONDS;
+    if ((outsideWindow || approachingWindowEnd) && !this.webOsEmbeddedTextSubtitleLoading) {
+      const retryAllowed =
+        !this.webOsEmbeddedTextSubtitleLastErrorAt ||
+        Date.now() - this.webOsEmbeddedTextSubtitleLastErrorAt >= 5000;
+      if (retryAllowed) {
+        void this.loadWebOsEmbeddedTextSubtitleWindow(subtitleTime);
+      }
+    }
+    return this.webOsEmbeddedTextSubtitleUsingHtml
+      ? this.renderHtmlSubtitleOverlayAtCurrentTime()
+      : this.webOsEmbeddedTextSubtitleUsingAss;
+  },
+
+  prepareBitmapSubtitleForSeek(timeSeconds) {
+    const track = this.bitmapSubtitleTrack;
+    if (!track || getEmbeddedSubtitleSupportState(track).supported === false) {
+      return;
+    }
+    const targetSeconds = Math.max(0, Number(timeSeconds) || 0);
+    this.bitmapSubtitleLoadToken = Number(this.bitmapSubtitleLoadToken || 0) + 1;
+    this.bitmapSubtitleLoading = false;
+    this.bitmapSubtitleLastErrorAt = 0;
+    this.clearBitmapSubtitleCanvas();
+    const outsideWindow =
+      targetSeconds < this.bitmapSubtitleWindowStart ||
+      targetSeconds >= this.bitmapSubtitleWindowEnd;
+    if (outsideWindow) {
+      this.bitmapSubtitleDecoder?.dispose?.();
+      this.bitmapSubtitleDecoder = null;
+      this.bitmapSubtitleWindowStart = 0;
+      this.bitmapSubtitleWindowEnd = 0;
+      void this.loadBitmapSubtitleWindow(targetSeconds);
+    }
+  },
+
   async loadBitmapSubtitleWindow(timeSeconds) {
     const track = this.bitmapSubtitleTrack;
     const sourceUrl = this.getTrackProbeUrl();
-    if (!track || !sourceUrl || this.bitmapSubtitleLoading) {
+    if (
+      !track ||
+      getEmbeddedSubtitleSupportState(track).supported === false ||
+      !sourceUrl ||
+      this.bitmapSubtitleLoading
+    ) {
       return false;
     }
     const requestToken = Number(this.bitmapSubtitleLoadToken || 0) + 1;
@@ -12618,12 +17024,19 @@ export const PlayerScreen = {
       }
       const decoder = new BitmapSubtitleDecoder();
       if (windowData.cueCount > 0) {
-        await decoder.load(windowData.idxContent, windowData.subData);
+        await decoder.load({
+          format: windowData.format,
+          idxContent: windowData.idxContent,
+          data: windowData.data
+        });
       }
       if (requestToken !== this.bitmapSubtitleLoadToken || this.bitmapSubtitleTrack !== track) {
         decoder.dispose();
         return false;
       }
+      this.embeddedBitmapSubtitleSupportNotice = "";
+      track.supported = true;
+      track.unsupportedReason = null;
       const previousDecoder = this.bitmapSubtitleDecoder;
       this.bitmapSubtitleDecoder = decoder;
       previousDecoder?.dispose?.();
@@ -12636,10 +17049,14 @@ export const PlayerScreen = {
       if (requestToken === this.bitmapSubtitleLoadToken && this.bitmapSubtitleTrack === track) {
         this.bitmapSubtitleLastErrorAt = Date.now();
         this.clearBitmapSubtitleCanvas();
-        console.warn("Embedded VOBSUB rendering failed", {
+        console.warn("Embedded bitmap subtitle rendering failed", {
+          format: track.bitmapSubtitleFormat || "unknown",
           trackNumber: track.sourceTrackId,
           error: error?.message || String(error || "")
         });
+        if (isBitmapSubtitleSupportError(error)) {
+          this.markEmbeddedBitmapSubtitleUnsupported(track);
+        }
       }
       return false;
     } finally {
@@ -12651,7 +17068,7 @@ export const PlayerScreen = {
 
   renderBitmapSubtitleAtCurrentTime({ force = false } = {}) {
     const track = this.bitmapSubtitleTrack;
-    if (!track) {
+    if (!track || getEmbeddedSubtitleSupportState(track).supported === false) {
       return false;
     }
     const currentTime = Number(this.getPlaybackCurrentSeconds() || 0);
@@ -12675,7 +17092,8 @@ export const PlayerScreen = {
       return false;
     }
     const canvas = this.uiRefs?.bitmapSubtitles || document.getElementById("playerBitmapSubtitles");
-    if (!canvas || !frame.width || !frame.height || !frame.screenWidth || !frame.screenHeight) {
+    const compositions = Array.isArray(frame.compositions) ? frame.compositions : [];
+    if (!canvas || !frame.screenWidth || !frame.screenHeight) {
       return false;
     }
     const viewport =
@@ -12694,10 +17112,12 @@ export const PlayerScreen = {
     );
     const style = this.subtitleStyleSettings || {};
     const sizeScale = normalizeSubtitleFontSize(style.fontSize) / 100;
-    const verticalOffsetPx =
-      splitSubtitleVerticalOffset(style.verticalOffset).value * -0.02 * viewportHeight;
-    const mode = this.aspectModes[this.aspectModeIndex] || this.aspectModes[0];
-    const rect = this.calculateAspectRect(mode.objectFit, PlayerController.video);
+    const verticalOffsetVh = getSubtitleVerticalOffsetVh(style.verticalOffset);
+    const verticalOffsetPx = (verticalOffsetVh / 100) * viewportHeight;
+    const mode = this.getAspectModeDefinition();
+    const rect = this.calculateAspectRect(mode.id, PlayerController.video);
+    const modeScaleX = Number(rect.scaleX || 1);
+    const modeScaleY = Number(rect.scaleY || 1);
     const renderKey = [
       frame.key,
       viewportWidth,
@@ -12706,15 +17126,23 @@ export const PlayerScreen = {
       Math.round(rect.y),
       Math.round(rect.width),
       Math.round(rect.height),
+      modeScaleX,
+      modeScaleY,
       sizeScale,
       verticalOffsetPx
     ].join(":");
+    const hasRenderableCompositions = compositions.some(
+      (composition) =>
+        composition?.width > 0 &&
+        composition?.height > 0 &&
+        composition.rgba?.length === composition.width * composition.height * 4
+    );
     if (
       !force &&
       renderKey === this.bitmapSubtitleLastFrameKey &&
-      !canvas.classList.contains("hidden")
+      canvas.classList.contains("hidden") !== hasRenderableCompositions
     ) {
-      return true;
+      return hasRenderableCompositions;
     }
     canvas.width = viewportWidth;
     canvas.height = viewportHeight;
@@ -12723,30 +17151,62 @@ export const PlayerScreen = {
       return false;
     }
     context.clearRect(0, 0, viewportWidth, viewportHeight);
-    const scratch = this.bitmapSubtitleScratchCanvas || document.createElement("canvas");
-    this.bitmapSubtitleScratchCanvas = scratch;
-    scratch.width = frame.width;
-    scratch.height = frame.height;
-    const scratchContext = scratch.getContext("2d");
-    if (!scratchContext || frame.rgba.length !== frame.width * frame.height * 4) {
+    if (!hasRenderableCompositions) {
+      canvas.classList.add("hidden");
+      canvas.setAttribute("aria-hidden", "true");
+      this.bitmapSubtitleLastFrameKey = renderKey;
       return false;
     }
-    const imageData = scratchContext.createImageData(frame.width, frame.height);
-    imageData.data.set(frame.rgba);
-    scratchContext.putImageData(imageData, 0, 0);
-    const scaleX = rect.width / frame.screenWidth;
-    const scaleY = rect.height / frame.screenHeight;
-    const targetWidth = frame.width * scaleX * sizeScale;
-    const targetHeight = frame.height * scaleY * sizeScale;
-    const targetCenterX = rect.x + (frame.x + frame.width / 2) * scaleX;
-    const targetCenterY = rect.y + (frame.y + frame.height / 2) * scaleY + verticalOffsetPx;
-    context.drawImage(
-      scratch,
-      targetCenterX - targetWidth / 2,
-      targetCenterY - targetHeight / 2,
-      targetWidth,
-      targetHeight
-    );
+    const scratch = this.bitmapSubtitleScratchCanvas || document.createElement("canvas");
+    this.bitmapSubtitleScratchCanvas = scratch;
+    const scratchContext = scratch.getContext("2d");
+    if (!scratchContext) {
+      return false;
+    }
+    const contentScaleX = rect.width / frame.screenWidth;
+    const contentScaleY = rect.height / frame.screenHeight;
+    let renderedCompositions = 0;
+    compositions.forEach((composition) => {
+      if (
+        !composition?.width ||
+        !composition?.height ||
+        composition.rgba?.length !== composition.width * composition.height * 4
+      ) {
+        return;
+      }
+      scratch.width = composition.width;
+      scratch.height = composition.height;
+      const imageData = scratchContext.createImageData(composition.width, composition.height);
+      imageData.data.set(composition.rgba);
+      scratchContext.putImageData(imageData, 0, 0);
+      const targetWidth = composition.width * contentScaleX * sizeScale * modeScaleX;
+      const targetHeight = composition.height * contentScaleY * sizeScale * modeScaleY;
+      const baseCenterX = rect.x + (composition.x + composition.width / 2) * contentScaleX;
+      const baseCenterY = rect.y + (composition.y + composition.height / 2) * contentScaleY;
+      const targetCenterX = viewportWidth / 2 + (baseCenterX - viewportWidth / 2) * modeScaleX;
+      const requestedCenterY =
+        viewportHeight / 2 + (baseCenterY - viewportHeight / 2) * modeScaleY + verticalOffsetPx;
+      const targetCenterY =
+        verticalOffsetPx === 0
+          ? requestedCenterY
+          : targetHeight >= viewportHeight
+            ? viewportHeight / 2
+            : clamp(requestedCenterY, targetHeight / 2, viewportHeight - targetHeight / 2);
+      context.drawImage(
+        scratch,
+        targetCenterX - targetWidth / 2,
+        targetCenterY - targetHeight / 2,
+        targetWidth,
+        targetHeight
+      );
+      renderedCompositions += 1;
+    });
+    if (!renderedCompositions) {
+      canvas.classList.add("hidden");
+      canvas.setAttribute("aria-hidden", "true");
+      this.bitmapSubtitleLastFrameKey = renderKey;
+      return false;
+    }
     canvas.classList.remove("hidden");
     canvas.setAttribute("aria-hidden", "false");
     this.bitmapSubtitleLastFrameKey = renderKey;
@@ -12761,7 +17221,7 @@ export const PlayerScreen = {
     const cueKey = activeCues
       .map(
         (cue) =>
-          `${cue.start}-${cue.end}-${cue.line ?? "default"}-${cue.align || "center"}-${cue.text}`
+          `${cue.start}-${cue.end}-${cue.line ?? "default"}-${cue.position ?? "default"}-${cue.align || "center"}-${cue.size ?? "default"}-${cue.text}`
       )
       .join("|");
     const hasRenderedActiveCue =
@@ -12787,12 +17247,16 @@ export const PlayerScreen = {
     }
     const cueGroups = new Map();
     activeCues.forEach((cue) => {
-      const line = cue?.line == null ? NaN : Number(cue.line);
-      const normalizedLine = Number.isFinite(line) ? clamp(line, 0, 100) : null;
+      const rawLine = cue?.line == null ? NaN : Number(cue.line);
+      const normalizedLine = Number.isFinite(rawLine) ? clamp(rawLine, 0, 100) : null;
+      const rawPosition = cue?.position == null ? NaN : Number(cue.position);
+      const position = Number.isFinite(rawPosition) ? clamp(rawPosition, 0, 100) : null;
       const align = ["start", "end", "center"].includes(cue?.align) ? cue.align : "center";
-      const groupKey = `${normalizedLine ?? "default"}:${align}`;
+      const rawSize = cue?.size == null ? NaN : Number(cue.size);
+      const size = Number.isFinite(rawSize) && rawSize > 0 ? clamp(rawSize, 10, 200) : null;
+      const groupKey = `${normalizedLine ?? "default"}:${position ?? "default"}:${align}:${size ?? ""}`;
       if (!cueGroups.has(groupKey)) {
-        cueGroups.set(groupKey, { line: normalizedLine, align, cues: [] });
+        cueGroups.set(groupKey, { line: normalizedLine, position, align, size, cues: [] });
       }
       cueGroups.get(groupKey).cues.push(cue);
     });
@@ -12804,6 +17268,15 @@ export const PlayerScreen = {
       } else {
         cueNode.classList.add("player-html-subtitle-positioned");
         cueNode.style.top = `${group.line}%`;
+        if (group.position != null) {
+          cueNode.style.left = `${group.position}%`;
+          cueNode.style.right = "auto";
+          const anchor = group.align === "start" ? "0%" : group.align === "end" ? "-100%" : "-50%";
+          cueNode.style.transform = `translate(${anchor}, -50%)`;
+        }
+      }
+      if (group.size != null && group.line != null) {
+        cueNode.style.fontSize = `${group.size}%`;
       }
       group.cues.forEach((cue) =>
         String(cue.text || "")
@@ -12815,7 +17288,19 @@ export const PlayerScreen = {
             }
             const lineNode = document.createElement("span");
             lineNode.className = "player-html-subtitle-line";
-            lineNode.textContent = cleanLine;
+            const shadowNode = document.createElement("span");
+            shadowNode.className = "player-html-subtitle-shadow";
+            shadowNode.setAttribute("aria-hidden", "true");
+            const textNode = document.createElement("span");
+            textNode.className = "player-html-subtitle-text";
+            const glyphNode = document.createElement("span");
+            glyphNode.className = "player-html-subtitle-glyphs";
+            const normalizedLine = normalizeWebOsHtmlSubtitleText(cleanLine);
+            shadowNode.textContent = normalizedLine;
+            glyphNode.textContent = normalizedLine;
+            textNode.appendChild(glyphNode);
+            lineNode.appendChild(shadowNode);
+            lineNode.appendChild(textNode);
             cueNode.appendChild(lineNode);
           })
       );
@@ -12859,11 +17344,49 @@ export const PlayerScreen = {
     render();
   },
 
+  isAvPlaySubtitleControlPayload(value = "") {
+    const text = String(value || "").trim();
+    if (!text) {
+      return false;
+    }
+    // AVPlay may expose the complete SSA event or its positional CSV fields.
+    // Strip only the control prefix for structural validation; plain cue text
+    // such as "Dialogue: hello" must remain renderable.
+    const payload = text.replace(/^\s*(?:Dialogue|Comment)\s*:\s*/i, "");
+    const hasAssTiming =
+      /^(?:(?:\d+|Marked\s*=\s*\d+)\s*,\s*)?\d+:\d{1,2}:\d{1,2}[.,]\d{1,3}\s*,\s*\d+:\d{1,2}:\d{1,2}[.,]\d{1,3}\s*,/i.test(
+        payload
+      );
+    if (hasAssTiming) {
+      return true;
+    }
+    if (/[.!?\u00C0-\u024F]/.test(text)) {
+      return false;
+    }
+    // Require the numeric prefix and a known AVPlay style token so ordinary
+    // comma-containing dialogue remains valid.
+    return (
+      /^\s*\d+\s*,\s*\d+\s*,\s*(?:Onscreen\d*|Screen)\s*,/i.test(payload) &&
+      payload.split(",").length >= 6
+    );
+  },
+
   renderAvPlaySubtitleChange(detail = {}) {
     if (
       !Environment.isTizen() ||
       typeof PlayerController.isUsingAvPlay !== "function" ||
       !PlayerController.isUsingAvPlay()
+    ) {
+      return;
+    }
+    // SubRip is rendered from the bounded Matroska extractor below. Ignore a
+    // late AVPlay callback only while that HTML overlay is active, so a failed
+    // extractor can still fall back to native AVPlay rendering.
+    if (
+      isTizenSubRipEmbeddedSubtitleTrack(this.webOsEmbeddedTextSubtitleTrack) &&
+      this.webOsEmbeddedTextSubtitleUsingHtml &&
+      (typeof PlayerController.shouldRenderAvPlaySubtitleCallbacksInHtml !== "function" ||
+        PlayerController.shouldRenderAvPlaySubtitleCallbacksInHtml())
     ) {
       return;
     }
@@ -12882,11 +17405,14 @@ export const PlayerScreen = {
       .replace(/<br\s*\/?>/gi, "\n")
       .replace(/\r\n/g, "\n")
       .replace(/\r/g, "\n");
+    // Samsung AVPlay can expose SSA/ASS fields instead of dialogue text.
+    // Never project that control payload into the video overlay.
     const text = this.parseSubtitleCueText(rawText);
-    if (!text) {
+    if (!text || this.isAvPlaySubtitleControlPayload(rawText)) {
       this.renderHtmlSubtitleOverlayCue([]);
       return;
     }
+
     this.htmlSubtitleCues = [];
     this.htmlSubtitleSelectedId = "avplay-native";
     const alignment = this.getSubtitleAssAlignment(rawText);
@@ -12914,9 +17440,113 @@ export const PlayerScreen = {
       return false;
     }
     const subtitleId = subtitle?.id || subtitle?.url || `subtitle-${subtitleIndex}`;
+    const sourceUrl = String(subtitle?.url || "");
+
+    // ASS branch: fetch the raw body and render through ass.js when
+    // detected. Native AVPlay subtitle handling cannot consume ASS text,
+    // so the HTML overlay (or ass.js overlay) is the only presentation.
+    if (Environment.isWebOS() || (Environment.isTizen() && PlayerController.isUsingAvPlay?.())) {
+      let raw = null;
+      try {
+        raw = await this.fetchSubtitleRawBody(sourceUrl, {
+          languageHint: subtitle?.lang || subtitle?.language || subtitle?.languageCode
+        });
+      } catch (assFetchError) {
+        if (!isCurrentSelection()) {
+          return false;
+        }
+        console.warn("ASS subtitle fetch failed", {
+          subtitleUrl: sourceUrl,
+          error: assFetchError?.message || String(assFetchError || "")
+        });
+        // Fall through to the existing HTML subtitle path.
+      }
+      if (
+        raw?.body != null &&
+        isAssSubtitle(raw.body, { sourceUrl, contentType: raw.contentType })
+      ) {
+        if (!isCurrentSelection()) {
+          return false;
+        }
+        this.clearMountedExternalSubtitleTracks();
+        this.clearHtmlSubtitleOverlay();
+        if (typeof PlayerController.setAvPlaySubtitleTrack === "function") {
+          PlayerController.setAvPlaySubtitleTrack(-1);
+        }
+        const assResult = await this.applyAssSubtitleBody({
+          body: raw.body,
+          selectionToken
+        });
+        if (assResult.applied && isCurrentSelection()) {
+          this.selectedAddonSubtitleId = subtitleId;
+          this.selectedSubtitleTrackIndex = -1;
+          this.selectedEmbeddedSubtitleTrackIndex = -1;
+          this.selectedManifestSubtitleTrackId = null;
+          this.invalidateTrackDialogCaches();
+          this.renderControlButtons();
+          this.renderSubtitleDialog();
+          return true;
+        }
+        // ass.js unavailable or stale: plain-text VTT fallback below.
+        const fallbackCues = this.parseSubtitleCues(assResult.fallbackVtt || "");
+        if (fallbackCues.length && isCurrentSelection()) {
+          this.clearMountedExternalSubtitleTracks();
+          this.clearHtmlSubtitleOverlay();
+          this.destroyAssSubtitleRenderer();
+          this.htmlSubtitleCues = fallbackCues;
+          this.htmlSubtitleSelectedId = subtitleId;
+          this.selectedAddonSubtitleId = subtitleId;
+          this.selectedSubtitleTrackIndex = -1;
+          this.selectedEmbeddedSubtitleTrackIndex = -1;
+          this.selectedManifestSubtitleTrackId = null;
+          this.renderHtmlSubtitleOverlayCue([]);
+          this.scheduleHtmlSubtitleOverlayRender();
+          this.invalidateTrackDialogCaches();
+          this.refreshSubtitleCueStyles();
+          this.renderControlButtons();
+          this.renderSubtitleDialog();
+          return true;
+        }
+        console.warn("ASS subtitle fallback produced no cues", { subtitleUrl: sourceUrl });
+        return false;
+      }
+      if (raw?.body != null) {
+        // Non-ASS body already fetched: parse cues directly, no second
+        // network round trip.
+        if (!isCurrentSelection()) {
+          return false;
+        }
+        const cues = this.parseSubtitleCues(raw.body);
+        if (!cues.length) {
+          throw new Error("HTML subtitle fetch returned no cues");
+        }
+        this.clearMountedExternalSubtitleTracks();
+        this.clearHtmlSubtitleOverlay();
+        this.destroyAssSubtitleRenderer();
+        if (typeof PlayerController.setAvPlaySubtitleTrack === "function") {
+          PlayerController.setAvPlaySubtitleTrack(-1);
+        }
+        this.htmlSubtitleCues = cues;
+        this.htmlSubtitleSelectedId = subtitleId;
+        this.selectedAddonSubtitleId = subtitleId;
+        this.selectedSubtitleTrackIndex = -1;
+        this.selectedEmbeddedSubtitleTrackIndex = -1;
+        this.selectedManifestSubtitleTrackId = null;
+        this.renderHtmlSubtitleOverlayCue([]);
+        this.scheduleHtmlSubtitleOverlayRender();
+        this.invalidateTrackDialogCaches();
+        this.refreshSubtitleCueStyles();
+        this.renderControlButtons();
+        this.renderSubtitleDialog();
+        return true;
+      }
+    }
+
     const subtitleUrl = Environment.isTizen()
       ? await this.resolveTizenAvPlaySubtitleUrl(subtitle?.url)
-      : await this.resolveSubtitlePlaybackUrl(subtitle?.url);
+      : await this.resolveSubtitlePlaybackUrl(subtitle?.url, {
+          languageHint: subtitle?.lang || subtitle?.language || subtitle?.languageCode
+        });
     if (!subtitleUrl) {
       return false;
     }
@@ -12924,7 +17554,13 @@ export const PlayerScreen = {
     if (!response.ok) {
       throw new Error(`HTML subtitle fetch failed with HTTP ${response.status}`);
     }
-    const text = await response.text();
+    const decodedText =
+      typeof TextDecoder === "function"
+        ? await decodeSubtitleResponseBody(response, {
+            languageHint: subtitle?.lang || subtitle?.language || subtitle?.languageCode
+          })
+        : null;
+    const text = sanitizeSubtitleMojibake(decodedText ?? (await response.text()));
     if (!isCurrentSelection()) {
       return false;
     }
@@ -12934,6 +17570,7 @@ export const PlayerScreen = {
     }
     this.clearMountedExternalSubtitleTracks();
     this.clearHtmlSubtitleOverlay();
+    this.destroyAssSubtitleRenderer();
     if (typeof PlayerController.setAvPlaySubtitleTrack === "function") {
       PlayerController.setAvPlaySubtitleTrack(-1);
     }
@@ -13194,6 +17831,7 @@ export const PlayerScreen = {
 
     if (tab === "builtIn") {
       if (avplaySubtitleTracks.length) {
+        const dashTextSwitchingUnsupported = this.isTizenDashSubtitleSwitchingUnsupported();
         return [
           {
             id: "subtitle-off",
@@ -13210,6 +17848,9 @@ export const PlayerScreen = {
               ? avplayTrackIndex
               : index;
             const display = formatSubtitleTrackDisplay(mergedTrack, index);
+            const unsupportedReason =
+              mergedTrack.unsupportedReason ||
+              (mergedTrack.supported === false ? "tizen-tx3g" : null);
             return {
               id: `subtitle-avplay-${normalizedTrackIndex}`,
               label: display.label,
@@ -13220,6 +17861,10 @@ export const PlayerScreen = {
               track: mergedTrack,
               isForced: isForcedSubtitleTrack(mergedTrack),
               selected: normalizedTrackIndex === selectedAvPlaySubtitleTrack,
+              disabled: dashTextSwitchingUnsupported || mergedTrack.supported === false,
+              unsupportedReason: dashTextSwitchingUnsupported
+                ? "tizen-dash-text"
+                : unsupportedReason,
               trackIndex: null,
               avplaySubtitleTrackIndex: normalizedTrackIndex
             };
@@ -13295,6 +17940,7 @@ export const PlayerScreen = {
         },
         ...embeddedSubtitleTracks.map((track, index) => {
           const display = formatSubtitleTrackDisplay(track, index);
+          const support = getEmbeddedSubtitleSupportState(track);
           return {
             id: `subtitle-embedded-${track.embeddedTrackIndex}`,
             label: display.label,
@@ -13305,12 +17951,15 @@ export const PlayerScreen = {
             track,
             isForced: isForcedSubtitleTrack(track),
             selected: track.embeddedTrackIndex === this.selectedEmbeddedSubtitleTrackIndex,
+            disabled: support.supported === false,
+            unsupportedReason: support.unsupportedReason,
             trackIndex: null,
             embeddedSubtitleTrackIndex: track.embeddedTrackIndex
           };
         }),
         ...builtInTracks.map((track, index) => {
           const display = formatSubtitleTrackDisplay(track, index);
+          const support = getEmbeddedSubtitleSupportState(track);
           return {
             id: `subtitle-built-${index}`,
             label: display.label,
@@ -13323,6 +17972,8 @@ export const PlayerScreen = {
             selected:
               this.selectedEmbeddedSubtitleTrackIndex < 0 &&
               index === this.selectedSubtitleTrackIndex,
+            disabled: support.supported === false,
+            unsupportedReason: support.unsupportedReason,
             trackIndex: index
           };
         }),
@@ -13362,8 +18013,9 @@ export const PlayerScreen = {
     }
 
     if (tab === "addons") {
-      if (this.subtitles.length) {
-        return this.subtitles.map((subtitle, index) => {
+      const subtitleSource = this.getSubtitleDialogSubtitles();
+      if (subtitleSource.length) {
+        return subtitleSource.map((subtitle, index) => {
           const subtitleId = subtitle.id || subtitle.url || `subtitle-${index}`;
           const display = formatSubtitleTrackDisplay(subtitle, index);
           return {
@@ -13378,6 +18030,7 @@ export const PlayerScreen = {
             selected: this.selectedAddonSubtitleId === subtitleId,
             trackIndex: null,
             subtitleIndex: index,
+            subtitleId,
             fallbackAddonSubtitle: true
           };
         });
@@ -13455,7 +18108,7 @@ export const PlayerScreen = {
       return cachedOptions;
     }
     const builtInEntries = this.getSubtitleEntries("builtIn").filter(
-      (entry) => !entry?.disabled || entry?.id === "subtitle-off"
+      (entry) => !entry?.disabled || entry?.id === "subtitle-off" || entry?.unsupportedReason
     );
     const addonEntries = this.getSubtitleEntries("addons").filter((entry) => !entry?.disabled);
     const options = [];
@@ -13490,12 +18143,29 @@ export const PlayerScreen = {
         entry.label ||
         subtitleLabel(options.length);
       const metaParts = [];
-      pushUniqueText(
-        metaParts,
-        track?.codec || track?.codecs || track?.codec_name || track?.format
-      );
+      pushUniqueText(metaParts, getSubtitleCodecDisplayLabel(track));
       if (isForced) {
         pushUniqueText(metaParts, t("sub_forced_lang", {}, "Forced"));
+      }
+      if (entry.unsupportedReason === "tizen-tx3g") {
+        pushUniqueText(metaParts, getTx3gSubtitleSupportMessage("tizen-tx3g"));
+      } else if (entry.unsupportedReason === "tx3g-runtime") {
+        pushUniqueText(metaParts, getTx3gSubtitleSupportMessage("tx3g-runtime"));
+      } else if (entry.unsupportedReason === "tizen-dash-text") {
+        pushUniqueText(
+          metaParts,
+          t(
+            "player_subtitle_tizen_dash_unsupported",
+            {},
+            "Subtitle switching for DASH streams may not be supported by this TV."
+          )
+        );
+      } else if (
+        entry.unsupportedReason === "webos-bitmap" ||
+        entry.unsupportedReason === "webos-bitmap-runtime"
+      ) {
+        pushUniqueText(metaParts, getBitmapSubtitleFormatLabel(track));
+        pushUniqueText(metaParts, getBitmapSubtitleSupportMessage());
       }
       options.push({
         id: entry.id,
@@ -13506,6 +18176,7 @@ export const PlayerScreen = {
         meta: metaParts.join(" • "),
         secondary: metaParts.join(" • "),
         selected: Boolean(entry.selected),
+        disabled: Boolean(entry.disabled),
         sourceType: "internal",
         isForced,
         entry
@@ -13524,8 +18195,14 @@ export const PlayerScreen = {
       const trackId = cleanDisplayText(track?.id);
       const normalizedTrackId = normalizeSubtitleLanguageKey(trackId);
       const meta = trackId && normalizedTrackId !== languageKey ? trackId : "";
-      options.push({
+      const optionId = this.getSubtitleOptionStableId({
         id: entry.id,
+        sourceLabel: entry.secondary || track?.addonName,
+        sourceType: "addon",
+        entry
+      });
+      options.push({
+        id: optionId,
         languageKey,
         languageLabel,
         title: languageLabel,
@@ -13541,6 +18218,20 @@ export const PlayerScreen = {
 
     this.trackDialogCache.subtitleOptions = options;
     return options;
+  },
+
+  getSubtitleOptionStableId(entry) {
+    if (!entry || entry.sourceType !== "addon") {
+      return String(entry?.id || "subtitle-option");
+    }
+    const track = entry.entry?.track || entry.entry || {};
+    const identity = [
+      track?.addonName || entry.sourceLabel || "addon",
+      track?.id || "",
+      track?.url || "",
+      entry.id || ""
+    ].join("\u0001");
+    return `addon:${stableSubtitleTextKey(identity)}`;
   },
 
   getSelectedSubtitleLanguageKey() {
@@ -13649,27 +18340,49 @@ export const PlayerScreen = {
   },
 
   syncSubtitleOptionIndexForFocusedLanguage() {
-    const languages = this.getSubtitleLanguageRailItems();
-    const activeLanguage =
-      languages[this.subtitleLanguageRailIndex]?.key || SUBTITLE_LANGUAGE_OFF_KEY;
-    const options = this.getSubtitleOptionsForLanguage(activeLanguage);
+    const selectedLanguageKey = this.getSelectedSubtitleLanguageKey();
+    const options = this.getSubtitleOptionsForLanguage(selectedLanguageKey);
+    const rememberedOptionId = this.subtitleOptionFocusMemory?.get(selectedLanguageKey);
+    const rememberedIndex = options.findIndex((item) => item.id === rememberedOptionId);
     const selectedIndex = options.findIndex((item) => item.selected);
-    this.subtitleOptionRailIndex = Math.max(0, selectedIndex >= 0 ? selectedIndex : 0);
+    this.subtitleOptionRailIndex = Math.max(
+      0,
+      rememberedIndex >= 0 ? rememberedIndex : selectedIndex >= 0 ? selectedIndex : 0
+    );
+    this.rememberSubtitleOptionFocus(selectedLanguageKey, options, this.subtitleOptionRailIndex);
+  },
+
+  rememberSubtitleOptionFocus(languageKey, options = [], index = 0) {
+    const option = options[clamp(Number(index || 0), 0, Math.max(0, options.length - 1))];
+    if (!option?.id || !languageKey || languageKey === SUBTITLE_LANGUAGE_OFF_KEY) {
+      return;
+    }
+    if (!(this.subtitleOptionFocusMemory instanceof Map)) {
+      this.subtitleOptionFocusMemory = new Map();
+    }
+    this.subtitleOptionFocusMemory.set(languageKey, option.id);
   },
 
   selectSubtitleOption(option, { focusOptions = true } = {}) {
-    if (!option?.entry || !option.languageKey || option.languageKey === SUBTITLE_LANGUAGE_OFF_KEY) {
+    if (
+      !option?.entry ||
+      option.disabled ||
+      !option.languageKey ||
+      option.languageKey === SUBTITLE_LANGUAGE_OFF_KEY
+    ) {
       return false;
     }
     const languages = this.getSubtitleLanguageRailItems();
     const languageIndex = languages.findIndex((item) => item.key === option.languageKey);
     if (languageIndex >= 0) {
       this.subtitleLanguageRailIndex = languageIndex;
+      this.subtitleFocusedLanguageKey = option.languageKey;
     }
 
     const options = this.getSubtitleOptionsForLanguage(option.languageKey);
     const optionIndex = options.findIndex((item) => item.id === option.id);
     this.subtitleOptionRailIndex = Math.max(0, optionIndex >= 0 ? optionIndex : 0);
+    this.rememberSubtitleOptionFocus(option.languageKey, options, this.subtitleOptionRailIndex);
     if (focusOptions) {
       this.subtitleFocusedRail = "options";
     }
@@ -13686,7 +18399,12 @@ export const PlayerScreen = {
     if (!options.length) {
       return false;
     }
-    return this.selectSubtitleOption(options[0], { focusOptions });
+    const rememberedOptionId = this.subtitleOptionFocusMemory?.get(languageKey);
+    const targetOption =
+      options.find((option) => option.selected && !option.disabled) ||
+      options.find((option) => option.id === rememberedOptionId && !option.disabled) ||
+      options.find((option) => !option?.disabled);
+    return this.selectSubtitleOption(targetOption, { focusOptions });
   },
 
   scrollSubtitleRailNodeIntoView(node, { center = false } = {}) {
@@ -13737,8 +18455,33 @@ export const PlayerScreen = {
         nextScrollTop = nodeBottom - Number(rail.clientHeight || 0) + margin;
       }
     }
+    // Legacy Chromium/Tizen can return a stale bounding rectangle directly
+    // after a keyed DOM update. The offset-parent coordinates are independent
+    // of that paint cycle and provide the same nearest-item fallback used by
+    // Android's LazyListState when the focused row is outside the viewport.
+    if (nextScrollTop === viewTop) {
+      const offsetTop = Number(node.offsetTop || 0);
+      const offsetBottom = offsetTop + Number(node.offsetHeight || 0);
+      const offsetViewBottom = viewTop + Number(rail.clientHeight || 0);
+      if (center) {
+        nextScrollTop =
+          offsetTop -
+          Math.max(0, (Number(rail.clientHeight || 0) - Number(node.offsetHeight || 0)) / 2);
+      } else if (offsetTop < viewTop + margin) {
+        nextScrollTop = offsetTop - margin;
+      } else if (offsetBottom > offsetViewBottom - margin) {
+        nextScrollTop = offsetBottom - Number(rail.clientHeight || 0) + margin;
+      }
+    }
     if (nextScrollTop !== viewTop) {
-      rail.scrollTop = Math.max(0, Math.min(maxScrollTop, Math.round(nextScrollTop)));
+      const nextValue = Math.max(0, Math.min(maxScrollTop, Math.round(nextScrollTop)));
+      rail.scrollTop = nextValue;
+      if (
+        rail.classList.contains("player-subtitle-options-rail") &&
+        this.subtitleOptionVirtualState?.window
+      ) {
+        this.subtitleOptionVirtualState.scrollTop = nextValue;
+      }
     }
   },
 
@@ -13820,6 +18563,42 @@ export const PlayerScreen = {
 
   isTrackDiscoveryWindowPending() {
     return Number(this.trackDiscoveryDeadline || 0) > Date.now();
+  },
+
+  isWebOsEngineFsEmbeddedTrackDiscoveryPending() {
+    if (!Environment.isWebOS() || !this.currentEngineFsStream) {
+      return false;
+    }
+
+    const probeUrl = this.getTrackProbeUrl();
+    if (
+      !probeUrl ||
+      this.isCurrentSourceAdaptiveManifest() ||
+      !this.isTrackDiscoveryWindowPending()
+    ) {
+      return false;
+    }
+
+    const canDiscoverEmbeddedTracks =
+      this.canDiscoverEmbeddedSubtitleTracks() || this.canDiscoverEmbeddedAudioTracks();
+    if (!canDiscoverEmbeddedTracks) {
+      // EngineFS can expose a playable URL before the native WebOS player has
+      // exposed metadata. Keep the startup decision pending until that probe
+      // becomes possible instead of treating candidate metadata as a track.
+      return true;
+    }
+
+    if (this.embeddedSubtitleLoading || this.embeddedAudioLoading) {
+      return true;
+    }
+    if (this.embeddedSubtitleTracks.length > 0 || this.embeddedAudioTracks.length > 0) {
+      return false;
+    }
+
+    // An empty successful response is a valid result (the file may have no
+    // embedded tracks). An unattempted probe must remain pending so a later
+    // response cannot be hidden by an early "off" decision.
+    return this.lastEmbeddedTrackProbeUrl !== probeUrl;
   },
 
   isAudioPreferenceDiscoveryPending() {
@@ -13907,11 +18686,14 @@ export const PlayerScreen = {
     const hasSubtitleOptions = this.collectSubtitleOptionItems().some(
       (entry) => entry.languageKey !== SUBTITLE_LANGUAGE_OFF_KEY
     );
+    const webOsEngineFsEmbeddedTrackDiscoveryPending =
+      this.isWebOsEngineFsEmbeddedTrackDiscoveryPending();
     return Boolean(
       this.subtitleLoading ||
       this.embeddedSubtitleLoading ||
       this.manifestLoading ||
       this.trackDiscoveryInProgress ||
+      webOsEngineFsEmbeddedTrackDiscoveryPending ||
       (!hasSubtitleOptions && this.isTrackDiscoveryWindowPending())
     );
   },
@@ -13985,6 +18767,15 @@ export const PlayerScreen = {
     return Array.from(new Set(targets));
   },
 
+  getStartupAutoSelectSubtitleLanguageTargets() {
+    // Android treats a primary "None" as no normal auto-selection target;
+    // the secondary language remains useful for filtering/loading only.
+    if (this.getStartupPreferredSubtitleLanguageKey() === SUBTITLE_LANGUAGE_OFF_KEY) {
+      return [];
+    }
+    return this.getStartupPreferredSubtitleLanguageTargets();
+  },
+
   shouldUseStartupForcedSubtitles(settings = PlayerSettingsStore.get()) {
     const preferred = extractSubtitleLanguageSetting(
       settings.subtitleStyle?.preferredLanguage || settings.subtitleLanguage || "off"
@@ -14011,7 +18802,7 @@ export const PlayerScreen = {
       return null;
     }
 
-    const explicitTargets = this.getStartupPreferredSubtitleLanguageTargets();
+    const explicitTargets = this.getStartupAutoSelectSubtitleLanguageTargets();
     const selectedAudioOption = this.collectAudioOptionItems().find(
       (entry) => entry.selected && entry.languageKey
     );
@@ -14046,7 +18837,7 @@ export const PlayerScreen = {
     if (this.shouldUseStartupForcedSubtitles(settings)) {
       return "audio-forced";
     }
-    const explicitTargets = this.getStartupPreferredSubtitleLanguageTargets();
+    const explicitTargets = this.getStartupAutoSelectSubtitleLanguageTargets();
     if (explicitTargets.length) {
       return "language";
     }
@@ -14176,7 +18967,13 @@ export const PlayerScreen = {
     }
 
     const preferredTargets = this.getStartupPreferredAudioLanguageTargets();
-    const isStillLoading = this.isAudioPreferenceDiscoveryPending();
+    // `loadedmetadata` fires before Tizen AVPlay publishes `getTotalTrackInfo`,
+    // so the option list can still hold nothing but the synthetic startup entry.
+    // Concluding there means falling back to the runtime's first audio track and
+    // latching that choice, which is why the preferred language never applied.
+    const isStillLoading =
+      this.isAudioPreferenceDiscoveryPending() ||
+      hasOnlyImplicitStartupAudioOptions(this.collectAudioOptionItems());
     const matchedRememberedOption = this.findRememberedAudioOption();
     const rememberedOption =
       isStillLoading && matchedRememberedOption?.entry?.implicitAudioTrack
@@ -14310,7 +19107,7 @@ export const PlayerScreen = {
   },
 
   findStartupPreferredSubtitleOption(
-    targets = this.getStartupPreferredSubtitleLanguageTargets(),
+    targets = this.getStartupAutoSelectSubtitleLanguageTargets(),
     mode = "language"
   ) {
     const normalizedTargets = Array.isArray(targets) ? targets.filter(Boolean) : [];
@@ -14344,19 +19141,13 @@ export const PlayerScreen = {
         if (forcedInternal) return forcedInternal;
         if (Environment.isWebOS()) {
           // Android can rely on ExoPlayer's forced flag, while webOS can omit
-          // it for embedded tracks. Keep embedded tracks ahead of addons, but
-          // only relax the regional match for an explicitly forced track or
-          // when exactly one compatible embedded track exists.
+          // it for embedded tracks. Keep embedded tracks ahead of addons and
+          // relax only the regional match for an explicitly forced track.
           const compatibleForcedInternal = options.find(
             (entry) =>
               entry.sourceType === "internal" && entry.isForced && matchTarget(entry, target)
           );
           if (compatibleForcedInternal) return compatibleForcedInternal;
-
-          const compatibleInternalTracks = options.filter(
-            (entry) => entry.sourceType === "internal" && matchTarget(entry, target)
-          );
-          if (compatibleInternalTracks.length === 1) return compatibleInternalTracks[0];
         }
         const forcedAddon = findMatch(target, { sourceType: "addon", forced: true });
         if (forcedAddon) return forcedAddon;
@@ -14416,7 +19207,7 @@ export const PlayerScreen = {
     }
 
     const configuredPreferenceMode = this.getStartupSubtitlePreferenceMode();
-    const preferredSubtitleTargets = this.getStartupPreferredSubtitleLanguageTargets();
+    const preferredSubtitleTargets = this.getStartupAutoSelectSubtitleLanguageTargets();
     if (
       configuredPreferenceMode !== "off" &&
       !this.startupAudioPreferenceApplied &&
@@ -14483,6 +19274,19 @@ export const PlayerScreen = {
       preferredTargets,
       preferenceMode
     );
+    const builtInSubtitleDiscoveryPending = Boolean(
+      this.embeddedSubtitleLoading ||
+      this.manifestLoading ||
+      (this.trackDiscoveryInProgress &&
+        (this.canDiscoverEmbeddedSubtitleTracks() || this.isCurrentSourceAdaptiveManifest())) ||
+      this.isWebOsEngineFsEmbeddedTrackDiscoveryPending()
+    );
+    // Android only reaches the addon fallback after its first internal text-track
+    // scan. Smart-TV discovery is asynchronous, so do not latch an addon match
+    // while a preferred embedded/manifest track can still be discovered.
+    if (preferredOption?.sourceType === "addon" && builtInSubtitleDiscoveryPending) {
+      return false;
+    }
     if (selectedOption && preferredOption?.id === selectedOption.id) {
       this.startupSubtitlePreferenceApplied = true;
       return true;
@@ -14528,24 +19332,28 @@ export const PlayerScreen = {
   getSubtitleStyleControls() {
     const style = this.subtitleStyleSettings || {};
     const htmlRendererActive = Boolean(
-      this.htmlSubtitleSelectedId &&
-      ((Array.isArray(this.htmlSubtitleCues) && this.htmlSubtitleCues.length > 0) ||
-        PlayerController.shouldRenderAvPlaySubtitleCallbacksInHtml?.())
+      this.webOsEmbeddedTextSubtitleUsingAss ||
+      this.isAssAddonSubtitleActive() ||
+      (this.htmlSubtitleSelectedId &&
+        ((Array.isArray(this.htmlSubtitleCues) && this.htmlSubtitleCues.length > 0) ||
+          PlayerController.shouldRenderAvPlaySubtitleCallbacksInHtml?.()))
     );
     const usingTizenAvPlay = Boolean(Environment.isTizen() && PlayerController.isUsingAvPlay?.());
     const rendererMode = htmlRendererActive
       ? "html"
       : PlayerController.getAvPlaySubtitleOutputMode?.() || "none";
+    const usingWebOsNative = Boolean(
+      Environment.isWebOS() && PlayerController.isUsingNativePlayback?.() && !htmlRendererActive
+    );
     const availability = resolveSubtitleStyleControlAvailability({
       isTizenAvPlay: usingTizenAvPlay,
+      isWebOsNative: usingWebOsNative,
       rendererMode,
       supportsExternalDelay: PlayerController.supportsAvPlayExternalSubtitleDelay?.() === true
     });
-    const unavailableValue = t(
-      "subtitle_style_unavailable_native",
-      {},
-      "Unavailable with native subtitles"
-    );
+    const unavailableValue = TizenCapabilities.isAdvancedSubtitleStylingLimited()
+      ? t("player_subtitle_tizen_advanced_unavailable_short", {}, "Not fully supported on this TV")
+      : t("subtitle_style_unavailable_native", {}, "Unavailable with native subtitles");
     return [
       {
         id: "delay",
@@ -14566,6 +19374,11 @@ export const PlayerScreen = {
         id: "textColor",
         label: t("subtitle_style_text_color", {}, "Text Color"),
         value: styleChipLabel(style.textColor || "#FFFFFF")
+      },
+      {
+        id: "textOpacity",
+        label: t("subtitle_style_text_opacity", {}, "Text Opacity"),
+        value: `${normalizeSubtitleTextOpacity(style.textOpacity)}%`
       },
       {
         id: "outlineEnabled",
@@ -14639,6 +19452,8 @@ export const PlayerScreen = {
         SUBTITLE_DELAY_MIN_MS,
         SUBTITLE_DELAY_MAX_MS
       );
+    } else if (controlId === "resetDelay") {
+      this.subtitleDelayMs = 0;
     } else if (controlId === "fontSize") {
       style.fontSize = normalizeSubtitleFontSize(
         Number(style.fontSize || 120) + delta * SUBTITLE_FONT_STEP
@@ -14652,6 +19467,10 @@ export const PlayerScreen = {
       );
       style.textColor =
         SUBTITLE_TEXT_COLORS[clamp(currentIndex + delta, 0, SUBTITLE_TEXT_COLORS.length - 1)];
+    } else if (controlId === "textOpacity") {
+      style.textOpacity = normalizeSubtitleTextOpacity(
+        Number(style.textOpacity ?? 100) + delta * SUBTITLE_TEXT_OPACITY_STEP
+      );
     } else if (controlId === "outlineEnabled" && delta !== 0) {
       style.outlineEnabled = !style.outlineEnabled;
     } else if (controlId === "outlineColor" && delta !== 0) {
@@ -14673,12 +19492,25 @@ export const PlayerScreen = {
         ...style,
         fontSize: defaults.fontSize,
         textColor: defaults.textColor,
+        textOpacity: defaults.textOpacity,
         bold: defaults.bold,
         outlineEnabled: defaults.outlineEnabled,
         outlineColor: defaults.outlineColor,
         verticalOffset: defaults.verticalOffset,
         verticalOffsetContract: defaults.verticalOffsetContract
       };
+    }
+    if (
+      (controlId === "delay" || controlId === "resetDelay" || controlId === "reset") &&
+      this.isAssAddonSubtitleActive()
+    ) {
+      // ass.js delay is seconds, positive = later; update in place instead
+      // of recreating the renderer.
+      this.assSubtitleRenderer?.setDelay(this.subtitleDelayMs);
+    }
+
+    if (controlId === "delay" || controlId === "resetDelay" || controlId === "reset") {
+      this.persistSubtitleDelayPreference();
     }
 
     if (controlId !== "delay" && controlId !== "reset") {
@@ -14697,8 +19529,11 @@ export const PlayerScreen = {
   },
   openSubtitleDialog() {
     this.cancelSeekPreview({ commit: false });
+    this.dismissSubtitleTimingDialog();
+    this.hideSubtitleDelayOverlay({ scheduleControls: false });
     this.syncTrackState();
     this.subtitleDialogVisible = true;
+    this.beginSubtitleDialogSession();
     this.audioDialogVisible = false;
     this.speedDialogVisible = false;
     this.sourcesPanelVisible = false;
@@ -14708,6 +19543,8 @@ export const PlayerScreen = {
       0,
       languageRail.findIndex((item) => item.key === selectedLanguageKey)
     );
+    this.subtitleFocusedLanguageKey =
+      languageRail[this.subtitleLanguageRailIndex]?.key || SUBTITLE_LANGUAGE_OFF_KEY;
     this.syncSubtitleOptionIndexForFocusedLanguage();
     this.subtitleStyleRailIndex = 0;
     this.subtitleStyleControlSide = "minus";
@@ -14726,8 +19563,12 @@ export const PlayerScreen = {
     this.flushPersistPlayerPresentationSettings();
     this.subtitleDialogVisible = false;
     this.subtitleFocusedRail = "language";
+    this.subtitleFocusedLanguageKey = SUBTITLE_LANGUAGE_OFF_KEY;
     this.subtitleStyleControlSide = "minus";
     this.renderSubtitleDialog();
+    this.subtitleDialogSession = null;
+    this.subtitleOptionFocusMemory = new Map();
+    this.resetSubtitleOptionVirtualState();
     this.updateModalBackdrop();
     this.resetControlsAutoHide();
   },
@@ -14763,10 +19604,15 @@ export const PlayerScreen = {
     if (previousSelectionKey === this.getActiveSubtitleSelectionKey()) {
       return;
     }
+    this.resetSubtitleAutoSyncState();
     if (Number(this.subtitleDelayMs || 0) === 0) {
       return;
     }
     this.subtitleDelayMs = 0;
+    this.persistSubtitleDelayPreference();
+    if (this.isAssAddonSubtitleActive()) {
+      this.assSubtitleRenderer?.setDelay(0);
+    }
     this.applySubtitlePresentationSettings({ refreshTrackRendering: true });
   },
 
@@ -14776,10 +19622,13 @@ export const PlayerScreen = {
     if (this.externalTrackNodes.length) {
       this.clearMountedExternalSubtitleTracks();
     }
+    this.clearWebOsEmbeddedTextSubtitleOverlay({ dispose: true });
     this.clearHtmlSubtitleOverlay();
     this.clearBitmapSubtitleOverlay({ dispose: true });
 
     let applied = false;
+    const useTizenEmbeddedTextHtmlFallback =
+      isTizenEmbeddedTextSubtitleFallbackTrack(embeddedTrack);
     if (
       Environment.isTizen() &&
       typeof PlayerController.isUsingAvPlay === "function" &&
@@ -14790,7 +19639,7 @@ export const PlayerScreen = {
         typeof PlayerController.setAvPlaySubtitleTrack === "function" &&
         Number.isFinite(nativeTrackIndex)
           ? PlayerController.setAvPlaySubtitleTrack(nativeTrackIndex, {
-              renderMode: this.subtitleRenderMode
+              renderMode: useTizenEmbeddedTextHtmlFallback ? "html" : this.subtitleRenderMode
             })
           : false;
     } else {
@@ -14820,13 +19669,26 @@ export const PlayerScreen = {
     if (this.refreshSubtitleCueStyles()) {
       this.refreshWebOsEmbeddedSubtitleAfterCueMutation();
     }
+    if (
+      embeddedTrack &&
+      !embeddedTrack.bitmapSubtitle &&
+      (Environment.isWebOS() || useTizenEmbeddedTextHtmlFallback)
+    ) {
+      this.webOsEmbeddedTextSubtitleTrack = embeddedTrack;
+      this.webOsEmbeddedTextSubtitleUsingHtml = false;
+      void this.loadWebOsEmbeddedTextSubtitleWindow(this.getPlaybackCurrentSeconds());
+    }
     this.renderControlButtons();
     this.renderSubtitleDialog();
     return true;
   },
 
   applyBitmapEmbeddedSubtitleTrack(embeddedTrack, targetTrackIndex) {
-    if (!embeddedTrack?.bitmapSubtitle || !canUseWebOsBitmapSubtitles()) {
+    if (
+      !embeddedTrack?.bitmapSubtitle ||
+      getEmbeddedSubtitleSupportState(embeddedTrack).supported === false ||
+      !canUseWebOsBitmapSubtitles()
+    ) {
       return false;
     }
     const sourceTrackId = Number(embeddedTrack.sourceTrackId);
@@ -14838,6 +19700,7 @@ export const PlayerScreen = {
     if (this.externalTrackNodes.length) {
       this.clearMountedExternalSubtitleTracks();
     }
+    this.clearWebOsEmbeddedTextSubtitleOverlay({ dispose: true });
     this.clearHtmlSubtitleOverlay();
     this.clearBitmapSubtitleOverlay({ dispose: true });
     PlayerController.setWebOsEmbeddedSubtitleTrack?.(-1);
@@ -14860,6 +19723,9 @@ export const PlayerScreen = {
     if (!entry || entry.disabled) {
       return;
     }
+    if (!this.startupSubtitlePreferenceApplying) {
+      this.startupSubtitlePreferenceApplied = true;
+    }
     const selectionToken = Number(this.subtitleSelectionToken || 0) + 1;
     this.subtitleSelectionToken = selectionToken;
     const previousSubtitleSelectionKey = this.getActiveSubtitleSelectionKey();
@@ -14873,6 +19739,7 @@ export const PlayerScreen = {
     }
 
     if (isEmbeddedEntry) {
+      this.destroyAssSubtitleRenderer();
       const targetTrackIndex = Number(entry.embeddedSubtitleTrackIndex);
       const embeddedTrack = this.getEmbeddedSubtitleTrackByEmbeddedIndex(targetTrackIndex);
       if (embeddedTrack?.bitmapSubtitle) {
@@ -14888,14 +19755,27 @@ export const PlayerScreen = {
     }
     if (!entry.fallbackAddonSubtitle) {
       this.clearHtmlSubtitleOverlay();
+      // A different subtitle kind was selected: retire any active ASS
+      // renderer. The fallbackAddonSubtitle branch re-activates ASS when
+      // the new selection is itself an ASS body.
+      this.destroyAssSubtitleRenderer();
     }
 
     if (Object.prototype.hasOwnProperty.call(entry, "avplaySubtitleTrackIndex")) {
       const targetTrackIndex = Number(entry.avplaySubtitleTrackIndex);
+      // Tizen exposes embedded text tracks through the AVPlay list above, so
+      // the UI entry does not carry embeddedSubtitleTrackIndex. Recover the
+      // local metadata here before selecting AVPlay; otherwise the Tizen
+      // extractor fallback is never activated for the normal UI path.
+      const tizenEmbeddedTrack = Environment.isTizen()
+        ? this.getEmbeddedSubtitleTrackByNativeIndex(targetTrackIndex)
+        : null;
+      const useTizenEmbeddedTextHtmlFallback =
+        isTizenEmbeddedTextSubtitleFallbackTrack(tizenEmbeddedTrack);
       const applied =
         typeof PlayerController.setAvPlaySubtitleTrack === "function"
           ? PlayerController.setAvPlaySubtitleTrack(targetTrackIndex, {
-              renderMode: this.subtitleRenderMode
+              renderMode: useTizenEmbeddedTextHtmlFallback ? "html" : this.subtitleRenderMode
             })
           : false;
       if (!applied) {
@@ -14908,6 +19788,11 @@ export const PlayerScreen = {
       this.resetSubtitleDelayAfterSelectionChange(previousSubtitleSelectionKey);
       this.invalidateTrackDialogCaches();
       this.refreshSubtitleCueStyles();
+      if (useTizenEmbeddedTextHtmlFallback) {
+        this.webOsEmbeddedTextSubtitleTrack = tizenEmbeddedTrack;
+        this.webOsEmbeddedTextSubtitleUsingHtml = false;
+        void this.loadWebOsEmbeddedTextSubtitleWindow(this.getPlaybackCurrentSeconds());
+      }
       this.renderControlButtons();
       this.renderSubtitleDialog();
       return;
@@ -14975,8 +19860,9 @@ export const PlayerScreen = {
         clearTimeout(this.subtitleSelectionTimer);
         this.subtitleSelectionTimer = null;
       }
-      const subtitle = this.subtitles[entry.subtitleIndex];
-      const subtitleId = subtitle?.id || subtitle?.url || `subtitle-${entry.subtitleIndex}`;
+      const subtitle = entry.track || this.subtitles[entry.subtitleIndex];
+      const subtitleId =
+        entry.subtitleId || subtitle?.id || subtitle?.url || `subtitle-${entry.subtitleIndex}`;
       this.selectedAddonSubtitleId = subtitleId;
       this.selectedSubtitleTrackIndex = -1;
       this.selectedEmbeddedSubtitleTrackIndex = -1;
@@ -14986,7 +19872,15 @@ export const PlayerScreen = {
       this.refreshSubtitleCueStyles();
       this.renderControlButtons();
       this.renderSubtitleDialog();
-      void this.applyFallbackAddonSubtitle(entry.subtitleIndex, selectionToken);
+      const liveSubtitleIndex = this.subtitles.findIndex((candidate) => {
+        const candidateId = candidate?.id || candidate?.url || "";
+        return candidateId && candidateId === subtitleId;
+      });
+      void this.applyFallbackAddonSubtitle(
+        liveSubtitleIndex >= 0 ? liveSubtitleIndex : entry.subtitleIndex,
+        selectionToken,
+        subtitle
+      );
       return;
     }
 
@@ -15048,8 +19942,12 @@ export const PlayerScreen = {
     this.renderSubtitleDialog();
   },
 
-  async applyFallbackAddonSubtitle(subtitleIndex, selectionToken = this.subtitleSelectionToken) {
-    const subtitle = this.subtitles[subtitleIndex];
+  async applyFallbackAddonSubtitle(
+    subtitleIndex,
+    selectionToken = this.subtitleSelectionToken,
+    subtitleOverride = null
+  ) {
+    const subtitle = subtitleOverride || this.subtitles[subtitleIndex];
     if (!subtitle?.url) {
       return;
     }
@@ -15086,7 +19984,9 @@ export const PlayerScreen = {
       try {
         avPlaySubtitleUrl = Environment.isTizen()
           ? (await this.resolveTizenAvPlaySubtitleUrl(subtitle.url)) || subtitle.url
-          : (await this.resolveSubtitlePlaybackUrl(subtitle.url)) || subtitle.url;
+          : (await this.resolveSubtitlePlaybackUrl(subtitle.url, {
+              languageHint: subtitle?.lang || subtitle?.language || subtitle?.languageCode
+            })) || subtitle.url;
       } catch (_) {
         avPlaySubtitleUrl = subtitle.url;
       }
@@ -15129,7 +20029,69 @@ export const PlayerScreen = {
     this.disableEmbeddedSubtitleSelection();
     this.clearMountedExternalSubtitleTracks();
 
-    const resolvedSubtitleUrl = await this.resolveSubtitlePlaybackUrl(subtitle.url);
+    // ASS branch: detect from the raw body and render through ass.js.
+    let assFallbackVtt = "";
+    let rawBody = null;
+    let detectedAss = false;
+    try {
+      const raw = await this.fetchSubtitleRawBody(subtitle.url, {
+        languageHint: subtitle?.lang || subtitle?.language || subtitle?.languageCode
+      });
+      rawBody = raw;
+      detectedAss = Boolean(
+        raw?.body != null &&
+        isAssSubtitle(raw.body, { sourceUrl: subtitle.url, contentType: raw.contentType })
+      );
+      if (detectedAss) {
+        if (!isCurrentSelection()) {
+          return;
+        }
+        this.clearHtmlSubtitleOverlay();
+        const assResult = await this.applyAssSubtitleBody({
+          body: raw.body,
+          selectionToken
+        });
+        if (assResult.applied && isCurrentSelection()) {
+          this.selectedAddonSubtitleId = subtitleId;
+          this.selectedSubtitleTrackIndex = -1;
+          this.selectedEmbeddedSubtitleTrackIndex = -1;
+          this.selectedManifestSubtitleTrackId = null;
+          this.renderControlButtons();
+          this.renderSubtitleDialog();
+          return;
+        }
+        assFallbackVtt = assResult.fallbackVtt || "";
+      }
+    } catch (assError) {
+      if (!isCurrentSelection()) {
+        return;
+      }
+      console.warn("ASS subtitle handling failed", {
+        subtitleUrl: subtitle.url,
+        error: assError?.message || String(assError || "")
+      });
+    }
+
+    let resolvedSubtitleUrl = "";
+    if (detectedAss) {
+      if (!assFallbackVtt) {
+        console.warn("ASS subtitle fallback produced no cues", { subtitleUrl: subtitle.url });
+        return;
+      }
+      resolvedSubtitleUrl = URL.createObjectURL(new Blob([assFallbackVtt], { type: "text/vtt" }));
+      this.externalSubtitleObjectUrls.push(resolvedSubtitleUrl);
+    } else if (rawBody?.body == null && rawBody?.sourceUrl) {
+      // blob:/data: URLs were not fetched; preserve the old direct URL path.
+      resolvedSubtitleUrl = rawBody.sourceUrl;
+    } else if (rawBody) {
+      resolvedSubtitleUrl = this.createSubtitleObjectUrl(
+        rawBody.body,
+        rawBody.resolvedUrl || rawBody.sourceUrl,
+        rawBody.contentType
+      );
+    } else {
+      resolvedSubtitleUrl = subtitle.url;
+    }
     if (!isCurrentSelection() || !resolvedSubtitleUrl) {
       return;
     }
@@ -15207,6 +20169,968 @@ export const PlayerScreen = {
     scheduleActivation();
   },
 
+  getSubtitleOptionKeys(options = []) {
+    const occurrences = new Map();
+    return options.map((item, index) => {
+      const baseKey = String(item?.id || `subtitle-option-${index}`);
+      const occurrence = Number(occurrences.get(baseKey) || 0);
+      occurrences.set(baseKey, occurrence + 1);
+      return occurrence ? `${baseKey}#${occurrence}` : baseKey;
+    });
+  },
+
+  renderSubtitleOptionItemMarkup(item, index, optionKey) {
+    return `
+            <div class="player-dialog-item focusable${item.selected ? " selected" : ""}${item.disabled ? " disabled" : ""}" data-subtitle-rail="options" data-subtitle-index="${index}" data-subtitle-key="${escapeAttribute(optionKey)}" aria-disabled="${item.disabled ? "true" : "false"}">
+              <div class="player-subtitle-option-copy">
+                <span class="player-subtitle-source-chip">${escapeHtml(item.sourceLabel || "")}</span>
+                <div class="player-dialog-item-main">${escapeHtml(item.title || "")}</div>
+                ${item.meta ? `<div class="player-dialog-item-sub">${escapeHtml(item.meta)}</div>` : ""}
+              </div>
+              <div class="player-dialog-item-check">${item.selected ? "&#10003;" : ""}</div>
+            </div>
+          `;
+  },
+
+  prepareSubtitleOptionVirtualState(languageKey, keys) {
+    const state = this.subtitleOptionVirtualState || createSubtitleOptionVirtualState();
+    const normalizedLanguageKey = String(languageKey || SUBTITLE_LANGUAGE_OFF_KEY);
+    const sameKeys =
+      state.languageKey === normalizedLanguageKey &&
+      state.keys.length === keys.length &&
+      state.keys.every((key, index) => key === keys[index]);
+    if (!sameKeys) {
+      state.languageKey = normalizedLanguageKey;
+      state.keys = keys.slice();
+      state.measuredExtents = new Map();
+      state.model = null;
+      state.window = null;
+      state.scrollTop = 0;
+      state.initialized = false;
+    }
+    this.subtitleOptionVirtualState = state;
+    return { state, languageChanged: !sameKeys };
+  },
+
+  getSubtitleVirtualRowGap() {
+    // components.css supplies the same 8px spacing through margin when the
+    // legacy runtime lacks flex-gap, so the logical model remains identical.
+    return SUBTITLE_VIRTUAL_ROW_GAP;
+  },
+
+  renderSubtitleOptionsMarkup(
+    options = [],
+    { subtitleLoadingVisible = false, languageKey = "" } = {}
+  ) {
+    if (!options.length) {
+      return subtitleLoadingVisible
+        ? `
+        <div class="player-dialog-empty player-dialog-loading">
+          ${renderLoadingIndicator()}
+          <span>${escapeHtml(t("subtitle_loading_builtin", {}, "Loading subtitle tracks..."))}</span>
+        </div>
+      `
+        : `<div class="player-dialog-empty">${escapeHtml(t("subtitle_none", {}, "No subtitles"))}</div>`;
+    }
+
+    const optionKeys = this.getSubtitleOptionKeys(options);
+    const { state, languageChanged } = this.prepareSubtitleOptionVirtualState(
+      languageKey,
+      optionKeys
+    );
+    if (options.length < SUBTITLE_VIRTUALIZATION_THRESHOLD) {
+      state.model = null;
+      state.window = null;
+      state.scrollTop = 0;
+      state.initialized = true;
+      return options
+        .map((item, index) => this.renderSubtitleOptionItemMarkup(item, index, optionKeys[index]))
+        .join("");
+    }
+
+    const rail = this.uiRefs?.subtitleDialog?.querySelector?.(".player-subtitle-options-rail");
+    const viewportHeight = Number(rail?.clientHeight || 0) || 720;
+    const estimatedExtent =
+      Number(state.model?.estimatedExtent || 0) || SUBTITLE_VIRTUALIZATION_DEFAULT_ROW_EXTENT;
+    const rowGap = this.getSubtitleVirtualRowGap();
+    const model = buildSubtitleVirtualModel(optionKeys, state.measuredExtents, estimatedExtent, {
+      rowGap
+    });
+    const preferredIndex = clamp(
+      Number(this.subtitleOptionRailIndex || 0),
+      0,
+      Math.max(0, options.length - 1)
+    );
+    let scrollTop = Number(state.scrollTop || 0);
+    if (languageChanged || !state.initialized) {
+      scrollTop = getSubtitleScrollTopForIndex(model, preferredIndex, {
+        currentScrollTop: 0,
+        viewportHeight,
+        padding: 16
+      });
+    }
+    if (
+      state.window &&
+      (preferredIndex < state.window.start || preferredIndex > state.window.end)
+    ) {
+      scrollTop = getSubtitleScrollTopForIndex(model, preferredIndex, {
+        currentScrollTop: scrollTop,
+        viewportHeight,
+        padding: 16
+      });
+    }
+    const virtualWindow = getSubtitleVirtualWindow(model, {
+      scrollTop,
+      viewportHeight,
+      overscanPx: SUBTITLE_VIRTUALIZATION_OVERSCAN_PX,
+      minWindow: SUBTITLE_VIRTUALIZATION_MIN_WINDOW
+    });
+    state.model = model;
+    state.window = virtualWindow;
+    state.scrollTop = scrollTop;
+    state.initialized = true;
+
+    const visibleItems = options
+      .slice(virtualWindow.start, virtualWindow.end + 1)
+      .map((item, relativeIndex) => {
+        const index = virtualWindow.start + relativeIndex;
+        return this.renderSubtitleOptionItemMarkup(item, index, optionKeys[index]);
+      })
+      .join("");
+    const topSpacerHeight = Math.max(0, Number(virtualWindow.topSpacer || 0) - rowGap);
+    const bottomSpacerHeight = Math.max(0, Number(virtualWindow.bottomSpacer || 0) - rowGap);
+    const topSpacer = topSpacerHeight
+      ? `<div class="player-subtitle-virtual-spacer" style="height:${Math.round(topSpacerHeight)}px" aria-hidden="true"></div>`
+      : "";
+    const bottomSpacer = bottomSpacerHeight
+      ? `<div class="player-subtitle-virtual-spacer" style="height:${Math.round(bottomSpacerHeight)}px" aria-hidden="true"></div>`
+      : "";
+    return `${topSpacer}${visibleItems}${bottomSpacer}`;
+  },
+
+  applySubtitleOptionVirtualScrollPosition() {
+    const state = this.subtitleOptionVirtualState;
+    const rail = this.uiRefs?.subtitleDialog?.querySelector?.(".player-subtitle-options-rail");
+    if (!state?.window || !(rail instanceof HTMLElement)) {
+      return;
+    }
+    rail.scrollTop = Math.max(0, Number(state.scrollTop || 0));
+  },
+
+  scheduleSubtitleOptionVirtualMeasurement() {
+    if (this.subtitleOptionVirtualMeasureTimer) {
+      clearTimeout(this.subtitleOptionVirtualMeasureTimer);
+      this.subtitleOptionVirtualMeasureTimer = null;
+    }
+    const options = this.getSubtitleOptionsForLanguage(this.getSelectedSubtitleLanguageKey());
+    if (!this.subtitleDialogVisible || options.length < SUBTITLE_VIRTUALIZATION_THRESHOLD) {
+      return;
+    }
+    this.subtitleOptionVirtualMeasureTimer = setTimeout(() => {
+      this.subtitleOptionVirtualMeasureTimer = null;
+      this.measureSubtitleOptionVirtualRows();
+    }, 0);
+  },
+
+  measureSubtitleOptionVirtualRows() {
+    const state = this.subtitleOptionVirtualState;
+    const rail = this.uiRefs?.subtitleDialog?.querySelector?.(".player-subtitle-options-rail");
+    if (
+      !this.subtitleDialogVisible ||
+      !state?.window ||
+      !(rail instanceof HTMLElement) ||
+      !state.model
+    ) {
+      return;
+    }
+    const measuredRows = Array.from(
+      rail.querySelectorAll("[data-subtitle-rail='options'][data-subtitle-key]")
+    );
+    let changed = false;
+    measuredRows.forEach((node) => {
+      const key = String(node.dataset?.subtitleKey || "");
+      const height = Number(node.offsetHeight || 0);
+      if (!key || !Number.isFinite(height) || height <= 0) {
+        return;
+      }
+      const previous = Number(state.measuredExtents.get(key) || 0);
+      if (Math.abs(previous - height) > 1) {
+        state.measuredExtents.set(key, height);
+        changed = true;
+      }
+    });
+    if (!changed) {
+      return;
+    }
+    const options = this.getSubtitleOptionsForLanguage(this.getSelectedSubtitleLanguageKey());
+    if (options.length < SUBTITLE_VIRTUALIZATION_THRESHOLD) {
+      return;
+    }
+    const optionKeys = this.getSubtitleOptionKeys(options);
+    const rowGap = this.getSubtitleVirtualRowGap();
+    const model = buildSubtitleVirtualModel(
+      optionKeys,
+      state.measuredExtents,
+      state.model.estimatedExtent,
+      { rowGap }
+    );
+    const viewportHeight = Number(rail.clientHeight || 0) || 720;
+    state.model = model;
+    state.scrollTop = getSubtitleScrollTopForIndex(model, this.subtitleOptionRailIndex, {
+      currentScrollTop: state.scrollTop,
+      viewportHeight,
+      padding: 16
+    });
+    state.window = getSubtitleVirtualWindow(model, {
+      scrollTop: state.scrollTop,
+      viewportHeight,
+      overscanPx: SUBTITLE_VIRTUALIZATION_OVERSCAN_PX,
+      minWindow: SUBTITLE_VIRTUALIZATION_MIN_WINDOW
+    });
+    this.renderSubtitleOptionsRailInPlace({ scheduleMeasurement: false, syncFocus: false });
+  },
+
+  renderSubtitleOptionsRailInPlace({ scheduleMeasurement = true, syncFocus = true } = {}) {
+    const dialog = this.uiRefs?.subtitleDialog;
+    const rail = dialog?.querySelector?.(".player-subtitle-options-rail");
+    if (!(rail instanceof HTMLElement) || !this.subtitleDialogVisible) {
+      return false;
+    }
+    const selectedLanguageKey = this.getSelectedSubtitleLanguageKey();
+    const options = this.getSubtitleOptionsForLanguage(selectedLanguageKey);
+    const subtitleLoadingVisible = Boolean(
+      this.subtitleLoading ||
+      this.manifestLoading ||
+      this.trackDiscoveryInProgress ||
+      (this.embeddedSubtitleLoading && this.canDiscoverEmbeddedSubtitleTracks())
+    );
+    rail.innerHTML = this.renderSubtitleOptionsMarkup(options, {
+      subtitleLoadingVisible,
+      languageKey: selectedLanguageKey
+    });
+    rail.classList.toggle(
+      "hidden",
+      selectedLanguageKey === SUBTITLE_LANGUAGE_OFF_KEY && !subtitleLoadingVisible
+    );
+    this.renderedSubtitleDialogMarkup = "";
+    this.applySubtitleOptionVirtualScrollPosition();
+    if (scheduleMeasurement) {
+      this.scheduleSubtitleOptionVirtualMeasurement();
+    }
+    if (syncFocus) {
+      this.syncSubtitleDialogFocusDom({ scroll: false });
+    }
+    return true;
+  },
+
+  syncSubtitleDialogFocusDom({ scroll = true } = {}) {
+    const dialog = this.uiRefs?.subtitleDialog;
+    if (!dialog || !this.subtitleDialogVisible) {
+      return false;
+    }
+    const railName = String(this.subtitleFocusedRail || "language");
+    const index =
+      railName === "language"
+        ? this.subtitleLanguageRailIndex
+        : railName === "options"
+          ? this.subtitleOptionRailIndex
+          : this.subtitleStyleRailIndex;
+    let selector = `.player-subtitle-${railName}-rail .player-dialog-item[data-subtitle-index="${Number(index || 0)}"]`;
+    let target = dialog.querySelector(selector);
+    if (!target && railName === "options") {
+      this.renderSubtitleOptionsRailInPlace({ syncFocus: false });
+      target = dialog.querySelector(selector);
+    }
+    if (!target) {
+      return false;
+    }
+
+    dialog.querySelectorAll(".focused").forEach((node) => node.classList.remove("focused"));
+    target.classList.add("focused");
+    if (railName === "style") {
+      const side = this.subtitleStyleControlSide === "plus" ? "plus" : "minus";
+      target.querySelector(`.player-dialog-step-${side}`)?.classList.add("focused");
+    }
+    if (scroll) {
+      this.scrollSubtitleRailNodeIntoView(target);
+      // Tizen 5 can expose stale scrollHeight/clientHeight for one layout
+      // tick after the in-place focus class update. The full dialog render
+      // already had an asynchronous retry; keep that retry for the lighter
+      // in-place navigation path as well so a focused language cannot remain
+      // outside the visible rail.
+      this.scheduleSubtitleDialogScrollIntoView();
+    }
+    return true;
+  },
+
+  getSubtitleDelayPreferenceVideoId() {
+    return String(
+      this.params?.videoId || this.params?.itemId || this.trackPreferenceContentId || ""
+    ).trim();
+  },
+
+  persistSubtitleDelayPreference() {
+    const videoId = String(
+      this.subtitleDelayPreferenceVideoId || this.getSubtitleDelayPreferenceVideoId() || ""
+    ).trim();
+    if (!videoId) {
+      return;
+    }
+    SubtitleDelayPreferencesStore.set(videoId, this.subtitleDelayMs);
+  },
+
+  getSelectedAddonSubtitle() {
+    const selectedId = String(this.selectedAddonSubtitleId || "").trim();
+    if (!selectedId) {
+      return null;
+    }
+    return (
+      this.getSubtitleDialogSubtitles().find((subtitle, index) => {
+        const subtitleId = String(subtitle?.id || subtitle?.url || `subtitle-${index}`).trim();
+        return subtitleId === selectedId;
+      }) || null
+    );
+  },
+
+  getSubtitleAutoSyncTrackKey(subtitle = null) {
+    if (!subtitle) {
+      return "";
+    }
+    return `${String(subtitle.id || "").trim()}|${String(subtitle.url || "").trim()}`;
+  },
+
+  getSubtitleAutoSyncVisibleCues(anchorTimeMs = null) {
+    const anchor =
+      anchorTimeMs == null
+        ? (this.subtitleAutoSyncCapturedVideoMs ??
+          Math.max(0, Math.trunc(this.getPlaybackCurrentSeconds() * 1000)))
+        : Number(anchorTimeMs);
+    return selectSubtitleAutoSyncVisibleCues(
+      this.subtitleAutoSyncCues,
+      Number.isFinite(anchor) ? anchor : 0,
+      SUBTITLE_AUTO_SYNC_MARGIN_MS,
+      SUBTITLE_AUTO_SYNC_MAX_VISIBLE_CUES
+    );
+  },
+
+  getSubtitleAutoSyncLanguageLabel(subtitle = null) {
+    if (!subtitle) {
+      return "";
+    }
+    const display = formatSubtitleTrackDisplay(subtitle, 0);
+    return display.languageLabel || display.label || cleanDisplayText(subtitle.lang);
+  },
+
+  clearSubtitleDelayOverlayTimer() {
+    if (this.subtitleDelayOverlayTimer) {
+      clearTimeout(this.subtitleDelayOverlayTimer);
+      this.subtitleDelayOverlayTimer = null;
+    }
+  },
+
+  scheduleHideSubtitleDelayOverlay() {
+    this.clearSubtitleDelayOverlayTimer();
+    this.subtitleDelayOverlayTimer = setTimeout(() => {
+      this.subtitleDelayOverlayTimer = null;
+      this.hideSubtitleDelayOverlay();
+    }, SUBTITLE_DELAY_OVERLAY_TIMEOUT_MS);
+  },
+
+  renderSubtitleDelayOverlay() {
+    const overlay = this.uiRefs?.subtitleDelayOverlay;
+    if (!overlay) {
+      return;
+    }
+    const visible = Boolean(this.subtitleDelayOverlayVisible);
+    overlay.classList.toggle("hidden", !visible);
+    overlay.setAttribute("aria-hidden", visible ? "false" : "true");
+    if (!visible) {
+      overlay.innerHTML = "";
+      return;
+    }
+
+    const delayMs = clamp(
+      Number(this.subtitleDelayMs || 0),
+      SUBTITLE_DELAY_MIN_MS,
+      SUBTITLE_DELAY_MAX_MS
+    );
+    const fraction =
+      (delayMs - SUBTITLE_DELAY_MIN_MS) / (SUBTITLE_DELAY_MAX_MS - SUBTITLE_DELAY_MIN_MS);
+    overlay.innerHTML = `
+      <div class="player-subtitle-delay-panel">
+        <div class="player-subtitle-delay-header">
+          <div class="player-subtitle-delay-title">${escapeHtml(t("player_subtitle_delay", {}, "Subtitles Delay"))}</div>
+          <div class="player-subtitle-delay-value" dir="ltr">${escapeHtml(formatSubtitleDelay(delayMs))}</div>
+        </div>
+        <div class="player-subtitle-delay-slider focusable" data-subtitle-delay-focus="slider" tabindex="-1" role="slider" aria-valuemin="${SUBTITLE_DELAY_MIN_MS}" aria-valuemax="${SUBTITLE_DELAY_MAX_MS}" aria-valuenow="${delayMs}">
+          <div class="player-subtitle-delay-slider-track"></div>
+          <div class="player-subtitle-delay-slider-ticks" aria-hidden="true">
+            <span></span><span></span><span class="center"></span><span></span><span></span>
+          </div>
+          <div class="player-subtitle-delay-slider-thumb" style="left:${(fraction * 100).toFixed(3)}%"></div>
+        </div>
+        <div class="player-subtitle-delay-actions">
+          <button class="player-subtitle-delay-action focusable" type="button" data-subtitle-delay-focus="reset" tabindex="-1">${escapeHtml(t("subtitle_delay_reset", {}, "Reset Delay"))}</button>
+          <button class="player-subtitle-delay-action focusable" type="button" data-subtitle-delay-focus="sync" tabindex="-1">${escapeHtml(t("player_sync_line", {}, "Sync Line"))}</button>
+        </div>
+      </div>
+    `;
+    this.syncSubtitleDelayOverlayFocusDom({ focus: false });
+  },
+
+  syncSubtitleDelayOverlayFocusDom({ focus = false } = {}) {
+    const overlay = this.uiRefs?.subtitleDelayOverlay;
+    if (!overlay || !this.subtitleDelayOverlayVisible) {
+      return false;
+    }
+    const target = overlay.querySelector(
+      `[data-subtitle-delay-focus="${String(this.subtitleDelayFocusTarget || "slider")}"]`
+    );
+    if (!target) {
+      return false;
+    }
+    overlay.querySelectorAll(".focused").forEach((node) => node.classList.remove("focused"));
+    target.classList.add("focused");
+    if (focus && document.activeElement !== target) {
+      target.focus?.();
+    }
+    return true;
+  },
+
+  setSubtitleDelayValue(delayMs, { showOverlay = false } = {}) {
+    this.subtitleDelayMs = clamp(
+      Math.trunc(Number(delayMs) || 0),
+      SUBTITLE_DELAY_MIN_MS,
+      SUBTITLE_DELAY_MAX_MS
+    );
+    if (this.isAssAddonSubtitleActive()) {
+      this.assSubtitleRenderer?.setDelay(this.subtitleDelayMs);
+    }
+    this.persistSubtitleDelayPreference();
+    this.applySubtitlePresentationSettings({ refreshTrackRendering: true });
+    if (showOverlay) {
+      this.renderSubtitleDelayOverlay();
+      this.scheduleHideSubtitleDelayOverlay();
+    }
+    this.renderSubtitleDialog();
+  },
+
+  showSubtitleDelayOverlay() {
+    this.flushPersistPlayerPresentationSettings();
+    this.clearSubtitleDelayOverlayTimer();
+    this.subtitleDelayOverlayVisible = true;
+    this.subtitleDelayFocusTarget = "slider";
+    this.subtitleDelayOverlayStatus = "";
+    this.subtitleTimingDialogVisible = false;
+    this.subtitleDialogVisible = false;
+    this.audioDialogVisible = false;
+    this.speedDialogVisible = false;
+    this.sourcesPanelVisible = false;
+    this.setControlsVisible(false, { focus: false });
+    this.renderSubtitleDialog();
+    this.renderSubtitleTimingDialog();
+    this.renderSubtitleDelayOverlay();
+    this.updateModalBackdrop();
+    setTimeout(() => this.syncSubtitleDelayOverlayFocusDom({ focus: true }), 80);
+    this.scheduleHideSubtitleDelayOverlay();
+  },
+
+  hideSubtitleDelayOverlay({ scheduleControls = true } = {}) {
+    this.clearSubtitleDelayOverlayTimer();
+    if (!this.subtitleDelayOverlayVisible) {
+      return false;
+    }
+    this.subtitleDelayOverlayVisible = false;
+    this.subtitleDelayOverlayStatus = "";
+    this.renderSubtitleDelayOverlay();
+    this.updateModalBackdrop();
+    if (scheduleControls) {
+      this.resetControlsAutoHide();
+    }
+    return true;
+  },
+
+  handleSubtitleDelayOverlayKey(event) {
+    const keyCode = Number(event?.keyCode || 0);
+    const target = String(this.subtitleDelayFocusTarget || "slider");
+    const isRtl =
+      String(document?.documentElement?.dir || document?.dir || "").toLowerCase() === "rtl";
+    if (target === "slider") {
+      if (keyCode === 37 || keyCode === 39) {
+        const direction = keyCode === 39 ? 1 : -1;
+        this.setSubtitleDelayValue(
+          Number(this.subtitleDelayMs || 0) + direction * SUBTITLE_DELAY_STEP_MS,
+          { showOverlay: true }
+        );
+        return true;
+      }
+      if (keyCode === 40) {
+        this.subtitleDelayFocusTarget = "sync";
+        this.syncSubtitleDelayOverlayFocusDom({ focus: true });
+        return true;
+      }
+      return true;
+    }
+
+    if (keyCode === 38) {
+      this.subtitleDelayFocusTarget = "slider";
+      this.syncSubtitleDelayOverlayFocusDom({ focus: true });
+      return true;
+    }
+    if (target === "reset") {
+      if (keyCode === 39 || (isRtl && keyCode === 37)) {
+        this.subtitleDelayFocusTarget = "sync";
+        this.syncSubtitleDelayOverlayFocusDom({ focus: true });
+        return true;
+      }
+      if (isSelectKeyCode(keyCode)) {
+        this.setSubtitleDelayValue(0, { showOverlay: true });
+        this.subtitleDelayFocusTarget = "slider";
+        this.syncSubtitleDelayOverlayFocusDom({ focus: true });
+        return true;
+      }
+    }
+    if (target === "sync") {
+      if (keyCode === 37 || (isRtl && keyCode === 39)) {
+        this.subtitleDelayFocusTarget = "reset";
+        this.syncSubtitleDelayOverlayFocusDom({ focus: true });
+        return true;
+      }
+      if (isSelectKeyCode(keyCode)) {
+        this.openSubtitleTimingDialog();
+        return true;
+      }
+    }
+    return true;
+  },
+
+  handleSubtitleDelayOverlayPointer(target) {
+    const action = target?.closest?.("[data-subtitle-delay-focus]");
+    if (!action || !this.subtitleDelayOverlayVisible) {
+      return false;
+    }
+    const focusTarget = String(action.dataset.subtitleDelayFocus || "slider");
+    this.subtitleDelayFocusTarget = focusTarget;
+    this.syncSubtitleDelayOverlayFocusDom({ focus: false });
+    if (focusTarget === "reset") {
+      this.setSubtitleDelayValue(0, { showOverlay: true });
+    } else if (focusTarget === "sync") {
+      this.openSubtitleTimingDialog();
+    }
+    return true;
+  },
+
+  resetSubtitleAutoSyncState(clearLoadedTrack = true) {
+    this.subtitleAutoSyncLoadToken = Number(this.subtitleAutoSyncLoadToken || 0) + 1;
+    this.subtitleAutoSyncCues = [];
+    this.subtitleAutoSyncCapturedVideoMs = null;
+    this.subtitleAutoSyncStatus = "";
+    this.subtitleAutoSyncError = "";
+    this.subtitleAutoSyncLoading = false;
+    if (clearLoadedTrack) {
+      this.subtitleAutoSyncLoadedTrackKey = "";
+    }
+  },
+
+  async loadSubtitleAutoSyncCues({ force = false } = {}) {
+    const selectedSubtitle = this.getSelectedAddonSubtitle();
+    if (!selectedSubtitle) {
+      this.subtitleAutoSyncCues = [];
+      this.subtitleAutoSyncCapturedVideoMs = null;
+      this.subtitleAutoSyncLoading = false;
+      this.subtitleAutoSyncError = t(
+        "subtitle_auto_sync_select_addon_track",
+        {},
+        "Select an addon subtitle track to use Auto Sync."
+      );
+      this.subtitleAutoSyncLoadedTrackKey = "";
+      this.renderSubtitleTimingDialog();
+      return;
+    }
+
+    const selectedTrackKey = this.getSubtitleAutoSyncTrackKey(selectedSubtitle);
+    if (
+      !force &&
+      this.subtitleAutoSyncLoadedTrackKey === selectedTrackKey &&
+      this.subtitleAutoSyncCues.length
+    ) {
+      return;
+    }
+
+    const loadToken = Number(this.subtitleAutoSyncLoadToken || 0) + 1;
+    this.subtitleAutoSyncLoadToken = loadToken;
+    this.subtitleAutoSyncLoading = true;
+    this.subtitleAutoSyncError = "";
+    this.subtitleAutoSyncStatus = "";
+    if (force) {
+      this.subtitleAutoSyncCues = [];
+      this.subtitleAutoSyncCapturedVideoMs = null;
+    }
+    this.subtitleAutoSyncLoadedTrackKey = selectedTrackKey;
+    this.renderSubtitleTimingDialog();
+
+    try {
+      const subtitleUrl = String(selectedSubtitle.url || "").trim();
+      const languageHint =
+        selectedSubtitle.lang || selectedSubtitle.language || selectedSubtitle.languageCode || "";
+      let raw = null;
+      try {
+        raw = await this.fetchSubtitleRawBody(subtitleUrl, {
+          timeoutMs: 10000,
+          languageHint
+        });
+      } catch (directError) {
+        if (!Environment.isTizen()) {
+          throw directError;
+        }
+        const proxyUrl = await this.resolveTizenAvPlaySubtitleUrl(subtitleUrl);
+        if (!proxyUrl || proxyUrl === subtitleUrl) {
+          throw directError;
+        }
+        raw = await this.fetchSubtitleRawBody(proxyUrl, {
+          timeoutMs: 10000,
+          languageHint
+        });
+      }
+      if (!raw?.body) {
+        throw new Error("Subtitle body is empty");
+      }
+
+      const parsedCues = this.parseSubtitleCues(raw.body)
+        .map((cue) => ({
+          startTimeMs: Math.max(0, Math.round(Number(cue.start || 0) * 1000)),
+          endTimeMs: Math.max(0, Math.round(Number(cue.end || 0) * 1000)),
+          text: String(cue.text || "").trim()
+        }))
+        .filter((cue) => cue.text && cue.endTimeMs > cue.startTimeMs);
+
+      if (
+        loadToken !== this.subtitleAutoSyncLoadToken ||
+        selectedTrackKey !== this.getSubtitleAutoSyncTrackKey(this.getSelectedAddonSubtitle())
+      ) {
+        return;
+      }
+      this.subtitleAutoSyncLoading = false;
+      this.subtitleAutoSyncCues = parsedCues;
+      this.subtitleAutoSyncError = parsedCues.length
+        ? ""
+        : t("subtitle_timing_file_no_lines", {}, "No subtitle lines were found in this file.");
+      this.renderSubtitleTimingDialog();
+      if (this.subtitleTimingDialogVisible && this.subtitleTimingStage === "pick") {
+        setTimeout(() => this.syncSubtitleTimingFocusDom({ focus: true }), 50);
+      }
+    } catch (error) {
+      if (loadToken !== this.subtitleAutoSyncLoadToken) {
+        return;
+      }
+      this.subtitleAutoSyncLoading = false;
+      this.subtitleAutoSyncCues = [];
+      this.subtitleAutoSyncError = t(
+        "subtitle_timing_load_lines_failed",
+        {},
+        "Failed to load subtitle lines."
+      );
+      this.renderSubtitleTimingDialog();
+      console.warn("Subtitle auto-sync cue load failed", {
+        error: error?.message || String(error || "")
+      });
+    }
+  },
+
+  openSubtitleTimingDialog() {
+    this.clearSubtitleDelayOverlayTimer();
+    this.subtitleDelayOverlayVisible = false;
+    this.subtitleDelayOverlayStatus = "";
+    this.subtitleDialogVisible = false;
+    this.audioDialogVisible = false;
+    this.speedDialogVisible = false;
+    this.sourcesPanelVisible = false;
+    this.subtitleTimingDialogVisible = true;
+    this.subtitleTimingStage = "wait";
+    this.subtitleAutoSyncCapturedVideoMs = null;
+    this.subtitleAutoSyncStatus = "";
+    this.subtitleAutoSyncError = "";
+    this.subtitleAutoSyncCueFocusIndex = 0;
+    this.setControlsVisible(false, { focus: false });
+    this.renderSubtitleDialog();
+    this.renderSubtitleDelayOverlay();
+    this.renderSubtitleTimingDialog();
+    this.updateModalBackdrop();
+    void this.loadSubtitleAutoSyncCues({ force: false });
+    setTimeout(() => this.syncSubtitleTimingFocusDom({ focus: true }), 120);
+  },
+
+  dismissSubtitleTimingDialog() {
+    this.subtitleAutoSyncLoadToken = Number(this.subtitleAutoSyncLoadToken || 0) + 1;
+    this.subtitleAutoSyncCapturedVideoMs = null;
+    this.subtitleAutoSyncStatus = "";
+    this.subtitleAutoSyncError = "";
+    this.subtitleAutoSyncLoading = false;
+    this.subtitleTimingDialogVisible = false;
+    this.subtitleTimingStage = "wait";
+    this.renderSubtitleTimingDialog();
+    this.updateModalBackdrop();
+    this.resetControlsAutoHide();
+  },
+
+  captureSubtitleAutoSyncTime() {
+    const capturePositionMs = Math.max(
+      0,
+      Math.trunc(Number(this.getPlaybackCurrentSeconds() || 0) * 1000)
+    );
+    this.subtitleAutoSyncCapturedVideoMs = capturePositionMs;
+    this.subtitleTimingStage = "pick";
+    this.subtitleAutoSyncStatus = "";
+    this.subtitleAutoSyncError = "";
+    const visibleCues = this.getSubtitleAutoSyncVisibleCues(capturePositionMs);
+    this.subtitleAutoSyncCueFocusIndex = Math.max(
+      0,
+      visibleCues.reduce(
+        (nearestIndex, cue, index, list) =>
+          Math.abs(cue.startTimeMs - capturePositionMs) <
+          Math.abs((list[nearestIndex]?.startTimeMs || 0) - capturePositionMs)
+            ? index
+            : nearestIndex,
+        0
+      )
+    );
+    this.renderSubtitleTimingDialog();
+    setTimeout(() => this.syncSubtitleTimingFocusDom({ focus: true }), 50);
+  },
+
+  applySubtitleAutoSyncCue(cue = null) {
+    const cueStartTimeMs = Number(cue?.startTimeMs);
+    const capturePositionMs = Number(
+      this.subtitleAutoSyncCapturedVideoMs ?? this.getPlaybackCurrentSeconds() * 1000
+    );
+    if (!Number.isFinite(cueStartTimeMs) || !Number.isFinite(capturePositionMs)) {
+      return;
+    }
+    const newDelayMs = calculateSubtitleAutoSyncDelayMs(capturePositionMs, cueStartTimeMs);
+    this.subtitleDelayMs = newDelayMs;
+    if (this.isAssAddonSubtitleActive()) {
+      this.assSubtitleRenderer?.setDelay(newDelayMs);
+    }
+    this.persistSubtitleDelayPreference();
+    this.applySubtitlePresentationSettings({ refreshTrackRendering: true });
+    this.subtitleAutoSyncLoadToken = Number(this.subtitleAutoSyncLoadToken || 0) + 1;
+    this.subtitleAutoSyncStatus = t(
+      "subtitle_auto_sync_applied",
+      [formatSubtitleAutoSyncDelay(newDelayMs)],
+      `Sync applied: ${formatSubtitleAutoSyncDelay(newDelayMs)}`
+    );
+    this.subtitleTimingDialogVisible = false;
+    this.subtitleTimingStage = "wait";
+    this.subtitleDelayOverlayVisible = true;
+    this.subtitleDelayFocusTarget = "slider";
+    this.subtitleDialogVisible = false;
+    this.renderSubtitleTimingDialog();
+    this.renderSubtitleDelayOverlay();
+    this.updateModalBackdrop();
+    this.scheduleHideSubtitleDelayOverlay();
+  },
+
+  syncSubtitleTimingFocusDom({ focus = false, scroll = true } = {}) {
+    const dialog = this.uiRefs?.subtitleTimingDialog;
+    if (!dialog || !this.subtitleTimingDialogVisible) {
+      return false;
+    }
+    const target =
+      this.subtitleTimingStage === "wait"
+        ? dialog.querySelector("[data-subtitle-timing-action='capture']")
+        : dialog.querySelector(
+            `[data-subtitle-timing-cue-index="${Number(this.subtitleAutoSyncCueFocusIndex || 0)}"]`
+          );
+    if (!target) {
+      return false;
+    }
+    dialog.querySelectorAll(".focused").forEach((node) => node.classList.remove("focused"));
+    target.classList.add("focused");
+    if (scroll) {
+      try {
+        target.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      } catch (_) {
+        target.scrollIntoView?.();
+      }
+    }
+    if (focus && document.activeElement !== target) {
+      target.focus?.();
+    }
+    return true;
+  },
+
+  handleSubtitleTimingDialogKey(event) {
+    const keyCode = Number(event?.keyCode || 0);
+    if (this.subtitleTimingStage === "wait") {
+      if (isSelectKeyCode(keyCode)) {
+        this.captureSubtitleAutoSyncTime();
+      }
+      return true;
+    }
+
+    const visibleCues = this.getSubtitleAutoSyncVisibleCues(
+      this.subtitleAutoSyncCapturedVideoMs ?? this.getPlaybackCurrentSeconds() * 1000
+    );
+    if (keyCode === 38 || keyCode === 40) {
+      const delta = keyCode === 40 ? 1 : -1;
+      this.subtitleAutoSyncCueFocusIndex = clamp(
+        Number(this.subtitleAutoSyncCueFocusIndex || 0) + delta,
+        0,
+        Math.max(0, visibleCues.length - 1)
+      );
+      this.syncSubtitleTimingFocusDom({ focus: true });
+      return true;
+    }
+    if (isSelectKeyCode(keyCode)) {
+      const cue = visibleCues[this.subtitleAutoSyncCueFocusIndex];
+      if (cue) {
+        this.applySubtitleAutoSyncCue(cue);
+      }
+      return true;
+    }
+    return true;
+  },
+
+  handleSubtitleTimingDialogPointer(target) {
+    if (!this.subtitleTimingDialogVisible) {
+      return false;
+    }
+    const capture = target?.closest?.("[data-subtitle-timing-action='capture']");
+    if (capture) {
+      this.captureSubtitleAutoSyncTime();
+      return true;
+    }
+    const cueNode = target?.closest?.("[data-subtitle-timing-cue-index]");
+    if (!cueNode) {
+      return false;
+    }
+    const visibleCues = this.getSubtitleAutoSyncVisibleCues(
+      this.subtitleAutoSyncCapturedVideoMs ?? this.getPlaybackCurrentSeconds() * 1000
+    );
+    const index = Number(cueNode.dataset.subtitleTimingCueIndex);
+    const cue = visibleCues[index];
+    if (cue) {
+      this.subtitleAutoSyncCueFocusIndex = index;
+      this.applySubtitleAutoSyncCue(cue);
+    }
+    return true;
+  },
+
+  renderSubtitleTimingDialog() {
+    const dialog = this.uiRefs?.subtitleTimingDialog;
+    if (!dialog) {
+      return;
+    }
+    const visible = Boolean(this.subtitleTimingDialogVisible);
+    dialog.classList.toggle("hidden", !visible);
+    dialog.classList.toggle("pick-line", visible && this.subtitleTimingStage === "pick");
+    dialog.setAttribute("aria-hidden", visible ? "false" : "true");
+    if (!visible) {
+      dialog.innerHTML = "";
+      return;
+    }
+
+    const selectedAddonSubtitle = this.getSelectedAddonSubtitle();
+    if (this.subtitleTimingStage === "wait") {
+      dialog.innerHTML = `
+        <div class="player-subtitle-timing-panel player-subtitle-timing-panel-wait">
+          <div class="player-subtitle-timing-prompt">${escapeHtml(t("subtitle_timing_press_sync", {}, "Press Sync when you hear a dialog line."))}</div>
+          <button class="player-subtitle-timing-sync-button focusable" type="button" tabindex="-1" data-subtitle-timing-action="capture">${escapeHtml(t("subtitle_timing_sync_button", {}, "Sync"))}</button>
+        </div>
+      `;
+      this.syncSubtitleTimingFocusDom({ focus: false });
+      return;
+    }
+
+    const capturedLabel =
+      this.subtitleAutoSyncCapturedVideoMs == null
+        ? t("subtitle_timing_capturing", {}, "Capturing…")
+        : t(
+            "subtitle_timing_captured_at",
+            [formatSubtitleAutoSyncTimestamp(this.subtitleAutoSyncCapturedVideoMs)],
+            "Captured at %1$s"
+          );
+    const visibleCues = this.getSubtitleAutoSyncVisibleCues(
+      this.subtitleAutoSyncCapturedVideoMs ?? this.getPlaybackCurrentSeconds() * 1000
+    );
+    this.subtitleAutoSyncCueFocusIndex = clamp(
+      Number(this.subtitleAutoSyncCueFocusIndex || 0),
+      0,
+      Math.max(0, visibleCues.length - 1)
+    );
+    const selectedLanguage = this.getSubtitleAutoSyncLanguageLabel(selectedAddonSubtitle);
+    const statusMarkup = this.subtitleAutoSyncStatus
+      ? `<div class="player-subtitle-timing-status">${escapeHtml(this.subtitleAutoSyncStatus)}</div>`
+      : "";
+    const errorMarkup = this.subtitleAutoSyncError
+      ? `<div class="player-subtitle-timing-error">${escapeHtml(this.subtitleAutoSyncError)}</div>`
+      : "";
+    let bodyMarkup = "";
+    if (errorMarkup) {
+      bodyMarkup = errorMarkup;
+    } else if (!selectedAddonSubtitle) {
+      bodyMarkup = `<div class="player-subtitle-timing-error">${escapeHtml(t("subtitle_timing_select_addon_first", {}, "Select an addon subtitle track first."))}</div>`;
+    } else if (this.subtitleAutoSyncLoading) {
+      bodyMarkup = `
+        <div class="player-subtitle-timing-loading">
+          ${renderLoadingIndicator({ className: "player-subtitle-timing-loading-indicator" })}
+          <div>${escapeHtml(t("subtitle_timing_loading", {}, "Loading subtitle lines…"))}</div>
+        </div>
+      `;
+    } else if (!visibleCues.length) {
+      bodyMarkup = `<div class="player-subtitle-timing-empty">${escapeHtml(t("subtitle_timing_no_lines_found", {}, "No subtitle lines were found around this moment."))}</div>`;
+    } else {
+      bodyMarkup = `
+        <div class="player-subtitle-timing-cue-list">
+          ${visibleCues
+            .map(
+              (cue, index) => `
+                <div class="player-subtitle-timing-cue-row focusable${index === this.subtitleAutoSyncCueFocusIndex ? " focused" : ""}" tabindex="-1" data-subtitle-timing-cue-index="${index}">
+                  <span class="player-subtitle-timing-cue-time" dir="ltr">${escapeHtml(formatSubtitleAutoSyncTimestamp(cue.startTimeMs))}</span>
+                  <span class="player-subtitle-timing-cue-text" dir="ltr">${escapeHtml(sanitizeSubtitleAutoSyncCueText(cue.text))}</span>
+                </div>
+              `
+            )
+            .join("")}
+        </div>
+        <div class="player-subtitle-timing-footer">${escapeHtml(t("subtitle_timing_press_back_cancel", {}, "Press Back to cancel"))}</div>
+      `;
+    }
+    dialog.innerHTML = `
+      <div class="player-subtitle-timing-panel player-subtitle-timing-panel-pick">
+        <div class="player-subtitle-timing-header">
+          <div class="player-subtitle-timing-captured">${escapeHtml(capturedLabel)}</div>
+          ${selectedLanguage ? `<div class="player-subtitle-timing-language">${escapeHtml(selectedLanguage)}</div>` : ""}
+        </div>
+        ${statusMarkup}
+        ${bodyMarkup}
+      </div>
+    `;
+    this.syncSubtitleTimingFocusDom({ focus: false, scroll: false });
+  },
+
+  renderSubtitleStyleItemMarkup(item, index) {
+    if (item.id === "delay") {
+      const interactive = !item.disabled;
+      return `
+        <div class="player-dialog-item player-dialog-style-item player-subtitle-delay-entry${item.disabled ? " disabled" : ""}${interactive ? " focusable" : ""}" data-subtitle-rail="style" data-subtitle-index="${index}" data-subtitle-key="${escapeAttribute(item.id)}" data-subtitle-delay-action="open" aria-disabled="${item.disabled ? "true" : "false"}"${interactive ? ' tabindex="-1"' : ""}>
+          <div class="player-dialog-item-main">${escapeHtml(item.label)}</div>
+          <div class="player-dialog-item-sub player-subtitle-delay-entry-value" dir="ltr">${escapeHtml(item.value || "")}</div>
+        </div>
+      `;
+    }
+    return `
+      <div class="player-dialog-item player-dialog-style-item${item.disabled ? " disabled" : ""}" data-subtitle-rail="style" data-subtitle-index="${index}" data-subtitle-key="${escapeAttribute(item.id)}" aria-disabled="${item.disabled ? "true" : "false"}">
+        <button class="player-dialog-step player-dialog-step-minus${item.disabled ? "" : " focusable"}" type="button" data-subtitle-style-action="decrease" data-subtitle-rail="style" data-subtitle-index="${index}" data-style-id="${escapeAttribute(item.id)}" aria-label="${escapeAttribute(`${item.label} -`)}"${item.disabled ? " disabled" : ""}>&#8722;</button>
+        <div class="player-dialog-item-center">
+          <div class="player-dialog-item-main">${escapeHtml(item.label)}</div>
+          <div class="player-dialog-item-sub">${escapeHtml(item.value || "")}</div>
+        </div>
+        <button class="player-dialog-step player-dialog-step-plus${item.disabled ? "" : " focusable"}" type="button" data-subtitle-style-action="increase" data-subtitle-rail="style" data-subtitle-index="${index}" data-style-id="${escapeAttribute(item.id)}" aria-label="${escapeAttribute(`${item.label} +`)}"${item.disabled ? " disabled" : ""}>&#43;</button>
+      </div>
+    `;
+  },
+
   renderSubtitleDialog() {
     const dialog = this.uiRefs?.subtitleDialog;
     if (!dialog) {
@@ -15216,6 +21140,7 @@ export const PlayerScreen = {
     dialog.classList.toggle("hidden", !this.subtitleDialogVisible);
     if (!this.subtitleDialogVisible) {
       dialog.innerHTML = "";
+      this.renderedSubtitleDialogMarkup = "";
       return;
     }
 
@@ -15225,9 +21150,10 @@ export const PlayerScreen = {
       0,
       Math.max(0, languages.length - 1)
     );
-    const activeLanguage =
+    this.subtitleFocusedLanguageKey =
       languages[this.subtitleLanguageRailIndex]?.key || SUBTITLE_LANGUAGE_OFF_KEY;
-    const options = this.getSubtitleOptionsForLanguage(activeLanguage);
+    const selectedLanguageKey = this.getSelectedSubtitleLanguageKey();
+    const options = this.getSubtitleOptionsForLanguage(selectedLanguageKey);
     this.subtitleOptionRailIndex = clamp(
       this.subtitleOptionRailIndex,
       0,
@@ -15245,25 +21171,23 @@ export const PlayerScreen = {
       this.trackDiscoveryInProgress ||
       (this.embeddedSubtitleLoading && this.canDiscoverEmbeddedSubtitleTracks())
     );
-    const showOptionsRail = activeLanguage !== SUBTITLE_LANGUAGE_OFF_KEY || subtitleLoadingVisible;
-    const focusedStyleSide = this.subtitleStyleControlSide === "plus" ? "plus" : "minus";
-    const emptySubtitleOptionsMarkup = subtitleLoadingVisible
-      ? `
-        <div class="player-dialog-empty player-dialog-loading">
-          ${renderLoadingIndicator()}
-          <span>${escapeHtml(t("subtitle_loading_builtin", {}, "Loading subtitle tracks..."))}</span>
-        </div>
-      `
-      : `<div class="player-dialog-empty">${escapeHtml(t("subtitle_none", {}, "No subtitles"))}</div>`;
+    const showOptionsRail =
+      selectedLanguageKey !== SUBTITLE_LANGUAGE_OFF_KEY || subtitleLoadingVisible;
+    const supportNotice = this.getSubtitleDialogSupportNotice();
+    const optionsMarkup = this.renderSubtitleOptionsMarkup(options, {
+      subtitleLoadingVisible,
+      languageKey: selectedLanguageKey
+    });
 
-    dialog.innerHTML = `
+    const nextMarkup = `
       <div class="player-dialog-title">${escapeHtml(t("subtitle_dialog_title", {}, "Subtitles"))}</div>
+      ${supportNotice ? `<div class="player-dialog-support-message" role="status">${escapeHtml(supportNotice)}</div>` : ""}
       <div class="player-subtitle-overlay-grid">
         <div class="player-subtitle-rail player-subtitle-language-rail">
           ${languages
             .map(
               (item, index) => `
-          <div class="player-dialog-item focusable${item.selected ? " selected" : ""}${this.subtitleFocusedRail === "language" && index === this.subtitleLanguageRailIndex ? " focused" : ""}" data-subtitle-rail="language" data-subtitle-index="${index}">
+          <div class="player-dialog-item focusable${item.selected ? " selected" : ""}" data-subtitle-rail="language" data-subtitle-index="${index}" data-subtitle-key="${escapeAttribute(item.key)}">
               <div class="player-dialog-item-main">${escapeHtml(item.label)}${item.count > 0 ? `<span class="player-subtitle-language-count">${item.count}</span>` : ""}</div>
               <div class="player-dialog-item-sub">${item.key === SUBTITLE_LANGUAGE_OFF_KEY && subtitleLoadingVisible ? escapeHtml(t("subtitle_loading_builtin", {}, "Loading subtitle tracks...")) : ""}</div>
             </div>
@@ -15272,53 +21196,30 @@ export const PlayerScreen = {
             .join("")}
         </div>
         <div class="player-subtitle-rail player-subtitle-options-rail${showOptionsRail ? "" : " hidden"}">
-          ${
-            options.length
-              ? options
-                  .map(
-                    (item, index) => `
-            <div class="player-dialog-item focusable${item.selected ? " selected" : ""}${this.subtitleFocusedRail === "options" && index === this.subtitleOptionRailIndex ? " focused" : ""}" data-subtitle-rail="options" data-subtitle-index="${index}">
-              <div class="player-subtitle-option-copy">
-                <span class="player-subtitle-source-chip">${escapeHtml(item.sourceLabel || "")}</span>
-                <div class="player-dialog-item-main">${escapeHtml(item.title || "")}</div>
-                ${item.meta ? `<div class="player-dialog-item-sub">${escapeHtml(item.meta)}</div>` : ""}
-              </div>
-              <div class="player-dialog-item-check">${item.selected ? "&#10003;" : ""}</div>
-            </div>
-          `
-                  )
-                  .join("")
-              : emptySubtitleOptionsMarkup
-          }
+          ${optionsMarkup}
         </div>
         <div class="player-subtitle-rail player-subtitle-style-rail${showOptionsRail ? "" : " hidden"}">
-          ${styleItems
-            .map(
-              (item, index) => `
-            <div class="player-dialog-item player-dialog-style-item${item.disabled ? " disabled" : ""}${this.subtitleFocusedRail === "style" && index === this.subtitleStyleRailIndex ? " focused" : ""}" data-subtitle-rail="style" data-subtitle-index="${index}" aria-disabled="${item.disabled ? "true" : "false"}">
-              <button class="player-dialog-step player-dialog-step-minus${item.disabled ? "" : " focusable"}${!item.disabled && this.subtitleFocusedRail === "style" && index === this.subtitleStyleRailIndex && focusedStyleSide === "minus" ? " focused" : ""}" type="button" data-subtitle-style-action="decrease" data-subtitle-rail="style" data-subtitle-index="${index}" data-style-id="${escapeAttribute(item.id)}" aria-label="${escapeAttribute(`${item.label} -`)}"${item.disabled ? " disabled" : ""}>&#8722;</button>
-              <div class="player-dialog-item-center">
-                <div class="player-dialog-item-main">${escapeHtml(item.label)}</div>
-                <div class="player-dialog-item-sub">${escapeHtml(item.value || "")}</div>
-              </div>
-              <button class="player-dialog-step player-dialog-step-plus${item.disabled ? "" : " focusable"}${!item.disabled && this.subtitleFocusedRail === "style" && index === this.subtitleStyleRailIndex && focusedStyleSide === "plus" ? " focused" : ""}" type="button" data-subtitle-style-action="increase" data-subtitle-rail="style" data-subtitle-index="${index}" data-style-id="${escapeAttribute(item.id)}" aria-label="${escapeAttribute(`${item.label} +`)}"${item.disabled ? " disabled" : ""}>&#43;</button>
-            </div>
-          `
-            )
-            .join("")}
+          ${styleItems.map((item, index) => this.renderSubtitleStyleItemMarkup(item, index)).join("")}
         </div>
       </div>
     `;
+    const mounted = Boolean(dialog.querySelector(".player-subtitle-overlay-grid"));
+    if (!mounted || this.renderedSubtitleDialogMarkup !== nextMarkup) {
+      dialog.innerHTML = nextMarkup;
+      this.renderedSubtitleDialogMarkup = nextMarkup;
+    }
+    this.applySubtitleOptionVirtualScrollPosition();
+    this.syncSubtitleDialogFocusDom({ scroll: false });
     this.scrollSubtitleDialogIntoView();
     this.scheduleSubtitleDialogScrollIntoView();
+    this.scheduleSubtitleOptionVirtualMeasurement();
   },
 
   handleSubtitleDialogKey(event) {
     const keyCode = Number(event?.keyCode || 0);
     const languages = this.getSubtitleLanguageRailItems();
-    const activeLanguage =
-      languages[this.subtitleLanguageRailIndex]?.key || SUBTITLE_LANGUAGE_OFF_KEY;
-    const options = this.getSubtitleOptionsForLanguage(activeLanguage);
+    const selectedLanguageKey = this.getSelectedSubtitleLanguageKey();
+    const options = this.getSubtitleOptionsForLanguage(selectedLanguageKey);
     const styleItems = this.getSubtitleStyleControls();
     const styleItem = styleItems[this.subtitleStyleRailIndex];
 
@@ -15329,12 +21230,18 @@ export const PlayerScreen = {
           0,
           Math.max(0, languages.length - 1)
         );
-        this.syncSubtitleOptionIndexForFocusedLanguage();
+        this.subtitleFocusedLanguageKey =
+          languages[this.subtitleLanguageRailIndex]?.key || SUBTITLE_LANGUAGE_OFF_KEY;
       } else if (this.subtitleFocusedRail === "options") {
         this.subtitleOptionRailIndex = clamp(
           this.subtitleOptionRailIndex - 1,
           0,
           Math.max(0, options.length - 1)
+        );
+        this.rememberSubtitleOptionFocus(
+          selectedLanguageKey,
+          options,
+          this.subtitleOptionRailIndex
         );
       } else {
         this.subtitleStyleRailIndex = clamp(
@@ -15343,7 +21250,9 @@ export const PlayerScreen = {
           Math.max(0, styleItems.length - 1)
         );
       }
-      this.renderSubtitleDialog();
+      if (!this.syncSubtitleDialogFocusDom()) {
+        this.renderSubtitleDialog();
+      }
       return true;
     }
     if (keyCode === 40) {
@@ -15353,12 +21262,18 @@ export const PlayerScreen = {
           0,
           Math.max(0, languages.length - 1)
         );
-        this.syncSubtitleOptionIndexForFocusedLanguage();
+        this.subtitleFocusedLanguageKey =
+          languages[this.subtitleLanguageRailIndex]?.key || SUBTITLE_LANGUAGE_OFF_KEY;
       } else if (this.subtitleFocusedRail === "options") {
         this.subtitleOptionRailIndex = clamp(
           this.subtitleOptionRailIndex + 1,
           0,
           Math.max(0, options.length - 1)
+        );
+        this.rememberSubtitleOptionFocus(
+          selectedLanguageKey,
+          options,
+          this.subtitleOptionRailIndex
         );
       } else {
         this.subtitleStyleRailIndex = clamp(
@@ -15367,24 +21282,38 @@ export const PlayerScreen = {
           Math.max(0, styleItems.length - 1)
         );
       }
-      this.renderSubtitleDialog();
+      if (!this.syncSubtitleDialogFocusDom()) {
+        this.renderSubtitleDialog();
+      }
       return true;
     }
     if (keyCode === 37) {
       if (this.subtitleFocusedRail === "style") {
+        if (styleItem?.id === "delay" && !styleItem.disabled) {
+          this.subtitleFocusedRail = options.length ? "options" : "language";
+          this.subtitleStyleControlSide = "minus";
+          if (!this.syncSubtitleDialogFocusDom()) {
+            this.renderSubtitleDialog();
+          }
+          return true;
+        }
         if (this.subtitleStyleControlSide === "plus") {
           this.subtitleStyleControlSide = "minus";
-          this.renderSubtitleDialog();
+          this.syncSubtitleDialogFocusDom();
           return true;
         } else {
           this.subtitleFocusedRail = options.length ? "options" : "language";
           this.subtitleStyleControlSide = "minus";
-          this.renderSubtitleDialog();
+          if (!this.syncSubtitleDialogFocusDom()) {
+            this.renderSubtitleDialog();
+          }
           return true;
         }
       } else if (this.subtitleFocusedRail === "options") {
         this.subtitleFocusedRail = "language";
-        this.renderSubtitleDialog();
+        if (!this.syncSubtitleDialogFocusDom()) {
+          this.renderSubtitleDialog();
+        }
         return true;
       }
       return true;
@@ -15392,23 +21321,30 @@ export const PlayerScreen = {
     if (keyCode === 39) {
       if (
         this.subtitleFocusedRail === "language" &&
-        activeLanguage !== SUBTITLE_LANGUAGE_OFF_KEY &&
+        selectedLanguageKey !== SUBTITLE_LANGUAGE_OFF_KEY &&
         options.length
       ) {
         this.subtitleFocusedRail = "options";
-        this.renderSubtitleDialog();
+        if (!this.syncSubtitleDialogFocusDom()) {
+          this.renderSubtitleDialog();
+        }
         return true;
       }
       if (this.subtitleFocusedRail === "options") {
         this.subtitleFocusedRail = "style";
         this.subtitleStyleControlSide = "minus";
-        this.renderSubtitleDialog();
+        if (!this.syncSubtitleDialogFocusDom()) {
+          this.renderSubtitleDialog();
+        }
         return true;
       }
       if (this.subtitleFocusedRail === "style") {
+        if (styleItem?.id === "delay" && !styleItem.disabled) {
+          return true;
+        }
         if (this.subtitleStyleControlSide === "minus") {
           this.subtitleStyleControlSide = "plus";
-          this.renderSubtitleDialog();
+          this.syncSubtitleDialogFocusDom();
           return true;
         }
       }
@@ -15448,6 +21384,10 @@ export const PlayerScreen = {
         }
         return true;
       }
+      if (styleItem?.id === "delay" && !styleItem.disabled) {
+        this.showSubtitleDelayOverlay();
+        return true;
+      }
       if (styleItem && !styleItem.disabled) {
         this.adjustSubtitleStyleControl(
           styleItem.id,
@@ -15460,7 +21400,9 @@ export const PlayerScreen = {
     if (this.subtitleFocusedRail === "style" && (keyCode === 10009 || keyCode === 461)) {
       this.subtitleFocusedRail = options.length ? "options" : "language";
       this.subtitleStyleControlSide = "minus";
-      this.renderSubtitleDialog();
+      if (!this.syncSubtitleDialogFocusDom()) {
+        this.renderSubtitleDialog();
+      }
       return true;
     }
     return (
@@ -15561,7 +21503,9 @@ export const PlayerScreen = {
           : -1;
       entries = avplayAudioTracks.map((track, index) => {
         const mergedTrack = this.mergeAvPlayAudioTrackMetadata(track, index);
-        const support = getAudioTrackSupportState(mergedTrack);
+        const support = this.isTizenDashAudioSwitchingUnsupported()
+          ? { supported: false, unsupportedReason: "tizen-dash-audio" }
+          : getAudioTrackSupportState(mergedTrack);
         const avplayTrackIndex = Number(track?.avplayTrackIndex);
         const normalizedTrackIndex = Number.isFinite(avplayTrackIndex) ? avplayTrackIndex : index;
         const display = formatAudioTrackDisplay(mergedTrack, index);
@@ -16090,6 +22034,7 @@ export const PlayerScreen = {
 
     const entries = this.getAudioEntries();
     const hasSupportedEntries = entries.some((entry) => entry?.supported !== false);
+    const supportNotice = this.getAudioDialogSupportNotice();
     const audioControls = [
       {
         id: "amplification",
@@ -16133,6 +22078,7 @@ export const PlayerScreen = {
         : this.getUnavailableTrackMessage("audio");
       dialog.innerHTML = `
         <div class="player-dialog-title">${escapeHtml(t("audio_dialog_title", {}, "Audio"))}</div>
+        ${supportNotice ? `<div class="player-dialog-support-message" role="status">${escapeHtml(supportNotice)}</div>` : ""}
         <div class="player-dialog-empty${loading ? " player-dialog-loading" : ""}">
           ${loading ? renderLoadingIndicator() : ""}
           <span>${escapeHtml(emptyMessage)}</span>
@@ -16147,7 +22093,8 @@ export const PlayerScreen = {
     this.audioDialogIndex = clamp(this.audioDialogIndex, 0, entries.length - 1);
     dialog.innerHTML = `
       <div class="player-dialog-title">${escapeHtml(t("audio_dialog_title", {}, "Audio"))}</div>
-      ${hasSupportedEntries ? "" : `<div class="player-audio-support-message">${escapeHtml(t("player.audio.noSupportedTracks", {}, "No supported audio tracks available"))}</div>`}
+      ${supportNotice ? `<div class="player-dialog-support-message" role="status">${escapeHtml(supportNotice)}</div>` : ""}
+      ${hasSupportedEntries ? "" : `<div class="player-audio-support-message" role="status">${escapeHtml(t("player.audio.noSupportedTracks", {}, "No supported audio tracks available"))}</div>`}
       <div class="player-audio-overlay-grid">
         <div class="player-dialog-list player-audio-track-list">
           ${entries
@@ -16157,16 +22104,19 @@ export const PlayerScreen = {
                 this.audioFocusedColumn === "tracks" && index === this.audioDialogIndex;
               const disabled = entry.supported === false;
               const pending = this.isAudioEntryPending(entry);
+              const unsupportedText =
+                entry.unsupportedReason === "tizen-dash-audio"
+                  ? t(
+                      "player_audio_tizen_dash_unsupported",
+                      {},
+                      "Changing DASH audio tracks is not supported on this TV."
+                    )
+                  : t("player.audio.unsupportedCodec", {}, "Codec not supported by this device");
               const label = disabled
                 ? `${entry.label || ""} · ${t("player.audio.unsupported", {}, "Unsupported")}`
                 : entry.label || "";
               const secondary = disabled
-                ? [
-                    entry.secondary,
-                    t("player.audio.unsupportedCodec", {}, "Codec not supported by this device")
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")
+                ? [entry.secondary, unsupportedText].filter(Boolean).join(" · ")
                 : entry.secondary || "";
               return `
               <div class="player-dialog-item focusable${selected ? " selected" : ""}${focused ? " focused" : ""}${disabled ? " disabled" : ""}${pending ? " pending" : ""}" data-audio-column="tracks" data-audio-index="${index}" aria-disabled="${disabled ? "true" : "false"}" aria-busy="${pending ? "true" : "false"}">
@@ -16323,16 +22273,24 @@ export const PlayerScreen = {
     this.resetControlsAutoHide();
   },
 
-  applyPlaybackSpeed(speed = 1) {
-    const applied =
-      typeof PlayerController.setPlaybackRate === "function"
-        ? PlayerController.setPlaybackRate(speed)
-        : false;
+  async applyPlaybackSpeed(speed = 1) {
+    let applied = false;
+    try {
+      applied =
+        typeof PlayerController.setPlaybackRate === "function"
+          ? await PlayerController.setPlaybackRate(speed)
+          : false;
+    } catch (_) {
+      applied = false;
+    }
     if (!applied) {
-      return;
+      this.renderControlButtons();
+      this.renderSpeedDialog();
+      return false;
     }
     this.renderControlButtons();
     this.renderSpeedDialog();
+    return true;
   },
 
   renderSpeedDialog() {
@@ -16392,9 +22350,9 @@ export const PlayerScreen = {
     );
   },
 
-  getSourceFilters() {
+  getSourceFilters(orderedStreams = this.getOrderedStreamCandidates()) {
     const addons = [];
-    this.getOrderedStreamCandidates().forEach((stream) => {
+    orderedStreams.forEach((stream) => {
       const addonName = String(stream?.addonName || "").trim();
       if (addonName && !addons.includes(addonName)) {
         addons.push(addonName);
@@ -16404,30 +22362,21 @@ export const PlayerScreen = {
   },
 
   getOrderedStreamCandidates() {
-    return (this.streamCandidates || [])
-      .map((stream, index) => ({ stream, index }))
-      .sort((left, right) => {
-        const leftOrder = Number(left.stream?.addonOrderIndex ?? Number.MAX_SAFE_INTEGER);
-        const rightOrder = Number(right.stream?.addonOrderIndex ?? Number.MAX_SAFE_INTEGER);
-        if (leftOrder !== rightOrder) {
-          return leftOrder - rightOrder;
-        }
-        return left.index - right.index;
-      })
-      .map((entry) => entry.stream);
+    return orderStreamsByAddonOrder(this.streamCandidates || [], [], {
+      isDirectDebrid: (stream) => DebridStreamPresentation.isDirectDebrid(stream)
+    });
   },
 
-  getFilteredSources() {
-    const ordered = this.getOrderedStreamCandidates();
+  getFilteredSources(orderedStreams = this.getOrderedStreamCandidates()) {
     if (this.sourceFilter === "all") {
-      return ordered;
+      return orderedStreams;
     }
-    return ordered.filter((stream) => stream.addonName === this.sourceFilter);
+    return orderedStreams.filter((stream) => stream.addonName === this.sourceFilter);
   },
 
-  ensureSourcesFocus() {
-    const filters = this.getSourceFilters();
-    const list = this.getFilteredSources();
+  ensureSourcesFocus(filters = null, list = null) {
+    const availableFilters = Array.isArray(filters) ? filters : this.getSourceFilters();
+    const availableSources = Array.isArray(list) ? list : this.getFilteredSources();
 
     if (!this.sourcesFocus || !["top", "filter", "list"].includes(this.sourcesFocus.zone)) {
       this.sourcesFocus = { zone: "filter", index: 0 };
@@ -16439,12 +22388,20 @@ export const PlayerScreen = {
     }
 
     if (this.sourcesFocus.zone === "filter") {
-      this.sourcesFocus.index = clamp(this.sourcesFocus.index, 0, Math.max(0, filters.length - 1));
+      this.sourcesFocus.index = clamp(
+        this.sourcesFocus.index,
+        0,
+        Math.max(0, availableFilters.length - 1)
+      );
       return;
     }
 
-    this.sourcesFocus.index = clamp(this.sourcesFocus.index, 0, Math.max(0, list.length - 1));
-    if (!list.length && filters.length) {
+    this.sourcesFocus.index = clamp(
+      this.sourcesFocus.index,
+      0,
+      Math.max(0, availableSources.length - 1)
+    );
+    if (!availableSources.length && availableFilters.length) {
       this.sourcesFocus = { zone: "filter", index: 0 };
     }
   },
@@ -16461,9 +22418,48 @@ export const PlayerScreen = {
     };
   },
 
+  cancelScheduledSourcesPanelRender() {
+    if (this.sourcePanelRenderFrame == null) {
+      return;
+    }
+    if (this.sourcePanelRenderFrameType === "raf") {
+      if (typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(this.sourcePanelRenderFrame);
+      } else {
+        clearTimeout(this.sourcePanelRenderFrame);
+      }
+    } else {
+      clearTimeout(this.sourcePanelRenderFrame);
+    }
+    this.sourcePanelRenderFrame = null;
+    this.sourcePanelRenderFrameType = null;
+  },
+
+  scheduleSourcesPanelRender() {
+    if (!this.sourcesPanelVisible || this.sourcePanelRenderFrame != null) {
+      return;
+    }
+    const render = () => {
+      this.sourcePanelRenderFrame = null;
+      this.sourcePanelRenderFrameType = null;
+      if (this.sourcesPanelVisible) {
+        this.renderSourcesPanel();
+      }
+    };
+    if (typeof requestAnimationFrame === "function") {
+      this.sourcePanelRenderFrameType = "raf";
+      this.sourcePanelRenderFrame = requestAnimationFrame(render);
+      return;
+    }
+    this.sourcePanelRenderFrameType = "timeout";
+    this.sourcePanelRenderFrame = setTimeout(render, 0);
+  },
+
   openSourcesPanel({ forceReload = false } = {}) {
+    streamRepository.setLocalPluginSearchPaused(false);
     this.cancelSeekPreview({ commit: false });
     this.sourcesPanelVisible = true;
+    this.sourcesLastNavigationRepeatAt = 0;
     this.subtitleDialogVisible = false;
     this.audioDialogVisible = false;
     this.speedDialogVisible = false;
@@ -16488,7 +22484,7 @@ export const PlayerScreen = {
     // that had replied before playback started. Refresh once per video so a
     // slower addon can still join the in-player list without a manual reload.
     if (forceReload || !sourceRequestKey || sourceRequestKey !== this.completedSourceRequestKey) {
-      this.reloadSources();
+      this.reloadSources({ forceRefresh: forceReload });
     }
   },
 
@@ -16502,14 +22498,17 @@ export const PlayerScreen = {
   },
 
   closeSourcesPanel() {
+    streamRepository.setLocalPluginSearchPaused(true);
     this.sourcesPanelVisible = false;
+    this.sourcesLastNavigationRepeatAt = 0;
     this.sourcesError = "";
     this.renderSourcesPanel();
     this.updateModalBackdrop();
     this.resetControlsAutoHide();
   },
 
-  async reloadSources() {
+  async reloadSources({ forceRefresh = false } = {}) {
+    streamRepository.setLocalPluginSearchPaused(false);
     if (this.sourcesLoading) {
       return;
     }
@@ -16531,6 +22530,7 @@ export const PlayerScreen = {
       itemId: String(this.params?.itemId || ""),
       season: this.params?.season ?? null,
       episode: this.params?.episode ?? null,
+      forceRefresh,
       onChunk: (chunkResult) => {
         if (token !== this.sourceLoadToken) {
           return;
@@ -16540,7 +22540,7 @@ export const PlayerScreen = {
           return;
         }
         this.streamCandidates = mergeStreamItems(this.streamCandidates, chunkItems);
-        this.renderSourcesPanel();
+        this.scheduleSourcesPanelRender();
         void this.preloadPlayerSourceLogos(chunkItems);
       }
     };
@@ -16604,7 +22604,30 @@ export const PlayerScreen = {
     }, 120);
   },
 
+  scrollSourcesCardIntoView(target, padding = 12) {
+    const list = target?.closest?.(".player-sources-list");
+    if (
+      !list ||
+      typeof list.getBoundingClientRect !== "function" ||
+      typeof target?.getBoundingClientRect !== "function"
+    ) {
+      return;
+    }
+
+    // Keep scrolling inside the source list. Native scrollIntoView() can pick
+    // the wrong ancestor on old Chromium after a full panel DOM replacement,
+    // leaving virtual focus on one card while the list runs to its end.
+    const listRect = list.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    if (targetRect.top < listRect.top + padding) {
+      list.scrollTop -= listRect.top + padding - targetRect.top;
+    } else if (targetRect.bottom > listRect.bottom - padding) {
+      list.scrollTop += targetRect.bottom - (listRect.bottom - padding);
+    }
+  },
+
   renderSourcesPanel() {
+    this.cancelScheduledSourcesPanelRender();
     const panel = this.uiRefs?.sourcesPanel;
     if (!panel) {
       return;
@@ -16612,18 +22635,22 @@ export const PlayerScreen = {
 
     panel.classList.toggle("hidden", !this.sourcesPanelVisible);
     if (!this.sourcesPanelVisible) {
-      panel.innerHTML = "";
+      if (this.renderedSourcesMarkup !== null || panel.childNodes.length) {
+        panel.innerHTML = "";
+      }
+      this.renderedSourcesMarkup = null;
       return;
     }
 
-    const filters = this.getSourceFilters();
-    const filtered = this.getFilteredSources();
+    const orderedSources = this.getOrderedStreamCandidates();
+    const filters = this.getSourceFilters(orderedSources);
+    const filtered = this.getFilteredSources(orderedSources);
     const badgeSettings = StreamBadgeSettingsStore.snapshot();
     const showAddonLogo = badgeSettings.showAddonLogo === true;
     const badgePlacement = resolvePlayerSourceBadgePlacement(badgeSettings);
-    this.ensureSourcesFocus();
+    this.ensureSourcesFocus(filters, filtered);
 
-    panel.innerHTML = `
+    const nextMarkup = `
       <div class="player-sources-header">
         <div class="player-sources-title">${escapeHtml(t("sources_title", {}, "Sources"))}</div>
         <div class="player-sources-actions">
@@ -16707,15 +22734,57 @@ export const PlayerScreen = {
       </div>
     `;
 
+    // Addon responses and logo hydration can request several renders in one
+    // frame. Retain the exact generated markup when nothing visible changed so
+    // TV browsers do not repeatedly parse/layout/paint every source card.
+    const panelMounted = Boolean(panel.querySelector(".player-sources-header"));
+    const markupUnchanged = panelMounted && this.renderedSourcesMarkup === nextMarkup;
+    if (!markupUnchanged) {
+      panel.innerHTML = nextMarkup;
+      this.renderedSourcesMarkup = nextMarkup;
+    }
+
     const focusedCard = panel.querySelector(".player-source-card.focused");
     if (focusedCard) {
-      focusedCard.scrollIntoView({ block: "nearest", inline: "nearest" });
+      this.scrollSourcesCardIntoView(focusedCard);
+    }
+  },
+
+  syncSourcesFocusDom() {
+    const panel = this.uiRefs?.sourcesPanel;
+    if (!panel || !this.sourcesPanelVisible) {
+      return;
+    }
+
+    const zone = String(this.sourcesFocus?.zone || "filter");
+    const index = Number(this.sourcesFocus?.index || 0);
+    const focusedNode = panel.querySelector(
+      `[data-sources-zone="${zone}"][data-sources-index="${index}"]`
+    );
+    // Source/filter data can change asynchronously while the panel is open.
+    // If the live DOM no longer represents the state, retain the existing full
+    // render path so content and focus cannot become misaligned.
+    if (!focusedNode) {
+      this.renderSourcesPanel();
+      return;
+    }
+
+    panel.querySelectorAll("[data-sources-zone].focused").forEach((node) => {
+      if (node !== focusedNode) {
+        node.classList.remove("focused");
+      }
+    });
+    focusedNode.classList.add("focused");
+    if (focusedNode.classList.contains("player-source-card")) {
+      this.scrollSourcesCardIntoView(focusedNode);
     }
   },
 
   moveSourcesFocus(direction) {
-    const filters = this.getSourceFilters();
-    const list = this.getFilteredSources();
+    const orderedSources = this.getOrderedStreamCandidates();
+    const filters = this.getSourceFilters(orderedSources);
+    const list = this.getFilteredSources(orderedSources);
+    this.ensureSourcesFocus(filters, list);
     const zone = this.sourcesFocus.zone;
     let index = Number(this.sourcesFocus.index || 0);
 
@@ -16793,12 +22862,13 @@ export const PlayerScreen = {
   async activateSourcesFocus() {
     const zone = this.sourcesFocus.zone;
     const index = Number(this.sourcesFocus.index || 0);
-    const filters = this.getSourceFilters();
-    const list = this.getFilteredSources();
+    const orderedSources = this.getOrderedStreamCandidates();
+    const filters = this.getSourceFilters(orderedSources);
+    const list = this.getFilteredSources(orderedSources);
 
     if (zone === "top") {
       if (index === 0) {
-        await this.reloadSources();
+        await this.reloadSources({ forceRefresh: true });
         return;
       }
       this.closeSourcesPanel();
@@ -16820,29 +22890,40 @@ export const PlayerScreen = {
 
   async handleSourcesPanelKey(event) {
     const keyCode = Number(event?.keyCode || 0);
+    const isDirectionalKey = keyCode >= 37 && keyCode <= 40;
+    if (isDirectionalKey && event?.repeat) {
+      const now = Date.now();
+      if (
+        now - Number(this.sourcesLastNavigationRepeatAt || 0) <
+        SOURCE_NAVIGATION_REPEAT_THROTTLE_MS
+      ) {
+        return true;
+      }
+      this.sourcesLastNavigationRepeatAt = now;
+    }
     if (keyCode === 82) {
-      await this.reloadSources();
+      await this.reloadSources({ forceRefresh: true });
       return true;
     }
 
     if (keyCode === 37) {
       this.moveSourcesFocus("left");
-      this.renderSourcesPanel();
+      this.syncSourcesFocusDom();
       return true;
     }
     if (keyCode === 39) {
       this.moveSourcesFocus("right");
-      this.renderSourcesPanel();
+      this.syncSourcesFocusDom();
       return true;
     }
     if (keyCode === 38) {
       this.moveSourcesFocus("up");
-      this.renderSourcesPanel();
+      this.syncSourcesFocusDom();
       return true;
     }
     if (keyCode === 40) {
       this.moveSourcesFocus("down");
-      this.renderSourcesPanel();
+      this.syncSourcesFocusDom();
       return true;
     }
     if (isSelectKeyCode(keyCode)) {
@@ -16871,11 +22952,65 @@ export const PlayerScreen = {
     }, 1400);
   },
 
+  getAspectModeDefinition(mode = this.aspectModes?.[this.aspectModeIndex]) {
+    const modeId = normalizeAspectMode(typeof mode === "object" ? mode?.id : mode);
+    return (
+      this.aspectModes?.find((candidate) => candidate.id === modeId) ||
+      this.aspectModes?.[0] ||
+      ASPECT_MODE_DEFINITIONS[0]
+    );
+  },
+
+  getVideoAspectRatio(video = PlayerController.video) {
+    const explicitAspectCandidates = [
+      video?.pixelWidthHeightRatio,
+      video?.pixelAspectRatio,
+      video?.videoAspectRatio,
+      video?.displayAspectRatio,
+      video?.aspectRatio
+    ];
+    for (const candidate of explicitAspectCandidates) {
+      const aspect = parseAspectRatio(candidate);
+      if (aspect && aspect > 0) {
+        const width = Number(video?.videoWidth || 0);
+        const height = Number(video?.videoHeight || 0);
+        if (candidate === video?.pixelWidthHeightRatio && width > 0 && height > 0) {
+          return (width / height) * aspect;
+        }
+        if (candidate === video?.pixelWidthHeightRatio) {
+          continue;
+        }
+        return aspect;
+      }
+    }
+
+    const videoWidth = Number(video?.videoWidth || 0);
+    const videoHeight = Number(video?.videoHeight || 0);
+    if (videoWidth > 0 && videoHeight > 0) {
+      return videoWidth / videoHeight;
+    }
+
+    const avplayDimensions =
+      typeof PlayerController.getAvPlayVideoDimensions === "function"
+        ? PlayerController.getAvPlayVideoDimensions()
+        : null;
+    const avplayAspect = parseAspectRatio(avplayDimensions?.aspect);
+    if (avplayAspect && avplayAspect > 0) {
+      return avplayAspect;
+    }
+    const avplayWidth = Number(avplayDimensions?.width || 0);
+    const avplayHeight = Number(avplayDimensions?.height || 0);
+    return avplayWidth > 0 && avplayHeight > 0 ? avplayWidth / avplayHeight : null;
+  },
+
   applyAspectMode({ showToast = false } = {}) {
-    const mode = this.aspectModes[this.aspectModeIndex] || this.aspectModes[0];
+    const mode = this.getAspectModeDefinition();
     const video = PlayerController.video;
     if (video) {
-      const rect = this.calculateAspectRect(mode.objectFit, video);
+      const rect = this.calculateAspectRect(mode.id, video);
+      const usingTizenAvPlay = Boolean(Environment.isTizen() && PlayerController.isUsingAvPlay?.());
+      const canTransformVideo = !Environment.isWebOS() && !usingTizenAvPlay;
+      const videoRect = usingTizenAvPlay ? rect.displayRect : rect;
       video.style.position = "fixed";
       if (Environment.isWebOS()) {
         // webOS suppresses its screensaver only when the video element itself
@@ -16886,17 +23021,22 @@ export const PlayerScreen = {
         video.style.height = "100vh";
         video.style.objectFit = mode.objectFit;
       } else {
-        video.style.left = `${Math.round(rect.x)}px`;
-        video.style.top = `${Math.round(rect.y)}px`;
-        video.style.width = `${Math.round(rect.width)}px`;
-        video.style.height = `${Math.round(rect.height)}px`;
+        video.style.left = `${Math.round(videoRect.x)}px`;
+        video.style.top = `${Math.round(videoRect.y)}px`;
+        video.style.width = `${Math.round(videoRect.width)}px`;
+        video.style.height = `${Math.round(videoRect.height)}px`;
         video.style.objectFit = "fill";
       }
       video.style.maxWidth = "none";
       video.style.maxHeight = "none";
       video.style.background = "black";
+      video.style.transformOrigin = "center center";
+      video.style.transform =
+        !canTransformVideo || (rect.scaleX === 1 && rect.scaleY === 1)
+          ? "none"
+          : `scale(${rect.scaleX}, ${rect.scaleY})`;
       if (typeof PlayerController.setAvPlayDisplayRect === "function") {
-        PlayerController.setAvPlayDisplayRect(rect, rect.displayMethod);
+        PlayerController.setAvPlayDisplayRect(rect.displayRect, rect.displayMethod);
       }
     }
     if (showToast) {
@@ -16905,7 +23045,7 @@ export const PlayerScreen = {
     this.renderBitmapSubtitleAtCurrentTime({ force: true });
   },
 
-  calculateAspectRect(objectFit = "contain", video = PlayerController.video) {
+  calculateAspectRect(mode = "ORIGINAL", video = PlayerController.video) {
     const viewport =
       typeof PlayerController.getPlayerViewportSize === "function"
         ? PlayerController.getPlayerViewportSize()
@@ -16931,42 +23071,28 @@ export const PlayerScreen = {
           };
     const viewportWidth = viewport.width;
     const viewportHeight = viewport.height;
-    if (objectFit === "fill") {
-      return {
-        x: 0,
-        y: 0,
-        width: viewportWidth,
-        height: viewportHeight,
-        displayMethod: "PLAYER_DISPLAY_MODE_FULL_SCREEN"
-      };
-    }
-
-    const avplayDimensions =
-      typeof PlayerController.getAvPlayVideoDimensions === "function"
-        ? PlayerController.getAvPlayVideoDimensions()
-        : null;
-    const videoWidth = Number(video?.videoWidth || avplayDimensions?.width || 0);
-    const videoHeight = Number(video?.videoHeight || avplayDimensions?.height || 0);
-    const mediaRatio = videoWidth > 0 && videoHeight > 0 ? videoWidth / videoHeight : 16 / 9;
-    const viewportRatio = viewportWidth / viewportHeight;
-    const shouldCover = objectFit === "cover";
-    const widthLimited = shouldCover ? viewportRatio > mediaRatio : viewportRatio < mediaRatio;
-    const width = widthLimited ? viewportWidth : viewportHeight * mediaRatio;
-    const height = widthLimited ? viewportWidth / mediaRatio : viewportHeight;
-
+    const normalizedMode = normalizeAspectMode(typeof mode === "object" ? mode?.id : mode);
+    const videoAspect = this.getVideoAspectRatio(video);
+    const render = resolveAspectRender(normalizedMode, viewportWidth, viewportHeight, videoAspect);
+    const displayRect = Environment.isTizen()
+      ? { x: 0, y: 0, width: viewportWidth, height: viewportHeight }
+      : {
+          x: render.x,
+          y: render.y,
+          width: render.width,
+          height: render.height
+        };
     return {
-      x: (viewportWidth - width) / 2,
-      y: (viewportHeight - height) / 2,
-      width,
-      height,
-      displayMethod: shouldCover
-        ? "PLAYER_DISPLAY_MODE_FULL_SCREEN"
-        : "PLAYER_DISPLAY_MODE_LETTER_BOX"
+      ...render,
+      mode: normalizedMode,
+      displayRect
     };
   },
 
   cycleAspectMode() {
     this.aspectModeIndex = (this.aspectModeIndex + 1) % this.aspectModes.length;
+    const mode = this.getAspectModeDefinition();
+    DeviceLocalPlayerPreferences.setAspectMode(mode.id);
     this.applyAspectMode({ showToast: true });
   },
   renderParentalGuideOverlay() {
@@ -17002,8 +23128,6 @@ export const PlayerScreen = {
     const rowGap = PARENTAL_GUIDE_ROW_GAP;
     const lineHeight = rowHeight * total + rowGap * Math.max(0, total - 1);
     const currentLineHeight = clamp(Number(this.parentalGuideLineProgress || 0), 0, lineHeight);
-    const rootStyle = getComputedStyle(document.documentElement);
-    const parentalAccent = rootStyle.getPropertyValue("--secondary-color").trim() || "#f5f5f5";
     overlay.style.animationDelay = this.parentalGuideExiting ? `${containerExitDelay}ms` : "0ms";
     overlay.style.setProperty("--parental-row-height", `${rowHeight}px`);
     overlay.style.setProperty("--parental-row-gap", `${rowGap}px`);
@@ -17011,7 +23135,6 @@ export const PlayerScreen = {
     overlay.style.setProperty("--parental-line-height", `${lineHeight}px`);
     overlay.style.setProperty("--parental-line-exit-delay", `${lineExitDelay}ms`);
     overlay.style.setProperty("--parental-container-exit-delay", `${containerExitDelay}ms`);
-    overlay.style.setProperty("--parental-accent", parentalAccent);
     overlay.innerHTML = `
       <div class="player-parental-line">
         <div class="player-parental-line-fill"></div>
@@ -17039,12 +23162,8 @@ export const PlayerScreen = {
     `;
 
     const line = overlay.querySelector(".player-parental-line");
-    const lineFill = overlay.querySelector(".player-parental-line-fill");
     if (line) {
       line.style.height = `${currentLineHeight.toFixed(2)}px`;
-    }
-    if (lineFill) {
-      lineFill.style.background = parentalAccent;
     }
   },
 
@@ -17335,6 +23454,7 @@ export const PlayerScreen = {
   },
 
   closeEpisodeStreamsView() {
+    streamRepository.setLocalPluginSearchPaused(true);
     this.episodePanelMode = "episodes";
     this.episodePanelStreamsLoading = false;
     this.episodePanelStreamsError = "";
@@ -17343,6 +23463,7 @@ export const PlayerScreen = {
   },
 
   async openEpisodeStreamsView({ forceReload = true } = {}) {
+    streamRepository.setLocalPluginSearchPaused(false);
     const selected = this.episodes[this.episodePanelIndex] || null;
     if (!selected?.id) {
       return;
@@ -17356,7 +23477,12 @@ export const PlayerScreen = {
     this.renderEpisodePanel();
 
     const itemType = this.params?.itemType || "series";
-    const cacheKey = this.getStreamCacheKey(selected.id, normalizeItemType(itemType));
+    const cacheKey = this.getStreamCacheKey(
+      selected.id,
+      normalizeItemType(itemType),
+      selected.season,
+      selected.episode
+    );
     if (forceReload) {
       this.streamCandidatesByVideoId?.delete?.(cacheKey);
     }
@@ -17365,7 +23491,8 @@ export const PlayerScreen = {
     try {
       const streams = await this.getPlayableStreamsForVideo(selected.id, itemType, {
         season: selected.season,
-        episode: selected.episode
+        episode: selected.episode,
+        forceRefresh: forceReload
       });
       if (
         token !== this.episodePanelStreamLoadToken ||
@@ -17808,9 +23935,9 @@ export const PlayerScreen = {
             ${current ? `<div class="player-episode-current">&#10003;</div>` : ""}
           </div>
           <div class="player-episode-copy">
-            <div class="player-episode-item-title">${escapeHtml(episode.title || t("episodes_episode", {}, "Episode"))}</div>
+            <div class="player-episode-item-title" dir="auto">${escapeHtml(episode.title || t("episodes_episode", {}, "Episode"))}</div>
             ${date ? `<div class="player-episode-date">${escapeHtml(date)}</div>` : ""}
-            <div class="player-episode-item-subtitle">${escapeHtml(episode.overview || "")}</div>
+            <div class="player-episode-item-subtitle" dir="auto">${escapeHtml(episode.overview || "")}</div>
           </div>
         </div>
       `;
@@ -17851,6 +23978,7 @@ export const PlayerScreen = {
   },
 
   hideEpisodePanel() {
+    streamRepository.setLocalPluginSearchPaused(true);
     this.episodePanelVisible = false;
     this.episodePanelStreamLoadToken = Number(this.episodePanelStreamLoadToken || 0) + 1;
     const panel = this.uiRefs?.root?.querySelector("#episodeSidePanel");
@@ -17874,6 +24002,7 @@ export const PlayerScreen = {
     if (!selected?.id) {
       return;
     }
+    streamRepository.setLocalPluginSearchPaused(true);
     if (!selectedStream && this.episodePanelMode !== "streams") {
       await this.openEpisodeStreamsView({ forceReload: true });
       return;
@@ -17979,13 +24108,22 @@ export const PlayerScreen = {
         return;
       }
 
-      if (PlayerSettingsStore.get().addonSubtitleStartupMode === "PREFERRED_ONLY") {
+      const subtitleSettings = PlayerSettingsStore.get();
+      const preferredOnly =
+        subtitleSettings.addonSubtitleStartupMode === "PREFERRED_ONLY" ||
+        (subtitleSettings.addonSubtitleStartupMode === "ALL_SUBTITLES" &&
+          subtitleSettings.subtitleStyle?.showOnlyPreferredLanguages);
+      if (preferredOnly) {
         const preferredTargets = new Set(this.getStartupPreferredSubtitleLanguageTargets());
         repositorySubtitles = repositorySubtitles.filter((entry) => {
           const language = normalizeSubtitleLanguageKey(
             entry?.lang || entry?.language || entry?.languageCode || ""
           );
-          return preferredTargets.has(language) || Boolean(entry?.forced);
+          return Array.from(preferredTargets).some((target) => {
+            if (language === target) return true;
+            if (target === "pt" || target === "es") return false;
+            return language.startsWith(`${target}-`);
+          });
         });
       }
 
@@ -18053,13 +24191,13 @@ export const PlayerScreen = {
     if (this.controlFocusZone === "progress") {
       this.controlFocusZone = "buttons";
       this.controlFocusIndex = delta < 0 ? 0 : 0;
-      this.renderControlButtons();
+      this.syncControlFocusDom();
       return;
     }
     const nextIndex = clamp(this.controlFocusIndex + delta, 0, controls.length - 1);
     this.controlFocusZone = "buttons";
     this.controlFocusIndex = nextIndex;
-    this.renderControlButtons();
+    this.syncControlFocusDom();
     this.resetControlsAutoHide();
   },
 
@@ -18069,12 +24207,17 @@ export const PlayerScreen = {
       this.resetControlsAutoHide();
       return;
     }
+    if (this.controlFocusZone === "nextEpisode") {
+      void this.playNextEpisode({ userInitiated: true });
+      return;
+    }
     const controls = this.getControlDefinitions();
     const current = controls[this.controlFocusIndex] || null;
     if (!current) {
       return;
     }
     this.performControlAction(current.action || "");
+    this.resetControlsAutoHide();
   },
 
   performControlAction(action) {
@@ -18172,6 +24315,17 @@ export const PlayerScreen = {
   },
 
   syncPointerFocus(target) {
+    const nextEpisodeNode = target?.closest?.("[data-player-pointer-action='nextEpisode']");
+    if (nextEpisodeNode && this.isNextEpisodeCardFocusable()) {
+      this.stickyProgressFocus = false;
+      this.autoHideControlsAfterSeek = false;
+      this.controlFocusZone = "nextEpisode";
+      this.resetControlsAutoHide();
+      this.renderControlButtons();
+      this.syncNextEpisodeCardFocusState();
+      return;
+    }
+
     const skipIntroNode = target?.closest?.("[data-player-pointer-action='skipIntro']");
     if (skipIntroNode && this.isSkipIntroButtonFocusable()) {
       this.stickyProgressFocus = false;
@@ -18221,9 +24375,16 @@ export const PlayerScreen = {
       const index = Number(subtitleNode.dataset.subtitleIndex || 0);
       if (this.subtitleFocusedRail === "language") {
         this.subtitleLanguageRailIndex = index;
+        this.subtitleFocusedLanguageKey =
+          this.getSubtitleLanguageRailItems()[index]?.key || SUBTITLE_LANGUAGE_OFF_KEY;
         this.syncSubtitleOptionIndexForFocusedLanguage();
       } else if (this.subtitleFocusedRail === "options") {
         this.subtitleOptionRailIndex = index;
+        this.rememberSubtitleOptionFocus(
+          this.getSelectedSubtitleLanguageKey(),
+          this.getSubtitleOptionsForLanguage(this.getSelectedSubtitleLanguageKey()),
+          index
+        );
       } else {
         this.subtitleStyleRailIndex = index;
         this.subtitleStyleControlSide =
@@ -18326,7 +24487,52 @@ export const PlayerScreen = {
     return true;
   },
 
+  onPointerSurfaceActivate(target) {
+    if (
+      !target ||
+      this.isExternalFrameMode() ||
+      this.isDialogOpen() ||
+      this.isStartupErrorVisible() ||
+      this.isPostPlayVisible() ||
+      this.controlsVisible
+    ) {
+      return false;
+    }
+    const video = this.container?.querySelector?.("#videoPlayer");
+    if (!video || (target !== video && target?.closest?.("#videoPlayer") !== video)) {
+      return false;
+    }
+    this.setControlsVisible(true, { focus: true });
+    return true;
+  },
+
   onPointerFocus(target) {
+    if (this.isPostPlayVisible()) {
+      const actionNode = target?.closest?.("[data-player-post-play-action]");
+      if (actionNode && !actionNode.disabled) {
+        this.postPlayFocusedAction = String(actionNode.dataset.playerPostPlayAction || "primary");
+        this.uiRefs?.postPlay
+          ?.querySelectorAll?.(".focusable.focused")
+          ?.forEach((entry) => entry.classList.toggle("focused", entry === actionNode));
+      }
+      return;
+    }
+    if (this.subtitleTimingDialogVisible && target?.closest?.("#playerSubtitleTimingDialog")) {
+      const cueNode = target.closest("[data-subtitle-timing-cue-index]");
+      if (cueNode) {
+        this.subtitleAutoSyncCueFocusIndex = Number(cueNode.dataset.subtitleTimingCueIndex || 0);
+      }
+      this.syncSubtitleTimingFocusDom({ focus: false, scroll: false });
+      return;
+    }
+    if (this.subtitleDelayOverlayVisible && target?.closest?.("#playerSubtitleDelayOverlay")) {
+      const delayNode = target.closest("[data-subtitle-delay-focus]");
+      if (delayNode) {
+        this.subtitleDelayFocusTarget = String(delayNode.dataset.subtitleDelayFocus || "slider");
+        this.syncSubtitleDelayOverlayFocusDom({ focus: false });
+      }
+      return;
+    }
     this.syncPointerFocus(target);
   },
 
@@ -18335,6 +24541,18 @@ export const PlayerScreen = {
       return false;
     }
     this.syncPointerFocus(target);
+
+    if (this.isPostPlayVisible() && this.handlePostPlayPointer(target, event)) {
+      return true;
+    }
+
+    if (this.subtitleTimingDialogVisible && this.handleSubtitleTimingDialogPointer(target)) {
+      return true;
+    }
+
+    if (this.subtitleDelayOverlayVisible && this.handleSubtitleDelayOverlayPointer(target)) {
+      return true;
+    }
 
     const errorAction = target.closest?.("[data-player-error-action]");
     if (errorAction && this.isStartupErrorVisible()) {
@@ -18371,6 +24589,7 @@ export const PlayerScreen = {
     const controlButton = target.closest?.(".player-control-btn[data-action]");
     if (controlButton) {
       this.performControlAction(controlButton.dataset.action || "");
+      this.resetControlsAutoHide();
       return true;
     }
 
@@ -18394,6 +24613,16 @@ export const PlayerScreen = {
         this.subtitleStyleControlSide = side;
         this.adjustSubtitleStyleControl(styleItem.id, this.getSubtitleStyleControlDelta(side));
       }
+      return true;
+    }
+
+    const subtitleDelayNode = target.closest?.("[data-subtitle-delay-action='open']");
+    if (
+      subtitleDelayNode &&
+      this.subtitleDialogVisible &&
+      subtitleDelayNode.getAttribute("aria-disabled") !== "true"
+    ) {
+      this.showSubtitleDelayOverlay();
       return true;
     }
 
@@ -18489,6 +24718,8 @@ export const PlayerScreen = {
       this.seekPreviewSeconds != null ||
       (!this.controlsVisible && this.isNextEpisodeCardVisible()) ||
       this.sourcesPanelVisible ||
+      this.subtitleTimingDialogVisible ||
+      this.subtitleDelayOverlayVisible ||
       this.subtitleDialogVisible ||
       this.audioDialogVisible ||
       this.speedDialogVisible ||
@@ -18506,6 +24737,29 @@ export const PlayerScreen = {
       }
       Router.back();
       return true;
+    }
+
+    const postPlayState = this.getPostPlayState();
+    if (postPlayState.isTrailerPlaying) {
+      this.postPlayRecommendationController?.onTrailerEnded?.();
+      return true;
+    }
+    if (this.postPlayManualDialogVisible) {
+      this.invokePostPlayAction("manualCancel");
+      return true;
+    }
+    if (this.postPlaySynopsisVisible) {
+      this.invokePostPlayAction("synopsisClose");
+      return true;
+    }
+    if (postPlayState.isVisible && postPlayState.canReturnToPlayer && !this.postPlayPlaybackEnded) {
+      return this.returnToPlayerFromPostPlay();
+    }
+    if (postPlayState.isVisible || postPlayState.isLoadingRecommendation) {
+      this.postPlayNaturalEndPending = false;
+      this.postPlayPlaybackEnded = false;
+      this.postPlayRecommendationController?.stop?.();
+      return this.navigateBackToStreamScreen();
     }
 
     if (this.stillWatchingPromptVisible) {
@@ -18532,6 +24786,16 @@ export const PlayerScreen = {
 
     if (this.sourcesPanelVisible) {
       this.closeSourcesPanel();
+      return true;
+    }
+
+    if (this.subtitleTimingDialogVisible) {
+      this.dismissSubtitleTimingDialog();
+      return true;
+    }
+
+    if (this.subtitleDelayOverlayVisible) {
+      this.hideSubtitleDelayOverlay();
       return true;
     }
 
@@ -18606,6 +24870,31 @@ export const PlayerScreen = {
       this.consumeBackRequest();
       return;
     }
+    if (this.isPostPlayVisible()) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      event?.stopImmediatePropagation?.();
+      if (
+        isSelectKeyCode(keyCode) &&
+        !this.postPlayManualDialogVisible &&
+        !this.postPlaySynopsisVisible
+      ) {
+        if (!event?.repeat) {
+          this.postPlayPendingSelect = true;
+          this.postPlayPendingSelectAction = this.postPlayFocusedAction || "primary";
+          if (this.postPlayPendingSelectAction === "primary") {
+            this.schedulePostPlayLongPress();
+          }
+        } else {
+          // Android's LongPressKeyTracker opens the manual-play dialog on the
+          // first repeated key-down, before the remote sends key-up.
+          this.triggerPostPlayLongPress();
+        }
+        return;
+      }
+      this.handlePostPlayKey(event);
+      return;
+    }
     if (this.nextEpisodeBackExitArmed) {
       this.nextEpisodeBackExitArmed = false;
     }
@@ -18664,12 +24953,24 @@ export const PlayerScreen = {
       event?.preventDefault?.();
       event?.stopPropagation?.();
       event?.stopImmediatePropagation?.();
-      this.applyMediaAction(mediaAction);
+      this.applyMediaAction(mediaAction, event);
       return;
     }
 
     if (this.sourcesPanelVisible) {
       if (await this.handleSourcesPanelKey(event)) {
+        return;
+      }
+    }
+
+    if (this.subtitleTimingDialogVisible) {
+      if (this.handleSubtitleTimingDialogKey(event)) {
+        return;
+      }
+    }
+
+    if (this.subtitleDelayOverlayVisible) {
+      if (this.handleSubtitleDelayOverlayKey(event)) {
         return;
       }
     }
@@ -18730,6 +25031,40 @@ export const PlayerScreen = {
       return;
     }
 
+    const skipOverlayFocusable = this.isSkipIntroButtonFocusable();
+    const nextOverlayFocusable = this.isNextEpisodeCardFocusable();
+    const activeElement = document.activeElement;
+    const skipOverlayFocused =
+      this.controlFocusZone === "skipIntro" ||
+      Boolean(activeElement?.closest?.("[data-player-pointer-action='skipIntro']"));
+    const nextOverlayFocused =
+      this.controlFocusZone === "nextEpisode" ||
+      Boolean(activeElement?.closest?.("[data-player-pointer-action='nextEpisode']")) ||
+      (!this.controlsVisible && nextOverlayFocusable && !skipOverlayFocused);
+    const overlayButtonsCoexist = skipOverlayFocusable && nextOverlayFocusable;
+    if (overlayButtonsCoexist && (keyCode === 37 || keyCode === 39)) {
+      if (keyCode === 39 && skipOverlayFocused && this.focusNextEpisodeCard()) {
+        event?.stopPropagation?.();
+        event?.stopImmediatePropagation?.();
+        return;
+      }
+      if (keyCode === 37 && nextOverlayFocused && this.focusSkipIntroButton()) {
+        event?.stopPropagation?.();
+        event?.stopImmediatePropagation?.();
+        return;
+      }
+      if (skipOverlayFocused || nextOverlayFocused) {
+        event?.stopPropagation?.();
+        event?.stopImmediatePropagation?.();
+        this.resetControlsAutoHide();
+        return;
+      }
+    }
+    if (nextOverlayFocused && nextOverlayFocusable && isSelectKeyCode(keyCode)) {
+      await this.playNextEpisode({ userInitiated: true });
+      return;
+    }
+
     if (
       !this.controlsVisible &&
       this.activeSkipInterval &&
@@ -18752,18 +25087,6 @@ export const PlayerScreen = {
         this.setControlsVisible(true, { focus: true });
         return;
       }
-    }
-
-    if (
-      !this.paused &&
-      this.controlsVisible &&
-      !this.isDialogOpen() &&
-      Boolean(event?.repeat) &&
-      (keyCode === 37 || keyCode === 39)
-    ) {
-      this.focusProgressBar();
-      this.beginSeekPreview(keyCode === 37 ? -1 : 1, true);
-      return;
     }
 
     if (!this.controlsVisible) {
@@ -18840,7 +25163,7 @@ export const PlayerScreen = {
         this.stickyProgressFocus = false;
         this.autoHideControlsAfterSeek = false;
         this.controlFocusZone = "buttons";
-        this.renderControlButtons();
+        this.syncControlFocusDom();
         return;
       }
       if (isSelectKeyCode(keyCode)) {
@@ -18874,6 +25197,38 @@ export const PlayerScreen = {
     }
 
     this.resetControlsAutoHide();
+  },
+
+  onKeyUp(event) {
+    const keyCode = Number(event?.keyCode || 0);
+    if (!isSelectKeyCode(keyCode) || !this.isPostPlayVisible()) {
+      return;
+    }
+    const pendingAction =
+      this.postPlayPendingSelectAction || this.postPlayFocusedAction || "primary";
+    const wasLongPress =
+      this.postPlayLongPressTriggered ||
+      Number(event?.keyDownDurationMs || 0) >= POST_PLAY_LONG_PRESS_DELAY_MS;
+    this.clearPostPlayLongPressTimer();
+    this.postPlayPendingSelect = false;
+    this.postPlayPendingSelectAction = "";
+    event?.preventDefault?.();
+    if (
+      wasLongPress &&
+      this.getPostPlayState().recommendation?.contentType === "movie" &&
+      pendingAction === "primary" &&
+      this.isPostPlayManualPlayOptionEnabled()
+    ) {
+      if (!this.postPlayLongPressTriggered) {
+        this.openPostPlayManualDialog();
+      }
+      this.postPlayLongPressTriggered = false;
+      return;
+    }
+    if (!wasLongPress) {
+      this.invokePostPlayAction(pendingAction);
+    }
+    this.postPlayLongPressTriggered = false;
   },
 
   selectBestStreamCandidate(streams = []) {
@@ -19044,9 +25399,74 @@ export const PlayerScreen = {
   },
 
   async handlePlaybackEnded() {
-    // Immediate scrobble stop (may trigger mark-as-watched)
-    if (TrackingScrobbleService.isEnabled()) {
-      TrackingScrobbleService.stop(this.buildScrobbleContext());
+    const naturalCompletion = this.isNaturalPlaybackCompletionEligible();
+    if (!naturalCompletion) {
+      this.postPlayPlaybackEnded = false;
+      return this.finishNaturalPlaybackEnded();
+    }
+
+    // The Android player commits the watched state at the real media end, then
+    // lets the post-play controller decide whether navigation/autoplay must be
+    // held while recommendations are resolved.
+    if (!this.postPlayNaturalCompletionPrepared) {
+      if (TrackingScrobbleService.isEnabled()) {
+        TrackingScrobbleService.stop(this.buildScrobbleContext());
+      }
+      this.clearPlaybackStallGuard();
+      this.releaseStartupAudioGate({ resume: false });
+      this.postPlayNaturalCompletionPrepared = true;
+    }
+    this.postPlayPlaybackEnded = true;
+    const postPlayState = this.evaluatePostPlayRecommendation({ playbackEnded: true });
+    if (postPlayState.blocksNaturalCompletion) {
+      this.postPlayNaturalEndPending = true;
+      this.loadingVisible = false;
+      this.bufferingActive = false;
+      this.paused = true;
+      this.dismissPauseOverlay();
+      this.updateLoadingVisibility();
+      this.updateMediaSessionPlaybackState();
+      this.setControlsVisible(false, { focus: false });
+      this.renderControlButtons();
+      this.renderNextEpisodeCard();
+      return;
+    }
+    return this.finishNaturalPlaybackEnded();
+  },
+
+  async finishNaturalPlaybackEnded() {
+    const naturalCompletion = this.isNaturalPlaybackCompletionEligible();
+    if (!naturalCompletion) {
+      // Match Android: an error/placeholder end is not a completion, so it
+      // must not stop scrobbling, mark watched, navigate away, or auto-play.
+      TrackingScrobbleService.cancel();
+      this.nextEpisodeAutoplayAttemptedKey = "";
+      this.nextEpisodeCardTriggered = false;
+      this.resetStillWatchingPromptState({ render: false });
+      if (this.nextEpisodeLaunching) {
+        this.cancelNextEpisodeLaunch();
+      }
+      this.clearPlaybackStallGuard();
+      this.releaseStartupAudioGate({ resume: false });
+      this.loadingVisible = false;
+      this.paused = true;
+      this.dismissPauseOverlay();
+      this.updateLoadingVisibility();
+      this.updateMediaSessionPlaybackState();
+      this.setControlsVisible(true, { focus: false });
+      this.renderControlButtons();
+      this.renderNextEpisodeCard();
+      this.updateUiTick();
+      return;
+    }
+
+    if (!this.postPlayNaturalCompletionPrepared) {
+      // Direct callers and environments without the native ended event still
+      // get the same one-time completion commit.
+      if (TrackingScrobbleService.isEnabled()) {
+        TrackingScrobbleService.stop(this.buildScrobbleContext());
+      }
+      this.postPlayNaturalCompletionPrepared = true;
     }
     this.clearPlaybackStallGuard();
     this.releaseStartupAudioGate({ resume: false });
@@ -19073,9 +25493,21 @@ export const PlayerScreen = {
       }
     }
 
-    if (normalizeItemType(this.params?.itemType || "movie") === "series") {
+    const itemType = normalizeItemType(this.params?.itemType || "movie");
+    const detailParams = this.buildDetailRouteParamsFromPlayer();
+    if (
+      this.params?.itemId &&
+      Router.popToExistingRoute?.("detail", detailParams, {
+        allowSingleIntermediateRoute: true
+      })
+    ) {
       this.releaseCurrentEngineFsStreamBestEffort("playback-ended", { removeTorrent: true });
-      void Router.navigate("detail", this.buildDetailRouteParamsFromPlayer(), {
+      return;
+    }
+
+    if (isSeriesItemType(itemType)) {
+      this.releaseCurrentEngineFsStreamBestEffort("playback-ended", { removeTorrent: true });
+      void Router.navigate("detail", detailParams, {
         skipStackPush: true,
         replaceHistory: true
       });
@@ -19083,6 +25515,7 @@ export const PlayerScreen = {
     }
 
     this.loadingVisible = false;
+    this.bufferingActive = false;
     this.paused = true;
     this.dismissPauseOverlay();
     this.updateLoadingVisibility();
@@ -19095,7 +25528,10 @@ export const PlayerScreen = {
 
   cleanup() {
     try {
+      streamRepository.setLocalPluginSearchPaused(true);
       this.playerRouteActive = false;
+      this.playbackRecoveryActive = false;
+      this.playbackRecoveryAttempts = 0;
       this.playerMountToken = Number(this.playerMountToken || 0) + 1;
       this.nextEpisodeLaunchToken = Number(this.nextEpisodeLaunchToken || 0) + 1;
       this.nextEpisodeLaunching = false;
@@ -19103,6 +25539,25 @@ export const PlayerScreen = {
       this.nextEpisodeAutoplayAttemptedKey = "";
       this.resetStillWatchingPromptState({ render: false });
       this.consecutiveAutoPlayCount = 0;
+      this.postPlayNaturalEndPending = false;
+      this.postPlayPlaybackEnded = false;
+      this.postPlayNaturalCompletionPrepared = false;
+      this.postPlayPendingSelect = false;
+      this.postPlayPendingSelectAction = "";
+      this.clearPostPlayFocusTimer();
+      this.clearPostPlayLongPressTimer();
+      this.clearPostPlaySynopsisScrollAnimation();
+      this.postPlayLongPressTriggered = false;
+      this.cancelPostPlayNativeSurfaceAnimation();
+      this.postPlayNativeSurfaceStateKey = "";
+      this.postPlayNativeSurfaceRect = null;
+      if (this.postPlayDescriptionMeasureFrame) {
+        cancelAnimationFrame(this.postPlayDescriptionMeasureFrame);
+        this.postPlayDescriptionMeasureFrame = null;
+      }
+      this.stopPostPlayTrailer();
+      this.clearPostPlaySummaryTransition();
+      this.postPlayRecommendationController?.stop?.();
       this.unbindVideoEvents();
       if (this.endedHandler && PlayerController.video) {
         PlayerController.video.removeEventListener("ended", this.endedHandler);
@@ -19116,6 +25571,10 @@ export const PlayerScreen = {
       });
       this.cancelSeekPreview({ commit: false });
       this.dismissPauseOverlay();
+      this.clearSubtitleDelayOverlayTimer();
+      this.subtitleDelayOverlayVisible = false;
+      this.subtitleTimingDialogVisible = false;
+      this.resetSubtitleAutoSyncState();
       this.pauseOverlayMetaRequestToken = Number(this.pauseOverlayMetaRequestToken || 0) + 1;
       this.nextEpisodeTransitionMeta = null;
       this.streamCandidatesByVideoId?.clear?.();
@@ -19134,7 +25593,9 @@ export const PlayerScreen = {
       this.trackDiscoveryDeadline = 0;
       this.subtitleLoading = false;
       this.manifestLoading = false;
+      this.clearWebOsEmbeddedTextSubtitleOverlay({ dispose: true });
       this.clearHtmlSubtitleOverlay();
+      this.destroyAssSubtitleRenderer();
       this.clearBitmapSubtitleOverlay({ dispose: true });
       if (this.releaseImageProxyReadyListener) {
         this.releaseImageProxyReadyListener();
@@ -19147,9 +25608,14 @@ export const PlayerScreen = {
         clearTimeout(this.sourceLogoRenderTimer);
         this.sourceLogoRenderTimer = null;
       }
+      this.cancelScheduledSourcesPanelRender();
+      this.renderedSourcesMarkup = null;
       this.clearTrackDiscoveryTimer();
       this.stopLoadingLogoFillAnimation();
+      this.resetPlaybackEngineValidation();
       this.clearPlaybackStallGuard();
+      this.bufferingActive = false;
+      this.clearBufferingSpinnerTimer();
       if (this.engineFsStartupRetryTimer) {
         clearTimeout(this.engineFsStartupRetryTimer);
         this.engineFsStartupRetryTimer = null;
@@ -19202,6 +25668,10 @@ export const PlayerScreen = {
       if (this.subtitleDialogScrollTimer) {
         clearTimeout(this.subtitleDialogScrollTimer);
         this.subtitleDialogScrollTimer = null;
+      }
+      if (this.subtitleOptionVirtualMeasureTimer) {
+        clearTimeout(this.subtitleOptionVirtualMeasureTimer);
+        this.subtitleOptionVirtualMeasureTimer = null;
       }
 
       this.clearMediaSessionHandlers();

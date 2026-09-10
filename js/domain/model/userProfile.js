@@ -4,7 +4,9 @@ export function createUserProfile({
   avatarColorHex = "#1E88E5",
   isPrimary = false,
   avatarId = null,
-  avatarUrl = null
+  avatarUrl = null,
+  profileBackgroundId = null,
+  profileBackgroundUrl = null
 }) {
   return {
     id,
@@ -12,6 +14,8 @@ export function createUserProfile({
     avatarColorHex,
     isPrimary,
     avatarId,
-    avatarUrl
+    avatarUrl,
+    profileBackgroundId: String(profileBackgroundId || "").trim() || null,
+    profileBackgroundUrl: String(profileBackgroundUrl || "").trim() || null
   };
 }

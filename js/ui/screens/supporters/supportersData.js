@@ -1,29 +1,23 @@
-export function parseTimestamp(rawDate) {
-  const timestamp = Date.parse(String(rawDate || ""));
-  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
-}
+export function normalizeSupporterMembers(rawMembers) {
+  if (!Array.isArray(rawMembers)) return [];
 
-export function normalizeSupporterDonations(rawDonations) {
-  if (!Array.isArray(rawDonations)) return [];
+  return rawMembers
+    .map((member, index) => {
+      const name = String(member?.displayName || "").trim();
+      const membershipLevel = String(member?.membershipLevel || "").trim();
+      if (!name || !["SUPPORTER", "SUPPORTER_PLUS"].includes(membershipLevel)) return null;
 
-  return rawDonations
-    .map((donation, index) => {
-      const name = String(donation?.name || "").trim();
-      const rawDate = donation?.date == null ? donation?.createdAt : donation.date;
-      const date = String(rawDate || "").trim();
-      if (!name || !date) return null;
-
-      const donationId = String(donation?.id || "").trim();
+      const supporterSince = String(member?.supporterSince || "").trim() || null;
+      const avatarUrl = String(member?.avatarUrl || "").trim() || null;
       return {
-        id: `${donationId || `${name}|${date}`}#${index}`,
+        id: `${name}|${supporterSince || ""}#${index}`,
         name,
-        date,
-        message: String(donation?.message || "").trim(),
-        sortTimestamp: parseTimestamp(date)
+        avatarUrl,
+        membershipLevel,
+        supporterSince
       };
     })
-    .filter(Boolean)
-    .sort((left, right) => right.sortTimestamp - left.sortTimestamp);
+    .filter(Boolean);
 }
 
 export function normalizeContributors(rawContributors) {

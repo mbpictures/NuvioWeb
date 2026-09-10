@@ -1,7 +1,5 @@
-import { LocalStore } from "../core/storage/localStore.js";
 import { LayoutPreferences } from "../data/local/layoutPreferences.js";
 
-export const ROTATED_DPAD_KEY = "rotatedDpadMapping";
 export const FAST_HORIZONTAL_NAVIGATION_KEY = "fastHorizontalNavigationEnabled";
 
 export function getArrowCodeFromKey(key) {
@@ -15,6 +13,22 @@ export function getArrowCodeFromKey(key) {
 function getKeyCodeFromName(keyName) {
   const normalized = String(keyName || "").toLowerCase();
   const keyMap = {
+    arrowup: 38,
+    up: 38,
+    dpadup: 38,
+    dpad_up: 38,
+    arrowdown: 40,
+    down: 40,
+    dpaddown: 40,
+    dpad_down: 40,
+    arrowleft: 37,
+    left: 37,
+    dpadleft: 37,
+    dpad_left: 37,
+    arrowright: 39,
+    right: 39,
+    dpadright: 39,
+    dpad_right: 39,
     ok: 13,
     select: 13,
     enter: 13,
@@ -22,7 +36,9 @@ function getKeyCodeFromName(keyName) {
     dpad_center: 13,
     center: 13,
     back: 10009,
-    return: 10009,
+    // Samsung TV reports the remote Enter/OK key as keyName "Return".
+    // The actual Back key is exposed as Back/XF86Back (keyCode 10009).
+    return: 13,
     mediaplaypause: 10252,
     mediaplay: 415,
     mediapause: 19,
@@ -78,10 +94,6 @@ function isSimulator() {
 }
 
 export function shouldUseRotatedMapping() {
-  const stored = LocalStore.get(ROTATED_DPAD_KEY, null);
-  if (typeof stored === "boolean") {
-    return stored;
-  }
   return isSimulator();
 }
 
@@ -107,7 +119,8 @@ export function normalizeKeyEvent(event, backCodes = []) {
   const keyName = String(event?.keyName || event?.detail?.keyName || "");
   const code = String(event?.code || "");
   const keyNameLower = keyName.toLowerCase();
-  const fallbackCode = getKeyCodeFromName(keyName || key || code);
+  const fallbackCode =
+    getKeyCodeFromName(keyName) || getKeyCodeFromName(key) || getKeyCodeFromName(code);
   const rawCode = Number(
     getArrowCodeFromKey(key) || event?.keyCode || event?.which || fallbackCode || 0
   );
@@ -147,7 +160,7 @@ export function isBackEvent(event, backCodes = [], normalizedCode = null) {
     return false;
   }
 
-  if (keyNameLower === "back" || keyNameLower === "return") {
+  if (keyNameLower === "back") {
     return true;
   }
 

@@ -9,18 +9,31 @@ import { AuthManager } from "./core/auth/authManager.js";
 import { AuthState } from "./core/auth/authState.js";
 import { DeviceSessionRegistration } from "./core/auth/deviceSessionRegistration.js";
 import { ProfileManager } from "./core/profile/profileManager.js";
+import { MemberAccessRepository } from "./data/remote/supabase/memberAccessRepository.js";
 import { ProfileSyncService } from "./core/profile/profileSyncService.js";
 import { StartupSyncService } from "./core/profile/startupSyncService.js";
+import { ProviderCredentialSyncService } from "./core/profile/providerCredentialSyncService.js";
 import { ThemeManager } from "./ui/theme/themeManager.js";
 import { renderAppShell } from "./bootstrap/renderAppShell.js";
 import { renderAddonRemotePage } from "./bootstrap/renderAddonRemotePage.js";
 import { preloadStreamBadgeImages } from "./ui/screens/stream/streamScreen.js";
 import { warmStreamingLibs } from "./runtime/loadStreamingLibs.js";
 import { Platform } from "./platform/index.js";
+import { TizenCapabilities } from "./platform/tizen/tizenCapabilities.js";
+import { PluginServiceClient } from "./platform/pluginServiceClient.js";
+import { getTvRuntimePerformanceProfile } from "./platform/tvRuntimePerformance.js";
 import { LocalStore } from "./core/storage/localStore.js";
 import { I18n } from "./i18n/index.js";
-import { getLatestAppUpdate } from "./core/update/appUpdateService.js";
+import { getLatestAppUpdateWithRetry } from "./core/update/appUpdateService.js";
+import { shouldShowUpdate } from "./core/update/updateBannerPolicy.js";
 import { showAppUpdatePrompt } from "./ui/components/appUpdatePrompt.js";
+import { resolveExperienceRoute } from "./core/profile/experienceModeRouting.js";
+import { PluginRuntime } from "./core/player/pluginRuntime.js";
+
+// These legacy Web-only overrides are no longer user settings. Navigation now
+// uses the stable grid algorithm and simulator detection automatically.
+LocalStore.remove("strictDpadGridNavigation");
+LocalStore.remove("rotatedDpadMapping");
 
 (function applyLegacyPatches() {
   const originalGetElementById = document.getElementById;
@@ -35,12 +48,19 @@ import { showAppUpdatePrompt } from "./ui/components/appUpdatePrompt.js";
 })();
 
 const GUEST_QR_BYPASS_KEY = "skipAuthQrGate";
-const SIGNED_OUT_ALLOWED_ROUTES = new Set(["trakt"]);
+const SIGNED_OUT_ALLOWED_ROUTES = new Set([
+  "trakt",
+  "authQrSignIn",
+  "authSignIn",
+  "serverConnection"
+]);
 let hasSelectedProfileThisSession = false;
 let appShellRendered = false;
 let updateCheckStarted = false;
 
 const APP_VERSION = typeof __NUVIO_APP_VERSION__ !== "undefined" ? __NUVIO_APP_VERSION__ : "0.0.0";
+const UPDATE_DISMISSED_TAG_KEY = "app_update_dismissed_tag";
+const UPDATE_ROUTE_WAIT_TIMEOUT_MS = 60_000;
 
 function markBootStage(stage) {
   const guard = globalThis.NuvioBootGuard;
@@ -49,7 +69,19 @@ function markBootStage(stage) {
   }
 }
 
-async function waitForInitialRoute(timeoutMs = 15000) {
+function loginTrace(event, data) {
+  try {
+    globalThis.__NUVIO_TIZEN_LOGIN_TRACE__?.(event, data);
+  } catch (_) {
+    // Login diagnostics must never change the application flow.
+  }
+}
+
+function shouldDisableTizenPluginSupport() {
+  return Platform.isTizen() && !TizenCapabilities.canUsePlugins();
+}
+
+async function waitForInitialRoute(timeoutMs = UPDATE_ROUTE_WAIT_TIMEOUT_MS) {
   const startedAt = Date.now();
   while (!Router.getCurrent() && Date.now() - startedAt < timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -64,14 +96,24 @@ async function checkForAppUpdateOnStartup() {
   updateCheckStarted = true;
 
   try {
-    const update = await getLatestAppUpdate({ currentVersion: APP_VERSION });
-    if (!update) {
-      return;
-    }
+    // Tizen can spend longer restoring the authenticated route because the
+    // WebView and profile-sync requests start cold. Do not let a fast GitHub
+    // response get discarded while Router is still waiting for that route.
     if (!(await waitForInitialRoute())) {
       return;
     }
-    showAppUpdatePrompt(update);
+
+    const update = await getLatestAppUpdateWithRetry({ currentVersion: APP_VERSION });
+    if (!update) {
+      return;
+    }
+    const dismissedTag = LocalStore.get(UPDATE_DISMISSED_TAG_KEY, null);
+    if (!shouldShowUpdate({ isRemoteNewer: true, dismissedTag, updateTag: update.tag })) {
+      return;
+    }
+    showAppUpdatePrompt(update, {
+      onClose: () => LocalStore.set(UPDATE_DISMISSED_TAG_KEY, update.tag)
+    });
   } catch (error) {
     console.warn("App update check failed", error);
   }
@@ -114,6 +156,12 @@ function renderFatalError(error) {
 }
 
 function isLowEndDevice() {
+  // TV runtimes use the year/Chromium profile below. Their exposed
+  // hardwareConcurrency/deviceMemory values are often coarse and would mark
+  // otherwise modern TV generations as low-end by accident.
+  if (getTvRuntimePerformanceProfile().isTvRuntime) {
+    return false;
+  }
   const hardware = Number(globalThis.navigator?.hardwareConcurrency || 0);
   const memory = Number(globalThis.navigator?.deviceMemory || 0);
   const lowCpu = Number.isFinite(hardware) && hardware > 0 && hardware <= 4;
@@ -121,24 +169,19 @@ function isLowEndDevice() {
   return lowCpu || lowMem;
 }
 
-function getChromiumMajorVersion() {
-  const userAgent = String(globalThis.navigator?.userAgent || "");
-  const match = userAgent.match(/(?:chrome|chromium)\/(\d{2,3})/i);
-  const version = Number(match?.[1] || 0);
-  return Number.isFinite(version) ? version : 0;
-}
-
 function applyPerformanceMode() {
-  const constrained =
-    Platform.isWebOS() || Platform.isTizen() || Platform.isVega() || isLowEndDevice();
+  const tvRuntime = getTvRuntimePerformanceProfile();
+  // Vega (Fire TV) is not classified by the TV runtime profile; treat it as
+  // constrained like the other TV runtimes.
+  const constrained = tvRuntime.isPerformanceConstrained || Platform.isVega() || isLowEndDevice();
   const webOsMajorVersion = Platform.isWebOS() ? Number(Platform.getWebOsMajorVersion() || 0) : 0;
-  const legacyWebOs = Platform.isWebOS() && (webOsMajorVersion === 0 || webOsMajorVersion <= 6);
+  const legacyWebOs = Platform.isWebOS() && tvRuntime.isLegacyTvRuntime;
   const legacyWebOs38 = Platform.isWebOS() && webOsMajorVersion > 0 && webOsMajorVersion <= 3;
+  // Keep the Tizen class as a platform-layout fallback; performance gating is
+  // handled exclusively by the runtime profile above.
   const legacyTizen = Platform.isTizen();
   const rootClasses = document.documentElement.classList;
-  const modernWebOs = Platform.isWebOS() && getChromiumMajorVersion() >= 120;
-  const modernSidebarBlurCapable =
-    !rootClasses.contains("no-backdrop-filter") && ((!constrained && !legacyTizen) || modernWebOs);
+  const modernSidebarBlurCapable = !rootClasses.contains("no-backdrop-filter") && !constrained;
   document.documentElement.classList.toggle("performance-constrained", constrained);
   document.body.classList.toggle("performance-constrained", constrained);
   document.documentElement.classList.toggle(
@@ -152,9 +195,11 @@ function applyPerformanceMode() {
   document.body.classList.toggle("legacy-webos38", legacyWebOs38);
   document.documentElement.classList.toggle("legacy-tizen", legacyTizen);
   document.body.classList.toggle("legacy-tizen", legacyTizen);
-  ["no-flex-gap", "no-aspect-ratio", "no-css-math", "no-backdrop-filter"].forEach((className) => {
-    document.body.classList.toggle(className, rootClasses.contains(className));
-  });
+  ["no-flex-gap", "no-css-grid", "no-aspect-ratio", "no-css-math", "no-backdrop-filter"].forEach(
+    (className) => {
+      document.body.classList.toggle(className, rootClasses.contains(className));
+    }
+  );
 }
 
 function isAddonRemoteMode() {
@@ -207,31 +252,48 @@ async function enterWithLastProfile({ restoreWebOsRoute = false } = {}) {
     StartupSyncService.enableProfileScopedSync();
     detailWatchedEnrichmentService.invalidateAllCache();
     await I18n.init();
-    ThemeManager.apply();
+    const memberAccess = MemberAccessRepository.getCachedAccess();
+    ThemeManager.apply({ enforceAccess: true, access: memberAccess });
+    void MemberAccessRepository.getAccess().catch((error) => {
+      console.warn("Profile member access refresh failed", error);
+    });
     I18n.apply();
     void preloadStreamBadgeImages().catch((error) => {
       console.warn("Stream badge image prerender failed", error);
     });
   }
+  const experienceRoute = activeProfile ? await resolveExperienceRoute(activeProfile.id) : "home";
   const resumeRoute =
     restoreWebOsRoute && typeof Router.consumeWebOsResumeRoute === "function"
       ? Router.consumeWebOsResumeRoute()
       : null;
-  if (resumeRoute?.route) {
+  const isHomeResumeRoute = resumeRoute?.route === "home";
+
+  if (experienceRoute !== "home") {
+    await Router.navigate(experienceRoute, {}, { replaceHistory: true, skipStackPush: true });
+  } else if (resumeRoute?.route && !isHomeResumeRoute) {
     await Router.navigate(resumeRoute.route, resumeRoute.params || {}, {
       replaceHistory: true,
       skipStackPush: true
     });
   } else {
-    await Router.navigate("home");
+    await Router.navigate("home", {
+      ...(isHomeResumeRoute ? resumeRoute.params || {} : {}),
+      ...(StartupSyncService.started ? { forceReload: true } : {})
+    });
   }
-  void StartupSyncService.requestSyncNow().catch((error) => {
+
+  void StartupSyncService.requestSyncNow({
+    notifyPullCompleted: ["home", "plugins"].includes(experienceRoute)
+  }).catch((error) => {
     console.warn("Profile background sync failed", error);
   });
 }
 
 async function routeAfterAuthentication() {
+  loginTrace("authenticated route begin", { currentRoute: Router.getCurrent() || "" });
   const profileRoute = await shouldShowProfileSelection();
+  loginTrace("authenticated route profile decision", { show: profileRoute.show === true });
   if (profileRoute.show) {
     await Router.navigate("profileSelection", {
       skipInitialProfileSync: true,
@@ -296,6 +358,8 @@ function setupWebOsAppLifecycle() {
       return;
     }
     void DeviceSessionRegistration.requestForegroundRegistration();
+    ProviderCredentialSyncService.requestForegroundPull();
+    StartupSyncService.requestForegroundSync();
     const current = Router.getCurrent();
     if (!current) {
       return;
@@ -305,7 +369,8 @@ function setupWebOsAppLifecycle() {
       if (document.body) {
         document.body.style.removeProperty("display");
       }
-      if (current === "debugConsole") {
+      const shouldReturnHome = !Router.isWebOsResumeRouteRestorable(current);
+      if (shouldReturnHome) {
         await Router.navigate(
           "home",
           {},
@@ -374,12 +439,110 @@ function setupWebOsAppLifecycle() {
   installNativeCallback(globalThis.PalmSystem, "PalmSystem", "ondeactivate");
 }
 
+function setupProviderCredentialForegroundLifecycle() {
+  let wasBackgrounded = document.visibilityState === "hidden" || document.webkitHidden === true;
+  const requestAfterBackground = () => {
+    if (!wasBackgrounded) return;
+    wasBackgrounded = false;
+    ProviderCredentialSyncService.requestForegroundPull();
+    StartupSyncService.requestForegroundSync();
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      wasBackgrounded = true;
+    } else if (document.visibilityState === "visible") {
+      requestAfterBackground();
+    }
+  });
+  document.addEventListener("webkitvisibilitychange", () => {
+    if (document.webkitHidden === true) {
+      wasBackgrounded = true;
+    } else {
+      requestAfterBackground();
+    }
+  });
+  window.addEventListener("pagehide", () => {
+    wasBackgrounded = true;
+  });
+  window.addEventListener("pageshow", (event) => {
+    if (event?.persisted) requestAfterBackground();
+  });
+  window.addEventListener("blur", () => {
+    wasBackgrounded = true;
+  });
+  window.addEventListener("focus", requestAfterBackground);
+}
+
+function setupPluginRuntimeLifecycle() {
+  const cancel = () => PluginRuntime.cancelAll();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") cancel();
+  });
+  document.addEventListener("webkitvisibilitychange", () => {
+    if (document.webkitHidden === true) cancel();
+  });
+  window.addEventListener("pagehide", cancel);
+  window.addEventListener("beforeunload", cancel);
+  document.addEventListener("nuvio:beforeExitApp", cancel);
+}
+
+function setupPluginServiceLifecycle() {
+  if (!Platform.isTizen() || shouldDisableTizenPluginSupport()) {
+    return;
+  }
+
+  const checkWhenForegrounded = () => {
+    if (document.visibilityState === "hidden" || document.webkitHidden === true) {
+      return;
+    }
+    void PluginServiceClient.checkLifecycleNow({ force: true }).catch(() => {
+      // The lifecycle client emits one deduplicated warning for a failed
+      // recovery round; foreground transitions must not duplicate it.
+    });
+  };
+
+  // A foreground transition should recover a service that was killed while
+  // the TV suspended the UI, without waiting for the next watchdog tick.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      checkWhenForegrounded();
+    }
+  });
+  document.addEventListener("webkitvisibilitychange", () => {
+    if (document.webkitHidden !== true) {
+      checkWhenForegrounded();
+    }
+  });
+  window.addEventListener("pageshow", checkWhenForegrounded);
+  window.addEventListener("focus", checkWhenForegrounded);
+
+  // Do not stop the service on app-specific navigation/visibility events. The
+  // monitor belongs to the whole UI lifecycle and is stopped only on unload.
+  window.addEventListener("beforeunload", () => {
+    PluginServiceClient.stopLifecycleMonitor();
+  });
+}
+
 async function bootstrapApp() {
   markBootStage("Rendering application shell");
   renderAppShell();
   appShellRendered = true;
   markBootStage("Initializing TV platform");
   Platform.init();
+  setupPluginServiceLifecycle();
+  if (shouldDisableTizenPluginSupport()) {
+    markBootStage("PluginService disabled on Tizen below 6.0");
+  } else {
+    markBootStage("Starting optional PluginService");
+    // The WRT bridge has already been loaded by index.html. Platform.init() is
+    // therefore the first stable point at which the service can be started.
+    // PluginService is optional: keep its watchdog/recovery loop active, but
+    // never make the application shell wait for its initial /health response.
+    void PluginServiceClient.startLifecycleMonitor().catch(() => {
+      // Health diagnostics and the lifecycle watchdog own the retry/reporting
+      // path. A failed optional service must not fail application bootstrap.
+    });
+  }
   applyPerformanceMode();
   markBootStage("Loading language resources");
   await I18n.init();
@@ -389,6 +552,8 @@ async function bootstrapApp() {
   PlayerController.init();
 
   FocusEngine.init();
+  setupProviderCredentialForegroundLifecycle();
+  setupPluginRuntimeLifecycle();
   setupWebOsAppLifecycle();
 
   ThemeManager.apply();
@@ -401,11 +566,13 @@ async function bootstrapApp() {
   AuthManager.subscribe((state) => {
     if (state === AuthState.LOADING) {
       StartupSyncService.stop();
+      ProviderCredentialSyncService.cancelForegroundPull();
       return;
     }
 
     if (state === AuthState.SIGNED_OUT) {
       StartupSyncService.stop();
+      ProviderCredentialSyncService.cancelForegroundPull();
       hasSelectedProfileThisSession = false;
       const shouldBypassQr = Boolean(LocalStore.get(GUEST_QR_BYPASS_KEY, false));
       if (isSignedOutRouteAllowed()) {
@@ -451,9 +618,17 @@ async function bootstrapApp() {
     }
 
     if (state === AuthState.AUTHENTICATED) {
+      loginTrace("authenticated subscriber begin", { currentRoute: Router.getCurrent() || "" });
       markBootStage("Loading profiles");
+      // Android marks the first-launch auth surface as completed as soon as
+      // an already-restored full account is available, so a later sign-out
+      // does not incorrectly reopen onboarding on the next screen.
+      if (!LocalStore.get("hasSeenAuthQrOnFirstLaunch")) {
+        LocalStore.set("hasSeenAuthQrOnFirstLaunch", true);
+      }
       LocalStore.remove(GUEST_QR_BYPASS_KEY);
       StartupSyncService.start({ runInitialPull: false });
+      loginTrace("authenticated subscriber sync scheduled");
       routeAfterAuthentication().catch((error) => {
         console.warn("Failed to resolve authenticated route", error);
         Router.navigate("profileSelection");

@@ -14,16 +14,6 @@ export const PlaybackSettings = {
             autoplayNextEpisode: !PlayerSettingsStore.get().autoplayNextEpisode
           });
         }
-      },
-      {
-        id: "playback_toggle_subtitles",
-        label: `Subtitles: ${settings.subtitlesEnabled ? "ON" : "OFF"}`,
-        description: "Toggle subtitles by default",
-        action: () => {
-          PlayerSettingsStore.set({
-            subtitlesEnabled: !PlayerSettingsStore.get().subtitlesEnabled
-          });
-        }
       }
     ];
   }

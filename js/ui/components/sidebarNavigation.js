@@ -1,8 +1,9 @@
 import { Router } from "../navigation/router.js";
 import { ProfileManager } from "../../core/profile/profileManager.js";
 import { AvatarRepository } from "../../data/remote/supabase/avatarRepository.js";
+import { MemberAccessRepository } from "../../data/remote/supabase/memberAccessRepository.js";
 import { I18n } from "../../i18n/index.js";
-import { Platform } from "../../platform/index.js";
+import { getTvRuntimePerformanceProfile } from "../../platform/tvRuntimePerformance.js";
 
 const ROOT_SIDEBAR_ITEMS = [
   {
@@ -63,7 +64,7 @@ function sidebarItems(layout = {}) {
   ];
 }
 
-let sidebarAvatarCatalogPromise = null;
+const sidebarAvatarCatalogPromises = new Map();
 
 function profileInitial(name) {
   const raw = String(name || "").trim();
@@ -101,7 +102,12 @@ function itemLabel(item) {
 }
 
 function syncSidebarStateClasses(container) {
-  const root = container?.closest?.(".home-shell, .settings-shell, .library-shell") || container;
+  const rootSelector = ".home-shell, .settings-shell, .library-shell";
+  const root =
+    (container?.matches?.(rootSelector) && container) ||
+    container?.closest?.(rootSelector) ||
+    container?.querySelector?.(rootSelector) ||
+    container;
   if (!root?.classList) {
     return;
   }
@@ -216,13 +222,18 @@ function scheduleRootSidebarTextFit(container) {
 
 function getSelectedItem(routeName = "") {
   return (
-    ROOT_SIDEBAR_ITEMS.find((item) => item.route === String(routeName || "")) ||
-    ROOT_SIDEBAR_ITEMS[0]
+    [...ROOT_SIDEBAR_ITEMS, DISCOVER_SIDEBAR_ITEM].find(
+      (item) => item.route === String(routeName || "")
+    ) || ROOT_SIDEBAR_ITEMS[0]
   );
 }
 
 function getItemForAction(action = "") {
-  return ROOT_SIDEBAR_ITEMS.find((item) => item.action === String(action || "")) || null;
+  return (
+    [...ROOT_SIDEBAR_ITEMS, DISCOVER_SIDEBAR_ITEM].find(
+      (item) => item.action === String(action || "")
+    ) || null
+  );
 }
 
 function getModernSidebarPresentation(selectedRoute = "") {
@@ -235,21 +246,34 @@ function getModernSidebarPresentation(selectedRoute = "") {
   };
 }
 
-function getSidebarAvatarCatalog() {
-  if (!sidebarAvatarCatalogPromise) {
-    sidebarAvatarCatalogPromise = AvatarRepository.getAvatarCatalog().catch(() => {
-      sidebarAvatarCatalogPromise = null;
-      return [];
-    });
+function getSidebarAvatarCatalog(hasMemberAccess = false) {
+  const cacheKey = hasMemberAccess ? "member" : "standard";
+  if (!sidebarAvatarCatalogPromises.has(cacheKey)) {
+    sidebarAvatarCatalogPromises.set(
+      cacheKey,
+      AvatarRepository.getAvatarCatalog(hasMemberAccess).catch(() => {
+        sidebarAvatarCatalogPromises.delete(cacheKey);
+        return [];
+      })
+    );
   }
-  return sidebarAvatarCatalogPromise;
+  return sidebarAvatarCatalogPromises.get(cacheKey);
 }
 
-export async function getSidebarProfileState() {
+export async function getSidebarProfileState({ cacheOnly = false } = {}) {
   const activeProfileId = String(ProfileManager.getActiveProfileId() || "");
+  const memberAccess = cacheOnly
+    ? MemberAccessRepository.getCachedAccess()
+    : await MemberAccessRepository.getAccess().catch(() => null);
+  const hasMemberAvatarAccess = MemberAccessRepository.hasEntitlement(
+    memberAccess,
+    "PROFILE_AVATARS"
+  );
   const [profiles, avatarCatalog] = await Promise.all([
     ProfileManager.getProfiles(),
-    getSidebarAvatarCatalog()
+    cacheOnly
+      ? AvatarRepository.getCachedAvatarCatalog(hasMemberAvatarAccess)
+      : getSidebarAvatarCatalog(hasMemberAvatarAccess)
   ]);
   const activeProfile =
     profiles.find(
@@ -302,7 +326,12 @@ export function isSelectedSidebarAction(action, selectedRoute = "") {
   return getItemForAction(action)?.route === String(selectedRoute || "");
 }
 
-export function renderLegacySidebar({ selectedRoute = "home", profile = null, layout = {} } = {}) {
+export function renderLegacySidebar({
+  selectedRoute = "home",
+  profile = null,
+  layout = {},
+  expanded = false
+} = {}) {
   const items = sidebarItems(layout);
   const selectedItem = getSelectedItem(selectedRoute);
   const profileState = profile || {};
@@ -310,10 +339,10 @@ export function renderLegacySidebar({ selectedRoute = "home", profile = null, la
     profileState.showProfileSelector && profileState.activeProfileName
   );
   const collapsible = Boolean(layout?.collapseSidebar);
-  const performanceConstrained = Platform.isWebOS() || Platform.isTizen();
+  const performanceConstrained = getTvRuntimePerformanceProfile().isPerformanceConstrained;
 
   return `
-    <aside class="home-sidebar root-sidebar root-sidebar-legacy${performanceConstrained ? " performance-constrained" : ""}"
+    <aside class="home-sidebar root-sidebar root-sidebar-legacy${expanded ? " expanded content-expanded" : ""}${performanceConstrained ? " performance-constrained" : ""}"
            data-selected-route="${selectedRoute}"
            data-collapsible="${collapsible ? "true" : "false"}">
       ${
@@ -373,7 +402,7 @@ export function renderModernSidebar({
   const { keepPillExpanded } = getModernSidebarPresentation(selectedRoute);
   const showPill = selectedItem.route !== "search";
   const selectedLabel = itemLabel(selectedItem);
-  const performanceConstrained = Platform.isWebOS() || Platform.isTizen();
+  const performanceConstrained = getTvRuntimePerformanceProfile().isPerformanceConstrained;
 
   return `
     <div class="modern-sidebar-shell${expanded ? " expanded panel-visible" : ""}${blurEnabled ? " blur-enabled" : ""}${keepPillExpanded ? " keep-pill-expanded" : ""}${performanceConstrained ? " performance-constrained" : ""}" data-selected-route="${selectedRoute}">
@@ -460,7 +489,7 @@ export function renderRootSidebar({
       layout
     });
   }
-  return renderLegacySidebar({ selectedRoute, profile, layout });
+  return renderLegacySidebar({ selectedRoute, profile, layout, expanded });
 }
 
 export function bindRootSidebarEvents(
@@ -538,6 +567,10 @@ export function setLegacySidebarExpanded(container, expanded) {
   if (!sidebar) {
     return;
   }
+  if (sidebar._legacyCloseFrame) {
+    cancelAnimationFrame(sidebar._legacyCloseFrame);
+    sidebar._legacyCloseFrame = null;
+  }
   if (sidebar._legacyOpenTimer) {
     clearTimeout(sidebar._legacyOpenTimer);
     sidebar._legacyOpenTimer = null;
@@ -566,8 +599,9 @@ export function setLegacySidebarExpanded(container, expanded) {
   sidebar.classList.remove("content-expanded");
   syncSidebarStateClasses(container);
   void sidebar.offsetWidth;
-  requestAnimationFrame(() => {
+  sidebar._legacyCloseFrame = requestAnimationFrame(() => {
     sidebar.classList.remove("expanded");
+    sidebar._legacyCloseFrame = null;
     scheduleRootSidebarTextFit(container);
     syncSidebarStateClasses(container);
   });

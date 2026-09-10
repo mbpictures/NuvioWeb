@@ -3,9 +3,15 @@ import {
   isWebOsCompanionServiceAvailable,
   requestWebOsCompanionService
 } from "../../platform/webos/webosCompanionService.js";
+import { TorrentSettingsStore } from "../../data/local/torrentSettingsStore.js";
 
 const ENGINEFS_CREATE_TIMEOUT_MS = 60000;
 const ENGINEFS_KIND = "webos-enginefs";
+
+function isP2pEnabledForActiveProfile() {
+  return Boolean(TorrentSettingsStore.get().p2pEnabled);
+}
+const LOCAL_HOST_NAMES = new Set(["127.0.0.1", "localhost", "::1"]);
 
 function logEngineFsDebug(...args) {
   if (globalThis.__NUVIO_DEBUG_ENGINEFS__) {
@@ -106,12 +112,23 @@ function isMagnetUri(value = "") {
     .startsWith("magnet:");
 }
 
+function isLocalEngineFsPlaybackUrl(value = "") {
+  if (!isLocalHostUrl(value)) {
+    return false;
+  }
+  try {
+    return /^\/[0-9a-f]{40}\/-?\d+(?:\/|$)/i.test(new URL(String(value)).pathname);
+  } catch (_) {
+    return false;
+  }
+}
+
 function getDirectPlaybackUrl(stream = {}) {
   const candidates = [stream.url, stream.externalUrl];
   return (
     candidates.find((value) => {
       const url = String(value || "").trim();
-      return url && !isMagnetUri(url);
+      return url && !isMagnetUri(url) && !isLocalEngineFsPlaybackUrl(url);
     }) || ""
   );
 }
@@ -174,13 +191,29 @@ function getTrackerSources(stream = {}, magnetUri = "") {
 function normalizeBaseUrl(value = "") {
   try {
     const parsed = new URL(String(value || "").trim());
-    if (parsed.protocol !== "http:") {
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (parsed.protocol !== "http:" || !LOCAL_HOST_NAMES.has(hostname)) {
       return "";
     }
     return `http://${parsed.hostname}:${parsed.port || "80"}`;
   } catch (_) {
     return "";
   }
+}
+
+function isLocalHostUrl(value = "") {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return parsed.protocol === "http:" && LOCAL_HOST_NAMES.has(hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function normalizeLocalPlaybackUrl(value = "") {
+  const normalized = String(value || "").trim();
+  return normalized && isLocalHostUrl(normalized) ? normalized : "";
 }
 
 function buildPlaybackUrl(baseUrl, infoHash, fileIdx, sources = []) {
@@ -627,14 +660,19 @@ function normalizeEngineFsState(value = {}) {
     return null;
   }
   const fileIdx = Number(source.fileIdx);
+  const rawPlaybackUrl = String(source.playbackUrl || source.url || "").trim();
+  if (rawPlaybackUrl && !isLocalHostUrl(rawPlaybackUrl)) {
+    return null;
+  }
+  const playbackUrl = normalizeLocalPlaybackUrl(rawPlaybackUrl);
   return {
     kind: ENGINEFS_KIND,
     infoHash,
     fileIdx: Number.isFinite(fileIdx) ? fileIdx : -1,
-    playbackUrl: String(source.playbackUrl || source.url || "").trim(),
+    playbackUrl,
     mimeType: String(source.mimeType || source.sourceType || "").trim() || null,
-    baseUrlKind: String(source.baseUrlKind || "").trim() || null,
-    publicPlaybackUrl: String(source.publicPlaybackUrl || "").trim() || null
+    baseUrlKind: "local-service",
+    publicPlaybackUrl: normalizeLocalPlaybackUrl(source.publicPlaybackUrl || "") || null
   };
 }
 
@@ -696,7 +734,12 @@ function buildResolvedStream(
 
 export const WebOsEngineFsResolver = {
   canResolveStream(stream = {}) {
-    return Platform.isWebOS() && isWebOsCompanionServiceAvailable() && Boolean(getInfoHash(stream));
+    return (
+      Platform.isWebOS() &&
+      isWebOsCompanionServiceAvailable() &&
+      isP2pEnabledForActiveProfile() &&
+      Boolean(getInfoHash(stream))
+    );
   },
 
   getResolvedStreamState(stream = {}) {
@@ -710,6 +753,12 @@ export const WebOsEngineFsResolver = {
   async resolve(stream = {}, context = {}) {
     if (getDirectPlaybackUrl(stream)) {
       return { status: "success", stream };
+    }
+    if (Platform.isWebOS() && !isP2pEnabledForActiveProfile()) {
+      return {
+        status: "disabled",
+        detail: "P2P is disabled for the active profile"
+      };
     }
     if (!this.canResolveStream(stream)) {
       return { status: "unsupported" };
@@ -735,7 +784,7 @@ export const WebOsEngineFsResolver = {
       let statusError = "";
       try {
         const statusResult = await withTimeout(
-          requestWebOsCompanionService({ method: "status", parameters: {} }),
+          requestWebOsCompanionService({ method: "status", parameters: {}, timeoutMs: 5000 }),
           5000,
           "webOS companion status request timed out"
         );
@@ -756,16 +805,6 @@ export const WebOsEngineFsResolver = {
           }
         }
         return "";
-      };
-
-      const isLocalHostUrl = (urlStr) => {
-        try {
-          const p = new URL(String(urlStr));
-          const host = p.hostname;
-          return host === "127.0.0.1" || host === "localhost" || host === "::1";
-        } catch (_) {
-          return false;
-        }
       };
 
       const settingsBase = parseSettingsBase(statusPayload);
@@ -909,7 +948,7 @@ export const WebOsEngineFsResolver = {
         // If absolute URL, accept only if it's not local
         try {
           const abs = new URL(candidatePlaybackFromCreate);
-          if (!isLocalHostUrl(abs.href)) {
+          if (isLocalHostUrl(abs.href) && hasSelectedFileIdx) {
             const filename = selectedFilename;
             // Build playback URL as origin/<infoHash>/<fileIdx> (no filename)
             let finalPlayback = null;

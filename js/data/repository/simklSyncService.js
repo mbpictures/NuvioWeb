@@ -3,9 +3,16 @@ import { ProfileManager } from "../../core/profile/profileManager.js";
 import { SimklAnimeIdPreference, TraktSettingsStore } from "../local/traktSettingsStore.js";
 import { SimklAuthService } from "./simklAuthService.js";
 import { simklRequest } from "./simklAuthService.js";
+import { shouldMarkCompletedSeriesWatched } from "./simklCompletedSeries.js";
 
 const STORE_KEY = "simklSyncState";
+const SNAPSHOT_SCHEMA_VERSION = 3;
 const AUTOMATIC_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+// Keep the initial import identical to Android's current sync contract. The
+// schema bump forces existing Smart TV snapshots to fetch the richer episode
+// mapping once instead of continuing with the older bootstrap shape.
+const BOOTSTRAP_QUERY =
+  "extended=full_anime_seasons&episode_watched_at=yes&episode_tvdb_id=yes&include_all_episodes=yes&language=en";
 const EXTENDED_QUERY =
   "extended=full_anime_seasons&episode_watched_at=yes&episode_tvdb_id=yes&include_all_episodes=yes&language=en";
 const STATUS_DEFINITIONS = [
@@ -33,14 +40,23 @@ const STATUS_DEFINITIONS = [
 ];
 
 let refreshInFlight = null;
+const refreshStatusByProfile = new Map();
 
 function activeProfileId() {
   return String(ProfileManager.getActiveProfileId() || "1");
 }
 
+function setRefreshStatus(profileId, status) {
+  refreshStatusByProfile.set(String(profileId || "1"), status);
+}
+
+function snapshotHasLoadedProgress(snapshot) {
+  return Boolean(snapshot?.initialized && Number(snapshot?.lastSyncedAt || 0) > 0);
+}
+
 function emptySnapshot() {
   return {
-    schemaVersion: 1,
+    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
     initialized: false,
     watermark: null,
     activities: null,
@@ -183,14 +199,14 @@ async function fetchAllItems(path, profileId) {
 async function initialSync(profileId) {
   const entries = [];
   for (const type of ["shows", "movies", "anime"]) {
-    const payload = await fetchAllItems(`/sync/all-items/${type}?${EXTENDED_QUERY}`, profileId);
+    const payload = await fetchAllItems(`/sync/all-items/${type}?${BOOTSTRAP_QUERY}`, profileId);
     entries.push(...flattenAllItems(payload).filter((entry) => entry.mediaType === type));
   }
   const { payload: playback } = await simklRequest("/sync/playback", { profileId });
   const { payload: activities } = await simklRequest("/sync/activities", { profileId });
   const now = Date.now();
   return {
-    schemaVersion: 1,
+    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
     initialized: true,
     watermark: activities?.all || null,
     activities: activities || null,
@@ -270,6 +286,30 @@ function statusDefinitionForEntry(entry) {
   return STATUS_DEFINITIONS.find((definition) => definition.status === entry?.status) || null;
 }
 
+// Mirrors Android SimklLibraryEntry.destructiveRemovalImpacts: removing a Simkl
+// entry clears watched history when it is in any status other than plan to
+// watch, or carries watch data, and clears a rating when a rating value or
+// rating timestamp is present.
+export function destructiveRemovalImpacts(entry) {
+  const impacts = [];
+  if (!entry) return impacts;
+  if (
+    entry.status !== "plantowatch" ||
+    entry.last_watched_at != null ||
+    entry.last_watched != null ||
+    Number(entry.watched_episodes_count) > 0 ||
+    (entry.seasons || []).some((season) =>
+      (season.episodes || []).some((episode) => episode.watched_at != null)
+    )
+  ) {
+    impacts.push("watched_history");
+  }
+  if (entry.user_rating != null || entry.user_rated_at != null) {
+    impacts.push("rating");
+  }
+  return impacts;
+}
+
 function toLibraryEntry(entry, snapshot) {
   const media = mediaForEntry(entry);
   const definition = statusDefinitionForEntry(entry);
@@ -324,6 +364,54 @@ function aliasesForMedia(media = {}, mediaType = "shows") {
     aliases.add((key === "imdb" ? value : `${key}:${value}`).toLowerCase());
   }
   return aliases;
+}
+
+/**
+ * True when the viewer still has episodes of `entry` ahead of them.
+ *
+ * The Watching list alone is too narrow. Simkl moves an entry to Completed the moment its last
+ * aired episode is watched - so a show followed weekly sits at Completed between airings and would
+ * drop out until the viewer manually put it back. Every entry carries its own episode counts,
+ * which answer the question directly: aired episodes are the total minus the ones not yet out,
+ * and anything above what has been watched is still owed to the viewer.
+ *
+ * On Hold and Dropped are explicit opt-outs, matching Android TV's Continue Watching projection.
+ */
+function entryHasEpisodesAhead(entry = {}) {
+  if (["hold", "dropped"].includes(entry.status)) return false;
+  if (entry.status === "watching") return true;
+  const total = Number(entry.total_episodes_count || 0);
+  const notAired = Number(entry.not_aired_episodes_count || 0);
+  const watched = Number(entry.watched_episodes_count || 0);
+  if (!total) return false;
+  return total - notAired - watched > 0;
+}
+
+/**
+ * True when any Simkl entry behind `contentId` still has episodes ahead of the viewer.
+ *
+ * Simkl splits a franchise into one entry per season, cour or arc, while a meta addon serves the
+ * whole run under a single ID. Finishing one entry therefore leaves plenty of episodes ahead in the
+ * addon's list, and Next Up - which only asks "is there an episode after the furthest one watched?"
+ * - keeps offering them. Grouping by alias means a franchise counts as unfinished while any of its
+ * entries is, which is what the viewer sees on Simkl.
+ *
+ * Answers true when the snapshot holds no entries at all, so a profile without Simkl behaves as
+ * before.
+ */
+function isTrackedAsWatching(snapshot, contentId) {
+  const entries = snapshot?.entries || [];
+  if (!entries.length) return true;
+  const candidate = String(contentId || "")
+    .trim()
+    .toLowerCase();
+  if (!candidate) return true;
+  return entries.some((entry) => {
+    if (!entryHasEpisodesAhead(entry)) return false;
+    const media = mediaForEntry(entry);
+    if (!media) return false;
+    return aliasesForMedia(media, entry.mediaType).has(candidate);
+  });
 }
 
 function parseContentId(contentId) {
@@ -500,18 +588,25 @@ function watchedProjection(snapshot) {
       return;
     }
     if (["hold", "dropped"].includes(entry.status)) return;
+    let hasEpisodeHistory = false;
     (entry.seasons || []).forEach((season) => {
       (season?.episodes || []).forEach((episode) => {
         if (!episode?.watched_at) return;
-        const seasonNumber = Number(episode.tvdb?.season ?? season.number ?? 0);
-        const episodeNumber = Number(episode.tvdb?.episode ?? episode.number ?? 0);
+        const mappedSeason = Number(episode.tvdb?.season || 0);
+        const mappedEpisode = Number(episode.tvdb?.episode || 0);
+        const hasTvdbCoordinates = mappedSeason > 0 && mappedEpisode > 0;
+        const seasonNumber = hasTvdbCoordinates ? mappedSeason : Number(season.number || 0);
+        const episodeNumber = hasTvdbCoordinates ? mappedEpisode : Number(episode.number || 0);
         if (episodeNumber <= 0) return;
+        hasEpisodeHistory = true;
         const watchedAt = parseDate(episode.watched_at, snapshot.lastSyncedAt);
+        const isSimklAbsoluteEpisode = entry.mediaType === "anime" && !hasTvdbCoordinates;
         const watched = {
           ...base,
           season: seasonNumber,
           episode: episodeNumber,
-          watchedAt
+          watchedAt,
+          isSimklAbsoluteEpisode
         };
         items.push(watched);
         watchedShowSeedItems.push({
@@ -526,10 +621,18 @@ function watchedProjection(snapshot) {
           season: seasonNumber,
           episode: episodeNumber,
           seasonNumber,
-          episodeNumber
+          episodeNumber,
+          isSimklAbsoluteEpisode
         });
       });
     });
+    if (shouldMarkCompletedSeriesWatched(entry.status, hasEpisodeHistory)) {
+      const lastWatchedAt = parseDate(entry.last_watched_at, NaN);
+      const watchedAt = Number.isFinite(lastWatchedAt)
+        ? lastWatchedAt
+        : parseDate(entry.added_to_watchlist_at, 0);
+      items.push({ ...base, watchedAt });
+    }
   });
   return { items, historyItems, watchedShowSeedItems };
 }
@@ -541,6 +644,12 @@ function reconciledPlaybackProgress(snapshot, watchedItems) {
     .filter((progress) => {
       const entry = findEntry(snapshot, progress);
       if (["hold", "dropped"].includes(entry?.status)) return false;
+      if (entry?.status === "completed") {
+        const completedAt = parseDate(entry.last_watched_at, NaN);
+        if (Number.isFinite(completedAt) && completedAt >= Number(progress.updatedAt || 0)) {
+          return false;
+        }
+      }
       return !watchedItems.some(
         (watched) =>
           String(watched.contentId || "").toLowerCase() ===
@@ -557,25 +666,54 @@ export const SimklSyncService = {
 
   getSnapshot,
 
+  hasLoadedRemoteProgress(profileId = activeProfileId()) {
+    const snapshot = getSnapshot(profileId);
+    const status = refreshStatusByProfile.get(String(profileId || "1"));
+    if (status === "error") {
+      return false;
+    }
+    return snapshotHasLoadedProgress(snapshot);
+  },
+
+  isTrackedAsWatching(contentId, profileId) {
+    return isTrackedAsWatching(getSnapshot(profileId), contentId);
+  },
+
   async refresh({ force = false } = {}) {
-    if (!SimklAuthService.isAuthenticated()) return false;
     const profileId = activeProfileId();
+    if (!SimklAuthService.isAuthenticated()) {
+      setRefreshStatus(profileId, "error");
+      return false;
+    }
     const current = getSnapshot(profileId);
+    const needsBootstrap = current.schemaVersion !== SNAPSHOT_SCHEMA_VERSION;
     if (
       !force &&
+      !needsBootstrap &&
       current.lastCheckedAt &&
       Date.now() - current.lastCheckedAt < AUTOMATIC_REFRESH_INTERVAL_MS
     ) {
+      setRefreshStatus(profileId, snapshotHasLoadedProgress(current) ? "loaded" : "error");
       return false;
     }
     if (refreshInFlight?.profileId === profileId) return refreshInFlight.promise;
+    setRefreshStatus(profileId, "loading");
     const promise = (
-      current.initialized ? incrementalSync(current, profileId) : initialSync(profileId)
+      needsBootstrap || !current.initialized
+        ? initialSync(profileId)
+        : incrementalSync(current, profileId)
     )
       .then((snapshot) => {
         if (activeProfileId() !== profileId) return false;
-        saveSnapshot(snapshot, profileId);
+        saveSnapshot({ ...snapshot, schemaVersion: SNAPSHOT_SCHEMA_VERSION }, profileId);
+        setRefreshStatus(profileId, "loaded");
         return true;
+      })
+      .catch((error) => {
+        if (activeProfileId() === profileId) {
+          setRefreshStatus(profileId, "error");
+        }
+        throw error;
       })
       .finally(() => {
         if (refreshInFlight?.promise === promise) refreshInFlight = null;
@@ -585,7 +723,9 @@ export const SimklSyncService = {
   },
 
   clearCurrentProfile() {
-    clearSnapshot();
+    const profileId = activeProfileId();
+    clearSnapshot(profileId);
+    setRefreshStatus(profileId, "loaded");
   },
 
   async getLibraryTabs() {
@@ -634,14 +774,7 @@ export const SimklSyncService = {
       throw new Error("Completed is managed by watched history");
     }
     if (!destination) {
-      const hasHistory = Boolean(
-        entry &&
-        (entry.last_watched_at ||
-          entry.user_rating != null ||
-          (entry.seasons || []).some((season) =>
-            (season.episodes || []).some((episode) => episode.watched_at)
-          ))
-      );
+      const hasHistory = destructiveRemovalImpacts(entry).length > 0;
       if (hasHistory && !destructiveRemovalConfirmed) {
         const error = new Error(
           "Removing this Simkl status would also clear watched history or a rating"

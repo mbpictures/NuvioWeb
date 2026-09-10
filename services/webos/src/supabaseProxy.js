@@ -43,12 +43,33 @@ function send(res, statusCode, headers, body) {
   res.end(body || "");
 }
 
-function isAllowedHost(hostname) {
+function isAllowedSupabaseHost(hostname) {
   var host = String(hostname || "").toLowerCase();
   return host === "api.nuvio.tv" || /\.supabase\.co$/.test(host);
 }
 
-function validateTargetUrl(rawUrl) {
+function isAllowedDebridTarget(parsed) {
+  var host = String(parsed && parsed.hostname ? parsed.hostname : "").toLowerCase();
+  var path = String(parsed && parsed.pathname ? parsed.pathname : "");
+  if (host === "api.torbox.app") {
+    return (
+      path === "/v1/api/user/auth/device/start" ||
+      path === "/v1/api/user/auth/device/token" ||
+      path === "/v1/api/torrents/mylist" ||
+      path === "/v1/api/usenet/mylist" ||
+      path === "/v1/api/webdl/mylist" ||
+      path === "/v1/api/torrents/requestdl" ||
+      path === "/v1/api/usenet/requestdl" ||
+      path === "/v1/api/webdl/requestdl"
+    );
+  }
+  return (
+    host === "www.premiumize.me" &&
+    (path === "/token" || path === "/api/item/listall" || path === "/api/item/details")
+  );
+}
+
+function validateTargetUrl(rawUrl, method) {
   var target = String(rawUrl || "").trim();
   if (!target) {
     return { ok: false, statusCode: 400, message: "Missing url" };
@@ -62,11 +83,41 @@ function validateTargetUrl(rawUrl) {
   if (parsed.protocol !== "https:") {
     return { ok: false, statusCode: 400, message: "Only HTTPS Supabase URLs are allowed" };
   }
-  if (!isAllowedHost(parsed.hostname)) {
-    return { ok: false, statusCode: 403, message: "Supabase host is not allowed" };
+  var isSupabaseTarget =
+    isAllowedSupabaseHost(parsed.hostname) &&
+    (parsed.pathname.indexOf("/rest/v1/") === 0 || parsed.pathname.indexOf("/storage/v1/") === 0);
+  var isDebridTarget = isAllowedDebridTarget(parsed);
+  if (!isSupabaseTarget && !isDebridTarget) {
+    return { ok: false, statusCode: 403, message: "Proxy target is not allowed" };
   }
-  if (parsed.pathname.indexOf("/rest/v1/") !== 0) {
-    return { ok: false, statusCode: 403, message: "Only Supabase REST paths are allowed" };
+  if (isDebridTarget) {
+    var normalizedMethod = String(method || "GET").toUpperCase();
+    var isAllowedMethod =
+      (parsed.hostname === "api.torbox.app" &&
+        parsed.pathname === "/v1/api/user/auth/device/start" &&
+        normalizedMethod === "GET") ||
+      (parsed.hostname === "api.torbox.app" &&
+        parsed.pathname === "/v1/api/user/auth/device/token" &&
+        normalizedMethod === "POST") ||
+      (parsed.hostname === "www.premiumize.me" &&
+        parsed.pathname === "/token" &&
+        normalizedMethod === "POST") ||
+      (normalizedMethod === "GET" &&
+        parsed.hostname === "api.torbox.app" &&
+        [
+          "/v1/api/torrents/mylist",
+          "/v1/api/usenet/mylist",
+          "/v1/api/webdl/mylist",
+          "/v1/api/torrents/requestdl",
+          "/v1/api/usenet/requestdl",
+          "/v1/api/webdl/requestdl"
+        ].indexOf(parsed.pathname) >= 0) ||
+      (normalizedMethod === "GET" &&
+        parsed.hostname === "www.premiumize.me" &&
+        ["/api/item/listall", "/api/item/details"].indexOf(parsed.pathname) >= 0);
+    if (!isAllowedMethod) {
+      return { ok: false, statusCode: 405, message: "Proxy method is not allowed" };
+    }
   }
   return { ok: true, target: target, parsed: parsed };
 }
@@ -120,7 +171,8 @@ function parseRequestBody(req, callback) {
 }
 
 function proxySupabaseRequest(payload, redirectsLeft, callback, redirectChain) {
-  var validated = validateTargetUrl(payload && payload.url);
+  var method = String((payload && payload.method) || "GET").toUpperCase();
+  var validated = validateTargetUrl(payload && payload.url, method);
   if (!validated.ok) {
     callback(null, {
       statusCode: validated.statusCode || 400,
@@ -131,7 +183,6 @@ function proxySupabaseRequest(payload, redirectsLeft, callback, redirectChain) {
   }
 
   var parsed = validated.parsed;
-  var method = String((payload && payload.method) || "GET").toUpperCase();
   var body = payload && typeof payload.body === "string" ? payload.body : null;
   var headers = sanitizeHeaders((payload && payload.headers) || {});
   if (body && !headers["Content-Length"] && !headers["content-length"]) {
@@ -285,5 +336,6 @@ function createSupabaseProxyHandler() {
 
 module.exports = {
   SUPABASE_PROXY_PATH: SUPABASE_PROXY_PATH,
-  createSupabaseProxyHandler: createSupabaseProxyHandler
+  createSupabaseProxyHandler: createSupabaseProxyHandler,
+  validateTargetUrl: validateTargetUrl
 };

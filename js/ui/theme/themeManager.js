@@ -1,4 +1,7 @@
-import { ThemeStore } from "../../data/local/themeStore.js";
+import { MemberAccessRepository } from "../../data/remote/supabase/memberAccessRepository.js";
+import { accentColorForTheme, ThemeStore } from "../../data/local/themeStore.js";
+import { syncBrandWordmarks } from "../components/brandWordmark.js";
+import { resolveThemeName } from "./themeAccess.js";
 import { ThemeColors } from "./themeColors.js";
 
 const FONT_STACKS = {
@@ -24,23 +27,43 @@ function toRgbChannels(hex, fallback = "255 255 255") {
   return `${parseInt(normalized.slice(0, 2), 16)} ${parseInt(normalized.slice(2, 4), 16)} ${parseInt(normalized.slice(4, 6), 16)}`;
 }
 
+function toLegacyRgbChannels(hex, fallback = "255, 255, 255") {
+  const value = String(hex || "").trim();
+  const match = value.match(/^#([0-9a-f]{6})$/i);
+  if (!match) {
+    return fallback;
+  }
+  const normalized = match[1];
+  return `${parseInt(normalized.slice(0, 2), 16)}, ${parseInt(normalized.slice(2, 4), 16)}, ${parseInt(normalized.slice(4, 6), 16)}`;
+}
+
 /**
  * Pure function — no DOM access. Returns a CSS string for legacy engines that
  * do not support CSS custom properties (e.g. Chromium 38 / webOS 3.x).
  *
  * colorMap keys:
  *   bg, bgElevated, cardBg, secondary, onSecondary,
- *   focusColor, focusBg, text, textSecondary, textTertiary, border
+ *   focusColor, focusBg, text, textSecondary, textTertiary, border, playerAccent
  *
  * @param {{ bg:string, bgElevated:string, cardBg:string, secondary:string,
  *           onSecondary:string, focusColor:string, focusBg:string,
  *           text:string, textSecondary:string, textTertiary:string,
- *           border:string }} colorMap
+ *           border:string, playerAccent:string }} colorMap
  * @returns {string}
  */
 export function buildLegacyThemeCss(colorMap) {
-  const { bg, bgElevated, cardBg, secondary, onSecondary, focusColor, focusBg, text, border } =
-    colorMap;
+  const {
+    bg,
+    bgElevated,
+    cardBg,
+    secondary,
+    onSecondary,
+    focusColor,
+    focusBg,
+    text,
+    border,
+    playerAccent = secondary
+  } = colorMap;
 
   return [
     // 1. Base document surfaces
@@ -78,7 +101,13 @@ export function buildLegacyThemeCss(colorMap) {
       ` background: ${focusBg}; }`,
     `.modern-sidebar-nav-item.selected .modern-sidebar-nav-icon-circle,` +
       ` .modern-sidebar-nav-item.selected.focused .modern-sidebar-nav-icon-circle {` +
-      ` background: ${secondary}; color: ${onSecondary}; }`,
+      ` background: ${playerAccent}; color: ${onSecondary}; }`,
+
+    `.modern-sidebar-pill-icon-wrap {` + ` background: ${playerAccent}; color: ${onSecondary}; }`,
+
+    `.player-progress-fill, .player-parental-line-fill,` +
+      ` .library-watched-badge, .title-watched-badge,` +
+      ` .series-episode-status.complete { background: ${playerAccent}; }`,
 
     // 7. Focus rings — structures copied verbatim from components.css,
     //    only the color token values are substituted.
@@ -107,6 +136,22 @@ export function buildLegacyThemeCss(colorMap) {
 }
 
 const LEGACY_STYLE_ID = "nuvio-legacy-theme";
+let memberAccessSubscriptionReady = false;
+let initialMemberAccessObserved = false;
+
+function ensureMemberAccessSubscription() {
+  if (memberAccessSubscriptionReady) return;
+  memberAccessSubscriptionReady = true;
+  MemberAccessRepository.subscribe((access) => {
+    if (!initialMemberAccessObserved) {
+      initialMemberAccessObserved = true;
+      return;
+    }
+    if (typeof document !== "undefined") {
+      ThemeManager.apply({ enforceAccess: true, access });
+    }
+  });
+}
 
 function injectLegacyTheme(css) {
   let el = document.getElementById(LEGACY_STYLE_ID);
@@ -121,8 +166,20 @@ function injectLegacyTheme(css) {
 }
 
 export const ThemeManager = {
-  apply() {
-    const theme = ThemeStore.get();
+  apply({ enforceAccess = false, access = null } = {}) {
+    ensureMemberAccessSubscription();
+    const storedTheme = ThemeStore.get();
+    const themeName = enforceAccess
+      ? resolveThemeName(storedTheme.themeName, access || MemberAccessRepository.getCurrentAccess())
+      : String(storedTheme.themeName || "WHITE").toUpperCase();
+    const theme =
+      themeName === storedTheme.themeName
+        ? storedTheme
+        : {
+            ...storedTheme,
+            themeName,
+            accentColor: accentColorForTheme(themeName)
+          };
     const colors = {
       ...ThemeColors.getPalette(theme.themeName)
     };
@@ -135,11 +192,13 @@ export const ThemeManager = {
     }
     const derivedColors = {
       "--bg-color-rgb": toRgbChannels(colors["--bg-color"], "13 13 13"),
+      "--bg-color-rgb-legacy": toLegacyRgbChannels(colors["--bg-color"], "13, 13, 13"),
       "--bg-elevated-rgb": toRgbChannels(colors["--bg-elevated"], "26 26 26"),
       "--card-bg-rgb": toRgbChannels(colors["--card-bg"], "34 34 34"),
       "--secondary-color-rgb": toRgbChannels(colors["--secondary-color"], "245 245 245"),
       "--focus-color-rgb": toRgbChannels(colors["--focus-color"], "255 255 255"),
       "--player-secondary": colors["--secondary-color"],
+      "--player-accent-gradient": colors["--accent-gradient"] || colors["--secondary-color"],
       "--player-on-secondary": colors["--on-secondary"],
       "--player-focus-ring": colors["--focus-color"],
       "--player-focus-background": colors["--focus-bg"],
@@ -158,6 +217,8 @@ export const ThemeManager = {
       "--app-font-family",
       FONT_STACKS[String(theme.fontFamily || "INTER").toUpperCase()] || FONT_STACKS.INTER
     );
+    document.documentElement.dataset.nuvioTheme = themeName;
+    syncBrandWordmarks(themeName);
     document.documentElement.style.setProperty("color-scheme", "dark");
 
     if (!SUPPORTS_CSS_VARS) {
@@ -172,7 +233,8 @@ export const ThemeManager = {
         text: colors["--text-color"],
         textSecondary: colors["--text-secondary"],
         textTertiary: colors["--text-tertiary"],
-        border: colors["--border-color"]
+        border: colors["--border-color"],
+        playerAccent: colors["--accent-gradient"] || colors["--secondary-color"]
       };
       injectLegacyTheme(buildLegacyThemeCss(colorMap));
     }

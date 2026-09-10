@@ -49,6 +49,7 @@ function normalizeTmdbFilters(value = {}) {
   const raw = value && typeof value === "object" ? value : {};
   return {
     withGenres: stringOrNull(raw.withGenres),
+    withoutGenres: stringOrNull(raw.withoutGenres),
     releaseDateGte: stringOrNull(raw.releaseDateGte),
     releaseDateLte: stringOrNull(raw.releaseDateLte),
     voteAverageGte: Number.isFinite(Number(raw.voteAverageGte)) ? Number(raw.voteAverageGte) : null,
@@ -59,14 +60,17 @@ function normalizeTmdbFilters(value = {}) {
     withOriginalLanguage: stringOrNull(raw.withOriginalLanguage),
     withOriginCountry: stringOrNull(raw.withOriginCountry),
     withKeywords: stringOrNull(raw.withKeywords),
+    withoutKeywords: stringOrNull(raw.withoutKeywords),
     withCompanies: stringOrNull(raw.withCompanies),
+    withoutCompanies: stringOrNull(raw.withoutCompanies),
     withNetworks: stringOrNull(raw.withNetworks),
     year:
       Number.isFinite(Number(raw.year)) && Number(raw.year) > 0
         ? Math.trunc(Number(raw.year))
         : null,
     watchRegion: stringOrNull(raw.watchRegion),
-    withWatchProviders: stringOrNull(raw.withWatchProviders)
+    withWatchProviders: stringOrNull(raw.withWatchProviders),
+    withoutWatchProviders: stringOrNull(raw.withoutWatchProviders)
   };
 }
 

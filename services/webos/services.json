@@ -4,11 +4,11 @@
   "services": [
     {
       "name": "space.nuvio.webos.service",
-      "description": "Boots the local media runtime and exposes health checks",
+      "description": "Starts the local media runtime on demand and exposes health checks",
       "commands": [
         {
           "name": "ping",
-          "description": "Boot the local runtime and report service health",
+          "description": "Start the local runtime on demand and report service health",
           "public": true
         },
         {
@@ -28,12 +28,17 @@
         },
         {
           "name": "bitmapSubtitlePrepare",
-          "description": "Preload shared Matroska metadata for embedded VOBSUB tracks",
+          "description": "Preload shared Matroska metadata for embedded bitmap subtitle tracks",
           "public": true
         },
         {
           "name": "bitmapSubtitleWindow",
-          "description": "Extract a bounded VOBSUB window from an embedded Matroska track",
+          "description": "Extract a bounded bitmap subtitle window from an embedded Matroska track",
+          "public": true
+        },
+        {
+          "name": "embeddedSubtitleTextWindow",
+          "description": "Extract a bounded VTT/ASS window from an embedded Matroska text subtitle track",
           "public": true
         },
         {
@@ -64,6 +69,21 @@
         {
           "name": "enginefsKeepAliveStop",
           "description": "Stop an active EngineFS runtime keep-alive subscription",
+          "public": true
+        },
+        {
+          "name": "mediaPlaybackKeepAlive",
+          "description": "Keep the local media runtime active while webOS proxy playback is using it",
+          "public": true
+        },
+        {
+          "name": "mediaPlaybackKeepAliveStop",
+          "description": "Stop an active webOS proxy playback keep-alive subscription",
+          "public": true
+        },
+        {
+          "name": "safeHttpProxy",
+          "description": "Proxy allowlisted account and cloud-library requests for legacy webOS",
           "public": true
         }
       ]

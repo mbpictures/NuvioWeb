@@ -1,4 +1,5 @@
 import { WatchProgressStore } from "../local/watchProgressStore.js";
+import { CloudLibraryPlaybackProgressStore } from "../local/cloudLibraryPlaybackStore.js";
 import { ProfileManager } from "../../core/profile/profileManager.js";
 import { LocalStore } from "../../core/storage/localStore.js";
 import { ContinueWatchingPreferences } from "../local/continueWatchingPreferences.js";
@@ -12,7 +13,11 @@ import { TraktAuthService } from "./traktAuthService.js";
 import { SimklAuthStore } from "../local/simklAuthStore.js";
 import { SimklSyncService } from "./simklSyncService.js";
 import { metaRepository } from "./metaRepository.js";
+import { watchedItemsRepository } from "./watchedItemsRepository.js";
+import { watchedItemIdentityValues, watchedItemsShareIdentity } from "./watchedIdentity.js";
 import { mapWithConcurrency } from "../../core/network/mapWithConcurrency.js";
+import { getSyncBackoffRemainingMs } from "../../core/sync/syncBackoffPolicy.js";
+import { registerSessionTeardownHandler } from "../../core/auth/sessionLifecycle.js";
 import {
   WATCH_PROGRESS_COMPLETED_THRESHOLD,
   WATCH_PROGRESS_STARTED_THRESHOLD,
@@ -50,40 +55,100 @@ function activeProfileId() {
   return String(ProfileManager.getActiveProfileId() || "1");
 }
 
-let watchProgressSyncTimer = null;
-let watchProgressSyncInFlight = null;
+const watchProgressSyncTimers = new Map();
+const watchProgressSyncInFlightByProfile = new Map();
+let watchProgressSyncGeneration = 0;
 let traktProgressSnapshotCache = null;
 let traktProgressSnapshotInFlight = null;
+let traktProgressSnapshotGeneration = 0;
+const remoteProgressLoadState = new Map();
 const TRAKT_PROGRESS_SNAPSHOT_TTL_MS = 30000;
+
+function remoteProgressStateKey(source, profileId = activeProfileId()) {
+  return `${String(profileId || "1")}:${String(source || "")}`;
+}
+
+function setRemoteProgressLoadState(source, profileId, status) {
+  remoteProgressLoadState.set(remoteProgressStateKey(source, profileId), status);
+}
 
 function getWatchProgressSyncDebounceMs() {
   return globalThis.document?.body?.classList?.contains("performance-constrained") ? 15000 : 1500;
 }
 
-function queueWatchProgressCloudSync(delayMs = getWatchProgressSyncDebounceMs()) {
-  if (watchProgressSyncTimer) {
-    clearTimeout(watchProgressSyncTimer);
+function queueWatchProgressCloudSync(
+  profileId = activeProfileId(),
+  delayMs = getWatchProgressSyncDebounceMs()
+) {
+  const profileKey = String(profileId || "1");
+  const generation = watchProgressSyncGeneration;
+  const existingTimer = watchProgressSyncTimers.get(profileKey);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
   }
-  watchProgressSyncTimer = setTimeout(() => {
-    watchProgressSyncTimer = null;
+  const timerId = setTimeout(() => {
+    if (generation !== watchProgressSyncGeneration) {
+      return;
+    }
+    watchProgressSyncTimers.delete(profileKey);
     const runPush = async () => {
-      if (watchProgressSyncInFlight) {
-        await watchProgressSyncInFlight.catch(() => false);
+      if (generation !== watchProgressSyncGeneration) {
+        return;
       }
-      watchProgressSyncInFlight = import("../../core/profile/watchProgressSyncService.js")
-        .then(({ WatchProgressSyncService }) => WatchProgressSyncService.push())
+      const inFlight = watchProgressSyncInFlightByProfile.get(profileKey);
+      if (inFlight) {
+        await inFlight.catch(() => false);
+      }
+      if (generation !== watchProgressSyncGeneration) {
+        return;
+      }
+      const pushPromise = import("../../core/profile/watchProgressSyncService.js")
+        .then(({ WatchProgressSyncService }) => WatchProgressSyncService.push(profileId))
         .catch((error) => {
           console.warn("Watch progress cloud sync enqueue failed", error);
           return false;
         })
         .finally(() => {
-          watchProgressSyncInFlight = null;
+          if (watchProgressSyncInFlightByProfile.get(profileKey) === pushPromise) {
+            watchProgressSyncInFlightByProfile.delete(profileKey);
+          }
         });
-      await watchProgressSyncInFlight;
+      watchProgressSyncInFlightByProfile.set(profileKey, pushPromise);
+      const didPush = await pushPromise;
+      if (generation !== watchProgressSyncGeneration) {
+        return;
+      }
+      if (!didPush) {
+        const retryDelayMs = getSyncBackoffRemainingMs();
+        if (retryDelayMs > 0) {
+          queueWatchProgressCloudSync(profileId, Math.max(5000, retryDelayMs));
+        }
+      }
     };
     void runPush();
   }, delayMs);
+  watchProgressSyncTimers.set(profileKey, timerId);
 }
+
+function stopWatchProgressCloudSync({ waitForInFlight = true } = {}) {
+  const pending = waitForInFlight ? [...watchProgressSyncInFlightByProfile.values()] : [];
+  watchProgressSyncGeneration += 1;
+  watchProgressSyncTimers.forEach((timerId) => clearTimeout(timerId));
+  watchProgressSyncTimers.clear();
+  watchProgressSyncInFlightByProfile.clear();
+  traktProgressSnapshotCache = null;
+  traktProgressSnapshotInFlight = null;
+  traktProgressSnapshotGeneration = watchProgressSyncGeneration;
+  remoteProgressLoadState.clear();
+  if (!waitForInFlight || pending.length === 0) {
+    return Promise.resolve(true);
+  }
+  return Promise.allSettled(pending).then(() => true);
+}
+
+registerSessionTeardownHandler?.(({ waitForInFlight = true } = {}) =>
+  stopWatchProgressCloudSync({ waitForInFlight })
+);
 
 function invalidateContinueWatchingDisplaySnapshot() {
   const sourceKey = `${activeProfileId()}:${selectedContinueWatchingSource()}`;
@@ -105,9 +170,17 @@ function isSeriesType(type) {
   return normalized === "series" || normalized === "tv";
 }
 
+function isCloudProgressItem(item = {}) {
+  return (
+    String(item?.contentType || item?.type || "")
+      .trim()
+      .toLowerCase() === "cloud"
+  );
+}
+
 function matchesProgressTarget(item = {}, contentId, videoId = null) {
   const wantedContentId = String(contentId || "").trim();
-  if (!wantedContentId || String(item.contentId || "").trim() !== wantedContentId) {
+  if (!wantedContentId || !watchedItemsShareIdentity(item, { contentId: wantedContentId })) {
     return false;
   }
   if (videoId == null) {
@@ -116,14 +189,14 @@ function matchesProgressTarget(item = {}, contentId, videoId = null) {
   return String(item.videoId || "") === String(videoId);
 }
 
-async function deleteWatchProgressFromCloud(items = []) {
+async function deleteWatchProgressFromCloud(items = [], profileId = activeProfileId()) {
   if (!items.length) {
     return false;
   }
   try {
     const { WatchProgressSyncService } =
       await import("../../core/profile/watchProgressSyncService.js");
-    return WatchProgressSyncService.deleteItems(items);
+    return WatchProgressSyncService.deleteItems(items, profileId);
   } catch (error) {
     console.warn("Watch progress cloud delete failed", error);
     return false;
@@ -197,7 +270,10 @@ function selectedLocalProgressSource() {
 
 function filterForSelectedContinueWatchingSource(items = []) {
   const source = selectedContinueWatchingSource();
-  const all = Array.isArray(items) ? items : [];
+  // Cloud Library progress is local to the Cloud file and deliberately does
+  // not enter generic account sync. The Home Continue Watching projection
+  // appends it explicitly from CloudLibraryPlaybackProgressStore below.
+  const all = (Array.isArray(items) ? items : []).filter((item) => !isCloudProgressItem(item));
   if (source === WatchProgressSource.TRAKT) {
     return all.filter(
       (item) => isTraktProgressItem(item) || !isTraktCompatibleContentId(item?.contentId)
@@ -230,11 +306,13 @@ function deduplicateInProgress(items = []) {
         return;
       }
 
-      const contentId = String(item?.contentId || "").trim();
-      if (!contentId || seenContentIds.has(contentId)) {
+      const identities = Array.from(watchedItemIdentityValues(item))
+        .map((value) => value.toLowerCase())
+        .filter(Boolean);
+      if (!identities.length || identities.some((identity) => seenContentIds.has(identity))) {
         return;
       }
-      seenContentIds.add(contentId);
+      identities.forEach((identity) => seenContentIds.add(identity));
       // Decide Continue Watching eligibility only after selecting the newest
       // episode state for the series. Otherwise a completed episode is removed
       // first and an older partial record can reappear beside the real Next Up.
@@ -263,8 +341,7 @@ function normalizeContentIdList(values = []) {
 }
 
 function matchesAnyContentId(item = {}, contentIds = []) {
-  const normalized = String(item?.contentId || "").trim();
-  return Boolean(normalized && contentIds.includes(normalized));
+  return contentIds.some((contentId) => watchedItemsShareIdentity(item, { contentId }));
 }
 
 function matchesResumeTarget(item = {}, { videoId = null, season = null, episode = null } = {}) {
@@ -333,7 +410,14 @@ function toProgressItemFromTraktHistory(historyItem) {
   const isEpisode = historyItem.type === "episode";
   const tmdbId = isEpisode ? historyItem.showTmdbId : historyItem.tmdbId;
   const traktId = isEpisode ? historyItem.showTraktId : historyItem.traktId;
-  const contentId = tmdbId ? `tmdb:${tmdbId}` : traktId ? `trakt:${traktId}` : null;
+  const imdbId = isEpisode ? historyItem.showImdbId : historyItem.imdbId;
+  const contentId = imdbId
+    ? imdbId
+    : tmdbId
+      ? `tmdb:${tmdbId}`
+      : traktId
+        ? `trakt:${traktId}`
+        : null;
   if (!contentId) return null;
   const watchedAtMs = historyItem.watchedAt
     ? new Date(historyItem.watchedAt).getTime()
@@ -345,7 +429,7 @@ function toProgressItemFromTraktHistory(historyItem) {
     contentType: isEpisode ? "series" : "movie",
     title: isEpisode ? historyItem.showTitle : historyItem.title,
     year: isEpisode ? historyItem.showYear : historyItem.year,
-    imdbId: isEpisode ? historyItem.showImdbId : historyItem.imdbId,
+    imdbId,
     tmdbId: tmdbId || null,
     traktId: traktId || null,
     source: "trakt_history",
@@ -462,19 +546,28 @@ async function fetchTraktProgressSnapshot() {
     return { historyItems: [], playbackItems: [], watchedShowSeedItems: [] };
   }
 
+  const profileId = activeProfileId();
+  setRemoteProgressLoadState(WatchProgressSource.TRAKT, profileId, "loading");
   const now = Date.now();
   if (
     traktProgressSnapshotCache &&
-    traktProgressSnapshotCache.profileId === activeProfileId() &&
+    traktProgressSnapshotCache.profileId === profileId &&
     now - Number(traktProgressSnapshotCache.fetchedAt || 0) < TRAKT_PROGRESS_SNAPSHOT_TTL_MS
   ) {
+    setRemoteProgressLoadState(WatchProgressSource.TRAKT, profileId, "loaded");
     return traktProgressSnapshotCache.snapshot;
   }
-  if (traktProgressSnapshotInFlight) {
+  if (
+    traktProgressSnapshotInFlight &&
+    traktProgressSnapshotGeneration === watchProgressSyncGeneration
+  ) {
     return traktProgressSnapshotInFlight;
   }
 
-  traktProgressSnapshotInFlight = (async () => {
+  const generation = watchProgressSyncGeneration;
+  traktProgressSnapshotGeneration = generation;
+  let snapshotPromise = null;
+  snapshotPromise = (async () => {
     const [history, playbackState, watchedShows] = await Promise.all([
       withTimeout(
         TraktAuthService.fetchWatchHistory({ limit: 300 }),
@@ -492,7 +585,11 @@ async function fetchTraktProgressSnapshot() {
         console.warn("[CW] Trakt playback state fetch failed", err);
         return [];
       }),
-      withTimeout(TraktAuthService.fetchWatchedShows(), TRAKT_API_TIMEOUT_MS, []).catch((err) => {
+      withTimeout(
+        watchedItemsRepository.getRemoteTraktWatchedShows(),
+        TRAKT_API_TIMEOUT_MS,
+        []
+      ).catch((err) => {
         console.warn("[CW] Trakt watched shows fetch failed", err);
         return [];
       })
@@ -508,17 +605,32 @@ async function fetchTraktProgressSnapshot() {
       playbackItems: playbackState.map(toProgressItemFromPlayback).filter(Boolean),
       watchedShowSeedItems
     };
+    if (generation !== watchProgressSyncGeneration) {
+      return { historyItems: [], playbackItems: [], watchedShowSeedItems: [] };
+    }
     traktProgressSnapshotCache = {
-      profileId: activeProfileId(),
+      profileId,
       fetchedAt: Date.now(),
       snapshot
     };
     return snapshot;
-  })().finally(() => {
-    traktProgressSnapshotInFlight = null;
-  });
+  })()
+    .then((snapshot) => {
+      setRemoteProgressLoadState(WatchProgressSource.TRAKT, profileId, "loaded");
+      return snapshot;
+    })
+    .catch((error) => {
+      setRemoteProgressLoadState(WatchProgressSource.TRAKT, profileId, "error");
+      throw error;
+    })
+    .finally(() => {
+      if (traktProgressSnapshotInFlight === snapshotPromise) {
+        traktProgressSnapshotInFlight = null;
+      }
+    });
 
-  return traktProgressSnapshotInFlight;
+  traktProgressSnapshotInFlight = snapshotPromise;
+  return snapshotPromise;
 }
 
 async function fetchSimklProgressSnapshot() {
@@ -528,12 +640,47 @@ async function fetchSimklProgressSnapshot() {
   ) {
     return { historyItems: [], playbackItems: [], watchedShowSeedItems: [] };
   }
-  return SimklSyncService.getProgressSnapshot();
+  const profileId = activeProfileId();
+  setRemoteProgressLoadState(WatchProgressSource.SIMKL, profileId, "loading");
+  try {
+    const snapshot = await SimklSyncService.getProgressSnapshot();
+    const loaded = SimklSyncService.hasLoadedRemoteProgress?.(profileId) === true;
+    setRemoteProgressLoadState(WatchProgressSource.SIMKL, profileId, loaded ? "loaded" : "error");
+    return snapshot;
+  } catch (error) {
+    setRemoteProgressLoadState(WatchProgressSource.SIMKL, profileId, "error");
+    throw error;
+  }
 }
 
 // Cache for enriched metadata (5-minute TTL)
 const enrichedMetaCache = new Map();
 const ENRICHED_META_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function progressMetadataTypeCandidates(contentType) {
+  const normalized = String(contentType || "")
+    .trim()
+    .toLowerCase();
+  const candidates = normalized ? [normalized] : [];
+  if (normalized === "series" || normalized === "tv") {
+    candidates.push("series", "tv");
+  } else {
+    candidates.push("movie");
+  }
+  return [...new Set(candidates)];
+}
+
+async function getProgressItemMetadata(contentType, lookupId) {
+  for (const candidateType of progressMetadataTypeCandidates(contentType)) {
+    const result = await metaRepository
+      .getMetaFromAllAddons(candidateType, lookupId)
+      .catch(() => null);
+    if (result?.status === "success" && result?.data) {
+      return result.data;
+    }
+  }
+  return null;
+}
 
 async function batchEnrichProgressItems(items) {
   if (!items.length) return [];
@@ -546,9 +693,8 @@ async function batchEnrichProgressItems(items) {
     if (cached && now - cached.timestamp < ENRICHED_META_CACHE_TTL_MS) {
       meta = cached.meta;
     } else {
-      const canonicalType = item.contentType === "series" ? "series" : "movie";
       meta = await withTimeout(
-        metaRepository.getMetaFromAllAddons(canonicalType, lookupId),
+        getProgressItemMetadata(item.contentType, lookupId),
         PROGRESS_META_TIMEOUT_MS,
         null
       ).catch(() => null);
@@ -563,12 +709,14 @@ async function batchEnrichProgressItems(items) {
 }
 
 class WatchProgressRepository {
-  async saveProgress(progress) {
+  async saveProgress(progress, options = {}) {
+    if (isCloudProgressItem(progress)) {
+      return;
+    }
+    const syncRemote = options === false || options?.syncRemote === false ? false : true;
+    const pid = activeProfileId();
     if (isSeriesType(progress?.contentType)) {
-      ContinueWatchingPreferences.removeDismissedNextUpKeysForContent(
-        progress?.contentId,
-        activeProfileId()
-      );
+      ContinueWatchingPreferences.removeDismissedNextUpKeysForContent(progress?.contentId, pid);
     }
     WatchProgressStore.upsert(
       {
@@ -576,14 +724,20 @@ class WatchProgressRepository {
         source: String(progress?.source || "").trim() || selectedLocalProgressSource(),
         updatedAt: progress.updatedAt || Date.now()
       },
-      activeProfileId()
+      pid
     );
     invalidateContinueWatchingDisplaySnapshot();
-    queueWatchProgressCloudSync();
+    if (syncRemote) {
+      queueWatchProgressCloudSync(pid);
+    }
   }
 
   async getProgressByContentId(contentId) {
-    return WatchProgressStore.findByContentId(contentId, activeProfileId());
+    return (
+      WatchProgressStore.listForProfile(activeProfileId()).find((item) =>
+        watchedItemsShareIdentity(item, { contentId })
+      ) || null
+    );
   }
 
   async getResumeByContentIds(contentIds, target = {}) {
@@ -613,10 +767,17 @@ class WatchProgressRepository {
     const removedItems = WatchProgressStore.listForProfile(pid).filter((item) =>
       matchesProgressTarget(item, contentId, videoId)
     );
-    WatchProgressStore.remove(contentId, videoId, pid);
-    await deleteWatchProgressFromCloud(removedItems);
+    if (removedItems.length) {
+      const remaining = WatchProgressStore.listForProfile(pid).filter(
+        (item) => !matchesProgressTarget(item, contentId, videoId)
+      );
+      WatchProgressStore.replaceForProfile(pid, remaining);
+    } else {
+      WatchProgressStore.remove(contentId, videoId, pid);
+    }
+    await deleteWatchProgressFromCloud(removedItems, pid);
     invalidateContinueWatchingDisplaySnapshot();
-    queueWatchProgressCloudSync();
+    queueWatchProgressCloudSync(pid);
   }
 
   async getRecent(limit = 30, { enrichMetadata = true } = {}) {
@@ -652,8 +813,14 @@ class WatchProgressRepository {
       ...watchedShowSeedItems
     ];
 
-    const recentItems = filterForSelectedContinueWatchingSource(allItems)
-      .filter((item) => cutoffMs === 0 || Number(item?.updatedAt || 0) >= cutoffMs)
+    const recentItems = [
+      ...filterForSelectedContinueWatchingSource(allItems).filter(
+        (item) => cutoffMs === 0 || Number(item?.updatedAt || 0) >= cutoffMs
+      ),
+      // Cloud progress is device-local and must remain visible independently
+      // of the selected Trakt/Simkl history window, just like Android.
+      ...CloudLibraryPlaybackProgressStore.listForContinueWatching()
+    ]
       .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))
       .slice(0, 300);
 
@@ -663,25 +830,31 @@ class WatchProgressRepository {
     return enrichMetadata ? batchEnrichProgressItems(limitedItems) : limitedItems;
   }
 
-  async getAll() {
-    return WatchProgressStore.listForProfile(activeProfileId());
+  async getAll(profileId = activeProfileId()) {
+    return WatchProgressStore.listForProfile(profileId).filter(
+      (item) => !isCloudProgressItem(item)
+    );
   }
 
   async getAllForContinueWatching() {
     const localItems = WatchProgressStore.listForProfile(activeProfileId());
+    const cloudItems = CloudLibraryPlaybackProgressStore.listForContinueWatching();
     if (selectedContinueWatchingSource() === WatchProgressSource.NUVIO_SYNC) {
-      return filterForSelectedContinueWatchingSource(localItems);
+      return [...filterForSelectedContinueWatchingSource(localItems), ...cloudItems];
     }
     const snapshot =
       selectedContinueWatchingSource() === WatchProgressSource.TRAKT
         ? await fetchTraktProgressSnapshot()
         : await fetchSimklProgressSnapshot();
-    return filterForSelectedContinueWatchingSource([
-      ...localItems,
-      ...snapshot.historyItems,
-      ...snapshot.playbackItems,
-      ...snapshot.watchedShowSeedItems
-    ]);
+    return [
+      ...filterForSelectedContinueWatchingSource([
+        ...localItems,
+        ...snapshot.historyItems,
+        ...snapshot.playbackItems,
+        ...snapshot.watchedShowSeedItems
+      ]),
+      ...cloudItems
+    ];
   }
 
   getContinueWatchingSourceKey() {
@@ -692,9 +865,50 @@ class WatchProgressRepository {
     return selectedContinueWatchingSource();
   }
 
-  async replaceAll(items) {
-    WatchProgressStore.replaceForProfile(activeProfileId(), items || []);
+  getContinueWatchingRemoteProgressState() {
+    const source = selectedContinueWatchingSource();
+    const sourceKey = `${activeProfileId()}:${source}`;
+    if (source === WatchProgressSource.NUVIO_SYNC) {
+      return { sourceKey, loaded: true };
+    }
+    if (source === WatchProgressSource.SIMKL) {
+      return {
+        sourceKey,
+        loaded: SimklSyncService.hasLoadedRemoteProgress?.(activeProfileId()) === true
+      };
+    }
+    return {
+      sourceKey,
+      loaded:
+        remoteProgressLoadState.get(remoteProgressStateKey(source, activeProfileId())) === "loaded"
+    };
+  }
+
+  async replaceAll(items, profileId = activeProfileId()) {
+    WatchProgressStore.replaceForProfile(
+      profileId,
+      (Array.isArray(items) ? items : []).filter((item) => !isCloudProgressItem(item))
+    );
     invalidateContinueWatchingDisplaySnapshot();
+  }
+
+  /**
+   * True when the selected tracking source still lists `contentId` as being watched.
+   *
+   * Next Up is seeded from watch history, which says nothing about whether the viewer considers a
+   * show current. Only Simkl models a watchlist here; every other source answers true and behaves
+   * as before.
+   */
+  isTrackedAsWatching(contentId) {
+    if (selectedContinueWatchingSource() !== WatchProgressSource.SIMKL) {
+      return true;
+    }
+    try {
+      return SimklSyncService.isTrackedAsWatching(contentId) !== false;
+    } catch (error) {
+      console.warn("Simkl watching-state lookup failed", error);
+      return true;
+    }
   }
 }
 
