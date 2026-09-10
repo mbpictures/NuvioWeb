@@ -19,6 +19,49 @@ import { postVegaHostMessage } from "./vegaBridge.js";
 // Turn off once audio through the sidecar has been heard.
 export const VEGA_AUDIO_DEBUG_TONE = true;
 
+// Paints the last few diagnostic lines onto the page, so the sidecar's state
+// can be read off the TV screen when the device log is not at hand. Turn off
+// together with the tones.
+export const VEGA_AUDIO_DEBUG_OVERLAY = true;
+const OVERLAY_LINE_LIMIT = 14;
+let overlayLines = [];
+
+function paintOverlay(text) {
+  if (!VEGA_AUDIO_DEBUG_OVERLAY || typeof document === "undefined") {
+    return;
+  }
+  try {
+    let node = document.getElementById("nuvioVegaAudioOverlay");
+    if (!node) {
+      node = document.createElement("pre");
+      node.id = "nuvioVegaAudioOverlay";
+      node.style.cssText = [
+        "position:fixed",
+        "top:0",
+        "left:0",
+        "right:0",
+        "z-index:2147483647",
+        "margin:0",
+        "padding:8px 12px",
+        "max-height:45vh",
+        "overflow:hidden",
+        "background:rgba(0,0,0,0.72)",
+        "color:#7cf07c",
+        "font:14px/1.3 monospace",
+        "white-space:pre-wrap",
+        "word-break:break-all",
+        "pointer-events:none"
+      ].join(";");
+      (document.body || document.documentElement).appendChild(node);
+    }
+    overlayLines.push(`${new Date().toISOString().slice(11, 19)} ${text}`);
+    overlayLines = overlayLines.slice(-OVERLAY_LINE_LIMIT);
+    node.textContent = overlayLines.join("\n");
+  } catch (_) {
+    // A diagnostic must never break the page.
+  }
+}
+
 function formatDetails(details) {
   if (!details || typeof details !== "object") {
     return "";
@@ -42,6 +85,7 @@ function emit(level, message, details) {
     console.log(text);
   }
   postVegaHostMessage("log", { tag: "vega audio", level, message: text });
+  paintOverlay(text);
   return text;
 }
 
@@ -120,6 +164,52 @@ export function playVegaDebugTone(
       finish(false);
     }
   });
+}
+
+/**
+ * Plays a short tone the way the decoded audio is played: a PCM buffer copied
+ * into an AudioBuffer and started at a point in the future on the context
+ * clock. Audible means buffer scheduling works on this output; the oscillator
+ * tone alone does not prove that.
+ */
+export function playVegaScheduledDebugTone(
+  context,
+  output,
+  { frequency = 660, delaySeconds = 0.5, durationMs = 250, level = 0.2 } = {}
+) {
+  try {
+    const sampleRate = Number(context.sampleRate) || 48000;
+    const frames = Math.max(1, Math.round((durationMs / 1000) * sampleRate));
+    const buffer = context.createBuffer(2, frames, sampleRate);
+    const plane = new Float32Array(frames);
+    const ramp = Math.min(480, Math.floor(frames / 4));
+    for (let i = 0; i < frames; i += 1) {
+      const envelope = Math.min(1, i / ramp, (frames - i) / ramp);
+      plane[i] = Math.sin((2 * Math.PI * frequency * i) / sampleRate) * level * envelope;
+    }
+    buffer.copyToChannel(plane, 0);
+    buffer.copyToChannel(plane, 1);
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(output);
+    source.onended = () => {
+      try {
+        source.disconnect();
+      } catch (_) {
+        // Already gone.
+      }
+    };
+    const when = Number(context.currentTime) + delaySeconds;
+    source.start(when);
+    return {
+      scheduled: true,
+      when: Number(when.toFixed(3)),
+      now: Number((Number(context.currentTime) || 0).toFixed(3)),
+      frames
+    };
+  } catch (error) {
+    return { scheduled: false, error: String(error?.message || error) };
+  }
 }
 
 /**

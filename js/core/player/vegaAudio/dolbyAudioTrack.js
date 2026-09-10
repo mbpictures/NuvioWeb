@@ -2,6 +2,7 @@ import {
   VEGA_AUDIO_DEBUG_TONE,
   describeAudioContext,
   playVegaDebugTone,
+  playVegaScheduledDebugTone,
   vegaAudioLog,
   vegaAudioWarn
 } from "../../../platform/vega/vegaAudioDiagnostics.js";
@@ -113,6 +114,22 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
   let resyncs = 0;
   let underruns = 0;
   let lastError = "";
+  // Whether the pump gets to schedule at all, and what the first chunk looked
+  // like, are the two facts a silent track needs answered first.
+  let pumps = 0;
+  let pumpsSkipped = 0;
+  let decodeCalls = 0;
+  let firstChunk = null;
+  let lastMediaTime = -1;
+
+  // `paused` and `seeking` are what the element says; the media clock moving
+  // is what it does. The pump trusts the clock when the two disagree, so a
+  // flag that is stale or wrong on some WebView cannot silence the track.
+  function isMediaClockAdvancing(mediaTime) {
+    const advancing = lastMediaTime >= 0 && mediaTime > lastMediaTime + 0.01;
+    lastMediaTime = mediaTime;
+    return advancing;
+  }
 
   // The element's own mute state, restored on stop so that switching back to a
   // track the element can play does not leave it silent.
@@ -162,6 +179,20 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
     const now = context.currentTime;
     const when = videoToContextTime(nextMediaTime);
     nextMediaTime += duration;
+
+    if (!firstChunk) {
+      firstChunk = {
+        when: Number(when.toFixed(3)),
+        now: Number(now.toFixed(3)),
+        pts: hasPts ? Number(pts.toFixed(3)) : null,
+        videoTime: Number((Number(video.currentTime) || 0).toFixed(3)),
+        frames: chunk.frames,
+        sampleRate: chunk.sampleRate,
+        channels: chunk.channels,
+        late: when + duration <= now
+      };
+      vegaAudioLog("Vega audio first chunk", firstChunk);
+    }
 
     // Entirely in the past - the usual case for the first chunks after a seek,
     // which lands before the requested point.
@@ -229,11 +260,20 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
         pendingSeekTo = null;
         await resync(target);
       }
-      if (video.paused || video.seeking) {
-        return;
-      }
 
       const mediaTime = Number(video.currentTime) || 0;
+      const advancing = isMediaClockAdvancing(mediaTime);
+      const playing = advancing || (!video.paused && !video.seeking);
+      if (!playing) {
+        pumpsSkipped += 1;
+        return;
+      }
+      pumps += 1;
+      // A missed play event would otherwise leave the context suspended
+      // (onPause suspends it) while the picture runs.
+      if (context.state === "suspended") {
+        void context.resume();
+      }
 
       if (anchorSet) {
         // The audio has run out ahead of, or behind, what is on screen.
@@ -258,6 +298,7 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
         nextMediaTime - mediaTime < TARGET_LEAD_SECONDS
       ) {
         calls += 1;
+        decodeCalls += 1;
         const { chunks, eof } = await decoder.decodeInto(DECODE_STEP_SECONDS);
         // A seek or a teardown landed while this was decoding; these chunks
         // describe a position the element has already left.
@@ -417,6 +458,13 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
         starting = false;
         return null;
       }
+      // Half a second after the oscillator: a scheduled PCM buffer, which is
+      // what every decoded chunk is. Two tones and no audio means the fault is
+      // upstream of the output; one tone means buffer scheduling itself fails.
+      vegaAudioLog(
+        "Vega sidecar scheduled tone",
+        playVegaScheduledDebugTone(context, gain, { frequency: 660, delaySeconds: 0.5 })
+      );
     }
 
     // The first decode happens on the pump, which anchors once it has a chunk.
@@ -427,9 +475,9 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
     video.addEventListener("seeking", onSeeking);
     video.addEventListener("seeked", onSeeked);
 
-    if (!video.paused) {
-      schedulePump();
-    }
+    // Always, not only when the element says it is playing: the pump checks
+    // for itself on every tick and costs nothing while the picture is still.
+    schedulePump();
     starting = false;
     return {
       ...info,
@@ -485,6 +533,14 @@ export function createDolbyAudioTrack({ video, url, streamIndex, rangeFetch, onF
       // mean the output clock stalled after the start-up check passed.
       contextTime: Number((Number(context?.currentTime) || 0).toFixed(2)),
       mediaTime: Number(mediaTime.toFixed(2)),
+      paused: Boolean(video?.paused),
+      seeking: Boolean(video?.seeking),
+      readyState: Number(video?.readyState) || 0,
+      pumps,
+      pumpsSkipped,
+      decodeCalls,
+      pumpTimer: Boolean(pumpTimer),
+      pendingSeek: pendingSeekTo,
       leadSeconds: Number((nextMediaTime - mediaTime).toFixed(2)),
       // Non-zero proves real samples are reaching the output.
       lastPeak: Number(lastPeak.toFixed(4)),
